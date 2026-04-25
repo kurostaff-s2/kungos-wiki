@@ -1,0 +1,229 @@
+[AUTH-TRACE] ✅ Grace period helpers attached to window.__authGracePeriod user.jsx:69:10
+[DASHBOARD] salesData: 
+Array []
+Home.jsx:126:11
+[DASHBOARD] salesData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] purchaseData: 
+Array []
+Home.jsx:131:11
+[DASHBOARD] purchaseData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] ── RENDER START ── Home.jsx:48:11
+[DASHBOARD] selectedEntity: null Home.jsx:49:11
+[DASHBOARD] isAuthenticated: false Home.jsx:50:11
+[DASHBOARD] userDetails: null Home.jsx:51:11
+[DASHBOARD] accesslevels count: 0 Home.jsx:52:11
+[DASHBOARD] ── RENDER START ── <anonymous code>:1:150327
+[DASHBOARD] selectedEntity:  null <anonymous code>:1:150327
+[DASHBOARD] isAuthenticated: false <anonymous code>:1:150327
+[DASHBOARD] userDetails:  null <anonymous code>:1:150327
+[DASHBOARD] accesslevels count: 0 <anonymous code>:1:150327
+[AUTH-TRACE] loadUser SUCCESS 
+Object { authState: {…}, url: "kuro/user", status: 200, hasUser: true }
+user.jsx:18:11
+[updateBGResponse] bg_code: BG0001 type: string admin.jsx:84:10
+[DASHBOARD] salesData: 
+Array []
+Home.jsx:126:11
+[DASHBOARD] salesData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] purchaseData: 
+Array []
+Home.jsx:131:11
+[DASHBOARD] purchaseData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] ── RENDER START ── Home.jsx:48:11
+[DASHBOARD] selectedEntity: rebellion Home.jsx:49:11
+[DASHBOARD] isAuthenticated: true Home.jsx:50:11
+[DASHBOARD] userDetails: 
+Object { phone: "+919582944439", name: "Ram", email: "kuroram@outlook.com", user_status: "Active", userid: "KCAD002", role: [], access: "Super", bg_code: "BG0001", businessgroups: (2) […], entity: "rebellion", … }
+Home.jsx:51:11
+[DASHBOARD] accesslevels count: 0 Home.jsx:52:11
+[DASHBOARD] ── RENDER START ── <anonymous code>:1:150327
+[DASHBOARD] selectedEntity: rebellion <anonymous code>:1:150327
+[DASHBOARD] isAuthenticated: true <anonymous code>:1:150327
+[DASHBOARD] userDetails:  
+Object { phone: "+919582944439", name: "Ram", email: "kuroram@outlook.com", user_status: "Active", userid: "KCAD002", role: [], access: "Super", bg_code: "BG0001", businessgroups: (2) […], entity: "rebellion", … }
+<anonymous code>:1:150327
+[DASHBOARD] accesslevels count: 0 <anonymous code>:1:150327
+[updateBGResponse] Success: 
+Array [ {…}, {…} ]
+admin.jsx:87:11
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] ── RENDER START ── Home.jsx:48:11
+[DASHBOARD] selectedEntity: rebellion Home.jsx:49:11
+[DASHBOARD] isAuthenticated: true Home.jsx:50:11
+[DASHBOARD] userDetails: 
+Object { phone: "+919582944439", name: "Ram", email: "kuroram@outlook.com", user_status: "Active", userid: "KCAD002", role: [], access: "Super", bg_code: "BG0001", businessgroups: (2) […], entity: "rebellion", … }
+Home.jsx:51:11
+[DASHBOARD] accesslevels count: 2 Home.jsx:52:11
+[DASHBOARD] filterByEntity: 106 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 106 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 3 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 3 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 0 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] salesData: 
+Array []
+Home.jsx:126:11
+[DASHBOARD] salesData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] purchaseData: 
+Array []
+Home.jsx:131:11
+[DASHBOARD] purchaseData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 229 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 229 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 9162 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 9162 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] salesData: 
+Array []
+Home.jsx:126:11
+[DASHBOARD] salesData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] purchaseData: 
+Array []
+Home.jsx:131:11
+[DASHBOARD] purchaseData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 229 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 229 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] filterByEntity: 9162 → 0 (entity=rebellion) Home.jsx:37:11
+[DASHBOARD] filterByEntity: 9162 → 0 (entity=rebellion) <anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:365:10
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 Home.jsx:366:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:367:10
+[DASHBOARD] ── RENDER END ── Home.jsx:368:10
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 4 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+Uncaught Error: Objects are not valid as a React child (found: object with keys {$$typeof, render}). If you meant to render a collection of children, use an array instead.
+    React 20
+    batchCalls notifyManager.js:56
+    notifyFn notifyManager.js:8
+    flush notifyManager.js:30
+    flush notifyManager.js:29
+    batchNotifyFn notifyManager.js:11
+    flush notifyManager.js:28
+    setTimeout handler*systemSetTimeoutZero timeoutManager.js:63
+    flush notifyManager.js:27
+    batch notifyManager.js:45
+    #dispatch query.js:392
+    setData query.js:62
+    fetch query.js:289
+    #executeFetch queryObserver.js:179
+    onSubscribe queryObserver.js:52
+    subscribe subscribable.js:9
+    useBaseQuery useBaseQuery.js:59
+    React 26
+react-dom_client.js:3540:10
