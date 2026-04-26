@@ -3141,3 +3141,33 @@ Multiple backend endpoints were crashing with 500 errors, causing frontend data 
   - All commands support: `--dump`, `--s3-key`, `--restore`, `--dry-run`, `--verify`, `--force`
   - Ready for production deployment with confirmation prompts and rollback capability
 
+## 2026-04-26 — Complete Entity Filter Fix Across All Endpoints
+
+### Critical Discovery
+The `/api/v1/kuroadmin/estimates` endpoint was handled by **`kuroadmin/financial.py:estimates()`** — NOT `kuroadmin/estimates.py:estimates()`. All prior fixes were on the wrong file!
+
+### Backend Fixes (6 files, 107 lines)
+1. **`financial.py:estimates()`** — Added entity_param support (the actual URL handler)
+2. **`outward_invoices.py`** — Fixed `outwardcreditnotes` and `outwarddebitnotes` entity filtering
+3. **`inward_invoices.py`** — Refactored entity param handling to avoid fallback to wrong entity
+4. **`financial.py:serviceRequest()`** — Was iterating ALL entities, now uses entity_param
+5. **`kurostaff/views.py`** — Added entity_param to `tporders`, `kgorders`, `vendors`
+6. **`kuroadmin/urls.py`** — Added missing routes for `tporders`, `kgorders`, `vendors`
+7. **`kurostaff/views.py`** — Fixed `kgorders` UnboundLocalError (limit_value not initialized)
+
+### Frontend Fixes (2 files)
+1. **`src/actions/user.jsx`** — Dispatch `UPDATE_BG` in `loadUser()` for page refresh (was only dispatched during password login)
+2. **`src/pages/Orders/Overview.jsx`** — Added purchase orders fetch, KG orders entity filtering
+
+### Root Cause Analysis
+- **Backend**: `entity_param` was read from query string in many endpoints but never used — the code fell back to the user's full accessible entity list, returning ALL data regardless of the frontend filter.
+- **Frontend Redux**: `UPDATE_BG` action (which populates `accesslevels` array) was only dispatched during password login. On page refresh, `loadUser()` didn't dispatch it, leaving `accesslevels = []` in Redux state.
+- **EntitySelector**: Because `accesslevels` was `[]`, `accessibleEntities` was `undefined`, and the EntitySelector never rendered — users couldn't switch entities at all.
+
+### Results
+| Entity | PurchaseOrders | Estimates | Invoices | Payments | Debit Notes |
+|--------|---------------|-----------|----------|----------|-------------|
+| rebellion | 6 | 0 | 0 | 1,383 | 0 |
+| kurogaming | 15,360 | 4,320 | 16 | 11 | 13 |
+| renderedge | 0 | 0 | 0 | 0 | 0 |
+
