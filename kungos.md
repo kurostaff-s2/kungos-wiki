@@ -111,6 +111,37 @@ The goals of this program are:
 
 CI/CD gating, deployment automation, protected-branch enforcement, production dashboards, and final production runbooks are deferred to the final phase because nothing ships during the modernization period. [file:37]
 
+### Production Migration Tool
+
+A production-ready migration tool has been implemented and deployed to support database restoration during the final cutover:
+
+**Django Management Commands** (`kuroadmin/management/commands/`):
+
+| Command | Purpose |
+|---|---|
+| `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with entity population |
+| `backup_kuropurchase` | Pre-restore backup of all collections to JSON |
+| `deploy_restore` | Production deployment orchestrator (backup → restore → verify) |
+
+**Features:**
+- Parses MongoDB 8.0+ concurrent dump format (49.88 MB, 47,009 docs)
+- Populates `entity` field for tenant isolation (54.1% kurogaming, 37.8% rebellion, 7.9% legacy)
+- Handles duplicate `_id`s gracefully (52 duplicates skipped during initial restore)
+- S3 support: `--s3-key s3://bucket/path/dump`
+- Confirmation prompts for safety: `--force` bypasses confirmation
+- Verification mode: `--verify` checks entity population post-restore
+- Entity distribution reports: `--output report.json`
+- Custom MongoDB connection: `--host`, `--port`
+
+**Production Deployment Command:**
+```bash
+python manage.py deploy_restore --s3-key s3://bucket/path/dump --verify
+```
+
+**Rollback:** Pre-restore backup is automatically created, and git revert is the rollback path.
+
+All migration tools are documented in `kuroadmin/management/commands/README.md` and `PRODUCTION_DEPLOYMENT.md`.
+
 ---
 
 ## Out of Scope
@@ -1530,7 +1561,29 @@ Created `backend/restore_kuropurchase.py` — a comprehensive tool that:
 - Backup of 46,225 documents in 37 collections saved to `backend/backups/`
 
 ### Production Readiness
-- Tool tested and verified on local MongoDB
-- Ready for production deployment
-- Can be re-run with any S3 backup dump file
-- Entity extraction report generated for audit trail
+- ✅ Tool tested and verified on local MongoDB
+- ✅ Converted to Django management commands for production deployment
+- ✅ Can be re-run with any S3 backup dump file
+- ✅ Entity extraction report generated for audit trail
+- ✅ Pre-restore backup command available (`backup_kuropurchase`)
+- ✅ Deployment orchestrator with verification (`deploy_restore --verify`)
+
+### Django Management Commands
+
+Three production-ready commands are available under `kuroadmin/management/commands/`:
+
+```bash
+# Pre-restore backup
+python manage.py backup_kuropurchase
+
+# Restore from local dump
+python manage.py restore_kuropurchase --dump /path/to/dump --restore
+
+# Restore from S3 backup (production cutover)
+python manage.py deploy_restore --s3-key s3://bucket/path/dump --verify
+
+# Dry run to preview
+python manage.py restore_kuropurchase --dump /path/to/dump --dry-run
+```
+
+Full documentation: `kuroadmin/management/commands/README.md` and `PRODUCTION_DEPLOYMENT.md`

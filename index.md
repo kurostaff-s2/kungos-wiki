@@ -11,10 +11,12 @@
 
 ## Plans
 - [[kungos]] — Master modernization plan (Project Code: Kungos): phased remediation of 97 audit issues + gaming integration, ~340–520 hours (likely 420h), single deployment at program end, 6 phases with P0/P1/P2 prioritization
+- [[kungos-deployment]] — Production deployment guide: MongoDB dump restore, entity migration, rollback procedures, and cutover checklist
 
 ## Ops
 - [[kungos-log]] — Kungos departure log: approved deviations from the modernization plan with justification and approver
 - [[kungos-debug-tools]] — Debugging and audit tooling built during the React render error investigation (errorLogger, ErrorBadge, test_pages.py, test_dynamic_pages.py, TESTING_STRATEGY.md)
+- [[kungos-migration-tools]] — Production migration tools: Django management commands for MongoDB dump restore, entity population, and tenant isolation (restore_kuropurchase, backup_kuropurchase, deploy_restore)
 
 ## Entities
 - [[kteam-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across kteam-dj-be + kteam-fe-chief, LLM integration assessment for chat bot/OCR/automations, 20-week remediation plan
