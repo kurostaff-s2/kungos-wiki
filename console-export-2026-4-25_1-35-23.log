@@ -1,24 +1,91 @@
 [AUTH-TRACE] ✅ Grace period helpers attached to window.__authGracePeriod user.jsx:69:10
+[DASHBOARD] salesData: 
+Array []
+Home.jsx:126:11
+[DASHBOARD] salesData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] purchaseData: 
+Array []
+Home.jsx:131:11
+[DASHBOARD] purchaseData:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:338:10
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 Home.jsx:339:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:340:10
+[DASHBOARD] ── RENDER END ── Home.jsx:341:10
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] ── RENDER START ── Home.jsx:48:11
+[DASHBOARD] selectedEntity: null Home.jsx:49:11
+[DASHBOARD] isAuthenticated: false Home.jsx:50:11
+[DASHBOARD] userDetails: null Home.jsx:51:11
+[DASHBOARD] accesslevels count: 0 Home.jsx:52:11
+[DASHBOARD] ── RENDER START ── <anonymous code>:1:150327
+[DASHBOARD] selectedEntity:  null <anonymous code>:1:150327
+[DASHBOARD] isAuthenticated: false <anonymous code>:1:150327
+[DASHBOARD] userDetails:  null <anonymous code>:1:150327
+[DASHBOARD] accesslevels count: 0 <anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:338:10
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 Home.jsx:339:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:340:10
+[DASHBOARD] ── RENDER END ── Home.jsx:341:10
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
+[DASHBOARD] inwardinvoices raw: 0 first keys: 
+Array []
+Home.jsx:141:11
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 Home.jsx:155:10
+[DASHBOARD] ── RENDERING UI ── Home.jsx:338:10
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 Home.jsx:339:10
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 Home.jsx:340:10
+[DASHBOARD] ── RENDER END ── Home.jsx:341:10
+[DASHBOARD] inwardinvoices raw: 0 first keys:  
+Array []
+<anonymous code>:1:150327
+[DASHBOARD] activeTpOrders: 0 activeKgOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDERING UI ── <anonymous code>:1:150327
+[DASHBOARD] stats: 2 quickActions: 0 recentOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] pendingPayments: 0 deadlineOrders: 0 <anonymous code>:1:150327
+[DASHBOARD] ── RENDER END ── <anonymous code>:1:150327
 [AUTH-TRACE] loadUser SUCCESS 
 Object { authState: {…}, url: "kuro/user", status: 200, hasUser: true }
 user.jsx:18:11
 [updateBGResponse] bg_code: BG0001 type: string admin.jsx:84:10
-Uncaught TypeError: (destructured parameter).user is undefined
-    InvoiceCreate InvoiceCreate.jsx:15
-    React 10
-    performWorkUntilDeadline scheduler.development.js:45
-    require_scheduler_development scheduler.development.js:223
-    require_scheduler_development react-dom_client.js:244
-    __commonJSMin chunk-BoAXSpZd.js:8
-    require_scheduler index.js:6
-    __commonJSMin chunk-BoAXSpZd.js:8
-    require_react_dom_client_development React
-    require_react_dom_client_development react-dom_client.js:14375
-    __commonJSMin chunk-BoAXSpZd.js:8
-    require_client React
-    __commonJSMin chunk-BoAXSpZd.js:8
-    <anonymous> react-dom_client.js:14383
-InvoiceCreate.jsx:12:23
+Uncaught TypeError: (intermediate value).map is not a function
+    TenantProvider TenantContext.jsx:51
+    React 33
+TenantContext.jsx:49:66
 [updateBGResponse] Success: 
 Array [ {…}, {…} ]
 admin.jsx:87:11
