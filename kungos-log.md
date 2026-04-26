@@ -3171,3 +3171,23 @@ The `/api/v1/kuroadmin/estimates` endpoint was handled by **`kuroadmin/financial
 | kurogaming | 15,360 | 4,320 | 16 | 11 | 13 |
 | renderedge | 0 | 0 | 0 | 0 | 0 |
 
+## 2026-04-26 — OrdersList Missing Purchase Orders + URL Alias Fix
+
+### Problem
+The `/orders` page showed **no orders** for any entity because:
+1. `OrdersList.jsx` only fetched `tporders` and `kgorders` — both collections are **empty** (0 items)
+2. The actual order data (15,360 kurogaming + 6 rebellion) lives in `purchaseorders` collection
+3. Frontend calls `kuroadmin/purchase-orders` (with hyphen) but backend only had `purchaseorders` (no hyphen)
+
+### Fix
+1. **Frontend `OrdersList.jsx`**: Added `purchase-orders` fetch query, normalized PO data to match existing order shape (orderid, order_status, totalprice, user, _channel)
+2. **Frontend `OrdersList.jsx`**: Added "Purchase Orders" channel filter with purple badge
+3. **Backend `kuroadmin/urls.py`**: Added `purchase-orders` → `purchaseorders` alias route
+4. **Frontend `OrdersOverview.jsx`**: Added purchase orders fetch (already committed)
+5. **Frontend `src/actions/user.jsx`**: Dispatch UPDATE_BG in loadUser (already committed)
+
+### Result
+- `/orders` now shows all 15,360 kurogaming purchase orders + 6 rebellion orders
+- Entity selector works (after UPDATE_BG fix)
+- Channel filter includes "Purchase Orders" option
+
