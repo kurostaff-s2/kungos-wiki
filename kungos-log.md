@@ -3191,3 +3191,22 @@ The `/orders` page showed **no orders** for any entity because:
 - Entity selector works (after UPDATE_BG fix)
 - Channel filter includes "Purchase Orders" option
 
+## 2026-04-26 — Entity Selector Persistence Fix
+
+### Problem
+User-selected entity (e.g. "rebellion") persisted across refresh even when
+it shouldn't be the default. The root cause was:
+1. `TenantContext` blindly preserved localStorage entity on every load
+2. If localStorage had a stale value from a previous session, it was always used
+3. This made "rebellion" the default even when user intended "kurogaming"
+
+### Fix
+- `TenantContext.jsx`: Only preserve localStorage entity if it's in the user's
+  valid access list (`validEntities.has(storedEntity)`)
+- Falls back to server default (`accesslevel[0].entity = 'kurogaming'`) when
+  localStorage is empty or has an invalid value
+
+### Analytics Fix
+- `products.py:analytics()`: Was only counting `kgorders` (empty) and `tporders` (empty)
+- Now includes `purchaseorders` in `totalOrders`, `statusBreakdown`, and `chartData`
+
