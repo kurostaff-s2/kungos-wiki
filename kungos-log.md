@@ -3134,4 +3134,10 @@ Multiple backend endpoints were crashing with 500 errors, causing frontend data 
   - Backs up all kuropurchase collections to JSON files
   - Handles ObjectId serialization
   - Created backup of 46,225 documents in 37 collections before restore
+- **Django Management Commands** (`kuroadmin/management/commands/`):
+  - `restore_kuropurchase`: Parse MongoDB 8.0+ concurrent dump, restore with entity population
+  - `backup_kuropurchase`: Pre-restore backup utility
+  - `deploy_restore`: Production deployment orchestrator (backup → restore → verify)
+  - All commands support: `--dump`, `--s3-key`, `--restore`, `--dry-run`, `--verify`, `--force`
+  - Ready for production deployment with confirmation prompts and rollback capability
 
