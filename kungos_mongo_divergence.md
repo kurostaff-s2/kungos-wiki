@@ -1,7 +1,7 @@
 # KungOS MongoDB Divergence: Spec vs. Reality
 
 **Database:** `KungOS_Mongo_One` (underscores, not camelCase)  
-**Spec Source:** `/home/chief/legacy docs/kungos.md` (KungOS v2 plan)  
+**Spec Source:** [`KungOS_v2.md`](./KungOS_v2.md) + [`kungos-cafe-platform.md`](./kungos-cafe-platform.md)  
 **Verified:** 2026-04-28
 
 ---
