@@ -81,6 +81,6 @@ git revert HEAD
 
 ## Related
 
-- [[kungos]] — Master modernization plan
+- [[KungOS_v2]] — Master modernization plan
 - [[kungos-migration-tools]] — Migration tool documentation
 - [[kungos-log]] — Kungos departure log

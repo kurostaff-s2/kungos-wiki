@@ -10,8 +10,9 @@
 - [[kteam-system-architecture]] — Full system architecture: kteam-dj-be (Django/DRF/PostgreSQL/MongoDB/MeiliSearch) + kteam-fe-chief (React 19/Vite 8/Redux 5/Tailwind v4), 155+ API endpoints, 129+ pages, data flow, multi-tenant model, known issues, prioritized recommendations (P1-P4)
 
 ## Plans
-- [[kungos]] — Master modernization plan (Project Code: Kungos): phased remediation of 97 audit issues + gaming integration, ~340–520 hours (likely 420h), single deployment at program end, 6 phases with P0/P1/P2 prioritization
+- [[KungOS_v2]] — Authoritative modernization plan (Project Code: Kungos): Phases 0–3 complete ✅, Phase 4 (testing/CI/CD) pending. Replaces legacy `kungos.md`. See [[kungos-log]] for approved departures.
 - [[kungos-deployment]] — Production deployment guide: MongoDB dump restore, entity migration, rollback procedures, and cutover checklist
+- [[kungos-cafe-platform]] — GGleap-style gaming cafe management platform: unified identity (phone = universal key), shared wallet, station/session management, post-core expansion (120–180 hours)
 
 ## Ops
 - [[kungos-log]] — Kungos departure log: approved deviations from the modernization plan with justification and approver

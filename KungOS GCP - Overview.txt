@@ -1,0 +1,170 @@
+
+## 🏗️ KungOS — GCP (Gaming Cafe Platform)
+
+### Core Components
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Cloud / Backend                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
+│  │ Auth API  │  │ Game API │  │  Session/Billing API │  │
+│  └──────────┘  └──────────┘  └──────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              PostgreSQL + Redis                   │   │
+│  └──────────────────────────────────────────────────┘   │
+└──────────┬──────────────────────────────────────────────┘
+           │ WebSocket / HTTPS
+┌──────────┴──────────────────────────────────────────────┐
+│                  Cafe Manager (Web Dashboard)             │
+│  Station management, pricing, reports, game library       │
+└──────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────┐
+│              Customer Mobile App (optional)               │
+│  QR login, remote session control, payments               │
+└──────────────────┬───────────────────────────────────────┘
+                   │
+┌──────────────────┴───────────────────────────────────────┐
+│              PC Client (Cafe Station)                      │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────────┐   │
+│  │ Launcher   │  │ Local API  │  │ Overlay/Hotkeys  │   │
+│  └────────────┘  └────────────┘  └──────────────────┘   │
+│  ┌──────────────────────────────────────────────────┐    │
+│  │         IPC → Windows Service (system level)     │    │
+│  └──────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 1. PC Client (Station App)
+
+**Stack:** Electron or Tauri (Tauri = lighter, better perf)
+
+**What it does:**
+- **Game Launcher** — manages game installs, updates, shortcuts
+- **Session Controller** — receive commands from server (start, pause, extend, force-quit)
+- **Local Agent** — runs as Windows Service (system-level, survives user logoff)
+- **Overlay** — in-game overlay for session info (time remaining, pause/extend buttons)
+- **Kiosk Mode** — locks desktop, prevents alt-tabbing out, auto-logout on session end
+- **Health Monitor** — auto-reconnect to server, detect crashes, watchdog
+
+**Key tech:**
+- Windows Service (Rust via Tauri or C++ backend)
+- Local WebSocket server (`ws://127.0.0.1:port`) for overlay communication
+- Registry/shortcut management for game launching
+- Process monitoring (enumerate running processes, detect game launch/exit)
+
+---
+
+### 2. Backend / Cloud
+
+**Stack:** Node.js (NestJS) or Go
+
+**Services:**
+| Service | Responsibility |
+|---|---|
+| **Auth** | QR login flow, session tokens, cafe/station/user roles |
+| **Game Library** | Game metadata, install manifests, version tracking |
+| **Session** | Active sessions, timers, billing calculations |
+| **Cafe** | Multi-location support, station config, pricing tiers |
+| **Payments** | Razorpay/Stripe integration, invoices, wallets |
+
+**Data:**
+- **PostgreSQL** — users, cafes, stations, games, sessions, billing
+- **Redis** — live session state, rate limiting, pub/sub for real-time commands
+- **Object Storage** — game manifests, screenshots, thumbnails
+
+---
+
+### 3. Cafe Manager (Web Dashboard)
+
+**Stack:** React + TypeScript
+
+**Features:**
+- Station overview (online/offline, active/idle, what game is running)
+- Remote actions: pause, stop, extend time, force-install game
+- Pricing config (hourly rates, packages, peak/off-peak)
+- Game library: add/remove games, set install priority, manage versions
+- Reports: revenue, station utilization, peak hours
+- User management: walk-in accounts, loyalty/wallet
+
+---
+
+### 4. Customer Mobile App
+
+**Stack:** React Native or Flutter
+
+**Flow:**
+1. Open app → scan QR at station
+2. App authenticates → gets session token
+3. Customer can: view time remaining, extend time, pause session, check balance
+4. Push notifications for session expiry warnings
+
+---
+
+### Data Model (simplified)
+
+```
+Cafe → has_many → Stations → has_many → Sessions
+User → has_many → Sessions
+Game → has_many → InstallManifests
+Session → belongs_to → Station, User, Game
+  attributes: started_at, ended_at, total_minutes, amount, status
+Station → belongs_to → Cafe
+  attributes: name, status, current_session_id, is_online
+```
+
+---
+
+### Protocol: Server → Client Commands
+
+WebSocket messages from server to PC client:
+
+```json
+{
+  "type": "session.start",
+  "payload": { "sessionId": "...", "gameId": "...", "maxMinutes": 60 }
+}
+{ "type": "session.pause" }
+{ "type": "session.extend", "payload": { "addMinutes": 30 } }
+{ "type": "session.stop" }
+{ "type": "game.install", "payload": { "gameId": "..." } }
+{ "type": "kiosk.activate" }
+{ "type": "kiosk.deactivate" }
+```
+
+---
+
+### Critical Technical Challenges
+
+1. **Process isolation** — preventing users from killing the client or escaping kiosk
+2. **Game launch detection** — hook into Windows process creation, match against game list
+3. **Overlay rendering** — transparent window on top of games (DirectX/OpenGL aware)
+4. **Offline resilience** — local timer fallback if server disconnects
+5. **Auto-update** — client must self-update silently (like Steam does)
+6. **Multi-GPU / high-res** — overlay needs to work across monitors and full-screen exclusive modes
+
+---
+
+### Suggested Tech Stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| PC Client | **Tauri + Rust** | Small binary, fast, system-level access |
+| Backend | **Go** or **NestJS** | Go for perf, NestJS if team knows TS |
+| DB | **PostgreSQL** + **Redis** | Proven combo |
+| Dashboard | **React + TanStack Table** | Station management UI |
+| Mobile | **React Native** | Shared TS with dashboard |
+| Infra | **Docker** + **Postgres** + **Redis** | Simple, portable |
+
+---
+
+### Phased Rollout
+
+1. **Phase 1** — PC client + basic backend + QR login + session timer
+2. **Phase 2** — Game library + install management + cafe dashboard
+3. **Phase 3** — Payments + wallet + mobile app
+4. **Phase 4** — Overlay + kiosk mode + advanced features
+
+---

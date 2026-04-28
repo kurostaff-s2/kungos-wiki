@@ -53,7 +53,7 @@ Two parallel workstreams with explicit gating:
 
 ## References
 
-- Full plan: [[kungos]]
+- Full plan: [[KungOS_v2]]
 - Audit source: [[kteam-architecture-audit]]
 - Counter-review: [[kteam-stack-modernization-plan-counter]]
 - Gaming backend: kuro-gaming-dj-backend

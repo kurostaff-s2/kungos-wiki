@@ -1413,7 +1413,7 @@ Removed `db_name` parameter from all helper functions and their call sites:
 - **Key considerations:** API key management, rate limiting, cost monitoring, data privacy
 
 ### Governance
-- Both optional paths require explicit approval per governance rules (kungos.md §Governance)
+- Both optional paths require explicit approval per governance rules (KungOS_v2.md §Governance)
 - Logged as approved departure from original plan
 - Decision recorded: 2026-04-23 by Chief
 
@@ -1450,7 +1450,7 @@ Removed `db_name` parameter from all helper functions and their call sites:
 - **Key considerations:** API key management, rate limiting, cost monitoring, data privacy
 
 ### Governance
-- Both optional paths require explicit approval per governance rules (kungos.md §Governance)
+- Both optional paths require explicit approval per governance rules (KungOS_v2.md §Governance)
 - Logged as approved departure from original plan
 
 

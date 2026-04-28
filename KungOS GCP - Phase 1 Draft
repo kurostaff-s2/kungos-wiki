@@ -1,0 +1,312 @@
+<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
+
+# a concrete Phase 1 repo structure next — folders, services, DB schema, and station IPC contracts
+
+Yes — here’s a concrete Phase 1 monorepo I’d ship first. I’d keep the station shell and the privileged station agent separate: Tauri can handle the desktop UI and cloud WebSocket connection through its plugin, while a native Windows service runs independently and communicates with the shell over named pipes.[^1][^2][^3]
+
+## Repo layout
+
+Phase 1 should be a monorepo with four deployables: API, manager web app, station shell, and station service. The Tauri shell can own login/session UI, while the service owns timer persistence, game launch, process watching, and machine-level actions.[^2][^1]
+
+```text
+gaming-cafe-platform/
+├─ apps/
+│  ├─ api/                          # Backend API + WS gateway
+│  │  ├─ src/
+│  │  │  ├─ main.ts
+│  │  │  ├─ app.module.ts
+│  │  │  ├─ modules/
+│  │  │  │  ├─ auth/
+│  │  │  │  ├─ cafes/
+│  │  │  │  ├─ stations/
+│  │  │  │  ├─ sessions/
+│  │  │  │  ├─ billing/
+│  │  │  │  ├─ commands/
+│  │  │  │  └─ health/
+│  │  │  ├─ ws/
+│  │  │  │  ├─ station.gateway.ts
+│  │  │  │  └─ manager.gateway.ts
+│  │  │  ├─ db/
+│  │  │  │  ├─ prisma/
+│  │  │  │  └─ migrations/
+│  │  │  └─ common/
+│  │  └─ test/
+│  │
+│  ├─ manager-web/                  # Cafe dashboard
+│  │  ├─ src/
+│  │  │  ├─ app/
+│  │  │  ├─ pages/
+│  │  │  │  ├─ login/
+│  │  │  │  ├─ stations/
+│  │  │  │  ├─ sessions/
+│  │  │  │  └─ pricing/
+│  │  │  ├─ components/
+│  │  │  ├─ features/
+│  │  │  └─ lib/
+│  │  └─ public/
+│  │
+│  ├─ station-shell/                # Tauri app (operator/customer visible)
+│  │  ├─ src/                       # React UI
+│  │  │  ├─ pages/
+│  │  │  ├─ components/
+│  │  │  ├─ stores/
+│  │  │  ├─ services/
+│  │  │  │  ├─ cloud-ws.ts
+│  │  │  │  └─ ipc-client.ts
+│  │  │  └─ types/
+│  │  └─ src-tauri/
+│  │     ├─ src/
+│  │     │  ├─ main.rs
+│  │     │  ├─ commands/
+│  │     │  └─ state/
+│  │     └─ tauri.conf.json
+│  │
+│  └─ station-service/              # Windows Service
+│     ├─ src/
+│     │  ├─ main.rs
+│     │  ├─ service/
+│     │  │  ├─ runner.rs
+│     │  │  ├─ timer.rs
+│     │  │  ├─ launcher.rs
+│     │  │  ├─ process_watch.rs
+│     │  │  ├─ policy.rs
+│     │  │  └─ command_worker.rs
+│     │  ├─ ipc/
+│     │  │  ├─ pipe_server.rs
+│     │  │  ├─ messages.rs
+│     │  │  └─ acl.rs
+│     │  ├─ storage/
+│     │  │  ├─ sqlite.rs
+│     │  │  └─ files.rs
+│     │  └─ windows/
+│     │     ├─ service_install.rs
+│     │     └─ process.rs
+│     └─ Cargo.toml
+│
+├─ packages/
+│  ├─ contracts/                    # Shared TS contracts
+│  │  ├─ src/
+│  │  │  ├─ api.ts
+│  │  │  ├─ ws.ts
+│  │  │  ├─ ipc.ts
+│  │  │  └─ events.ts
+│  ├─ config/
+│  ├─ eslint-config/
+│  └─ tsconfig/
+│
+├─ infra/
+│  ├─ docker/
+│  │  ├─ docker-compose.dev.yml
+│  │  └─ docker-compose.prod.yml
+│  ├─ postgres/
+│  └─ redis/
+│
+├─ docs/
+│  ├─ architecture.md
+│  ├─ phase1-sequence-flows.md
+│  ├─ station-ipc.md
+│  └─ ops-runbook.md
+│
+└─ .github/
+   └─ workflows/
+```
+
+
+## Services
+
+For Phase 1, the backend should stay small: Auth, Stations, Sessions, Billing, Commands, and Health. Redis is optional at the start, but PostgreSQL should be the source of truth for users, stations, sessions, pricing rules, and audit events.
+
+The station side should have exactly two processes:
+
+- `station-shell`: login screen, QR/code entry, time-left UI, reconnect banner, local IPC client.
+- `station-service`: local timer authority, launch/stop game executable, watchdog, offline queue, and signed event sync.
+
+
+## DB schema
+
+The minimum schema should model cafes, stations, users, session leases, price plans, and append-only station events. I’d also add a tiny local SQLite DB inside `station-service` for offline lease state and unsynced events, because named-pipe IPC and service-style deployment make local durability cheap and reliable on Windows.[^3][^2]
+
+
+| Table | Key fields | Notes |
+| :-- | :-- | :-- |
+| `cafes` | `id`, `name`, `timezone`, `currency`, `status` | One row per location. |
+| `stations` | `id`, `cafe_id`, `code`, `name`, `device_fingerprint`, `status`, `last_seen_at`, `current_session_id` | `code` is used in QR/manual login. |
+| `users` | `id`, `type`, `display_name`, `phone`, `wallet_balance`, `status` | `type`: walk_in, member, admin, staff. |
+| `price_plans` | `id`, `cafe_id`, `name`, `billing_mode`, `rate_per_hour`, `min_minutes`, `active` | Keep billing_mode simple: hourly only in Phase 1. |
+| `games` | `id`, `slug`, `name`, `launch_type`, `exe_path_template`, `active` | Only store a few curated games first. |
+| `sessions` | `id`, `cafe_id`, `station_id`, `user_id`, `game_id`, `price_plan_id`, `status`, `started_at`, `ends_at`, `ended_at`, `billed_minutes`, `amount_due` | Core operational record. |
+| `session_leases` | `id`, `session_id`, `station_id`, `lease_version`, `issued_at`, `expires_at`, `grace_seconds`, `signature` | Lets station continue safely when cloud drops. |
+| `station_commands` | `id`, `station_id`, `session_id`, `type`, `payload_json`, `issued_by`, `issued_at`, `acked_at`, `status` | For start, extend, stop, ping, refresh-state. |
+| `station_events` | `id`, `station_id`, `session_id`, `event_type`, `payload_json`, `created_at`, `source`, `seq_no` | Append-only audit stream from service. |
+| `auth_tokens` | `id`, `user_id`, `kind`, `token_hash`, `expires_at`, `used_at` | QR/login tokens. |
+
+Suggested enums:
+
+```sql
+station_status: OFFLINE | IDLE | RESERVED | IN_SESSION | LOCKED | ERROR
+session_status: PENDING | ACTIVE | PAUSED | ENDED | EXPIRED | ABORTED
+command_status: QUEUED | DELIVERED | ACKED | FAILED | EXPIRED
+event_type: HEARTBEAT | SESSION_STARTED | SESSION_EXTENDED | SESSION_STOPPED |
+            GAME_LAUNCHED | GAME_EXITED | TIMER_TICK | CONNECTIVITY_LOST |
+            CONNECTIVITY_RESTORED | SHELL_CONNECTED | SHELL_DISCONNECTED
+```
+
+
+## IPC contracts
+
+Named pipes are the cleanest Phase 1 IPC boundary on Windows for small control messages between the shell and service. Rust ecosystems already document Windows services and named-pipe IPC patterns well enough that this split is practical without inventing custom transport.[^2][^3]
+
+Use one pipe, newline-delimited JSON, request-response by `correlationId`, and a shared secret or ACL so only your shell can connect.
+
+```text
+Pipe name:
+\\.\pipe\gaming-cafe-station
+
+Envelope:
+{
+  "v": 1,
+  "type": "service.get_state",
+  "correlationId": "01H...",
+  "ts": "2026-04-19T17:05:00Z",
+  "payload": {}
+}
+```
+
+Core shell -> service messages:
+
+```json
+{ "v":1, "type":"service.ping", "correlationId":"...", "payload":{} }
+
+{ "v":1, "type":"session.apply_lease", "correlationId":"...", "payload":{
+  "sessionId":"sess_123",
+  "stationId":"st_01",
+  "leaseVersion":1,
+  "startedAt":"2026-04-19T17:00:00Z",
+  "endsAt":"2026-04-19T18:00:00Z",
+  "graceSeconds":300,
+  "signature":"base64..."
+}}
+
+{ "v":1, "type":"session.extend", "correlationId":"...", "payload":{
+  "sessionId":"sess_123",
+  "addMinutes":30,
+  "leaseVersion":2,
+  "signature":"base64..."
+}}
+
+{ "v":1, "type":"session.stop", "correlationId":"...", "payload":{
+  "sessionId":"sess_123",
+  "reason":"manager_stop",
+  "signature":"base64..."
+}}
+
+{ "v":1, "type":"game.launch", "correlationId":"...", "payload":{
+  "sessionId":"sess_123",
+  "gameId":"valorant",
+  "exePath":"C:\\Riot Games\\VALORANT\\live\\VALORANT.exe",
+  "args":[]
+}}
+
+{ "v":1, "type":"game.terminate", "correlationId":"...", "payload":{
+  "sessionId":"sess_123",
+  "gameId":"valorant"
+}}
+
+{ "v":1, "type":"kiosk.set_mode", "correlationId":"...", "payload":{
+  "enabled":true
+}}
+```
+
+Core service -> shell messages:
+
+```json
+{ "v":1, "type":"ack", "correlationId":"...", "payload":{
+  "ok":true
+}}
+
+{ "v":1, "type":"state.snapshot", "correlationId":"...", "payload":{
+  "stationStatus":"IN_SESSION",
+  "serviceStatus":"RUNNING",
+  "activeSession":{
+    "sessionId":"sess_123",
+    "gameId":"valorant",
+    "remainingSeconds":3290,
+    "offlineMode":false
+  },
+  "activeGameProcess":{
+    "pid":4242,
+    "detected":true
+  }
+}}
+
+{ "v":1, "type":"event.session_tick", "payload":{
+  "sessionId":"sess_123",
+  "remainingSeconds":3289
+}}
+
+{ "v":1, "type":"event.game_exited", "payload":{
+  "sessionId":"sess_123",
+  "gameId":"valorant",
+  "exitCode":0
+}}
+
+{ "v":1, "type":"event.error", "payload":{
+  "code":"GAME_NOT_FOUND",
+  "message":"Configured executable missing"
+}}
+```
+
+Validation rules:
+
+- Service rejects stale `leaseVersion`.
+- Service rejects unsigned mutating commands.
+- Shell treats service time as authoritative for countdown.
+- Backend treats `station_events.seq_no` as authoritative for reconciliation.
+
+
+## First build order
+
+Build these in sequence so Phase 1 stays shippable:
+
+1. `api`: station registration, QR/code login, create session, extend session, stop session.
+2. `station-service`: named pipe server, local SQLite, timer engine, heartbeat, one game launch adapter.
+3. `station-shell`: Tauri login/time-left UI, WebSocket client, IPC client, reconnect states. Tauri’s maintained WebSocket support is enough for this client role without embedding your own socket stack in the UI layer.[^1]
+4. `manager-web`: station list, active session card, extend/stop controls, manual station refresh.
+
+The first end-to-end happy path should be: create session -> issue lease -> shell sends `session.apply_lease` -> service persists lease -> service launches game -> service emits ticks/events -> manager can extend or stop the session. The Windows service piece is worth doing early because Rust already has a dedicated crate for service-style processes, and that decision affects install/update/permissions from day one.[^2]
+
+Would you like the next step as actual starter files — `docker-compose`, Prisma schema, NestJS module stubs, and Rust IPC type definitions?
+<span style="display:none">[^10][^11][^12][^13][^14][^15][^4][^5][^6][^7][^8][^9]</span>
+
+<div align="center">⁂</div>
+
+[^1]: https://docs.rs/crate/tauri-plugin-websocket/latest
+
+[^2]: https://docs.rs/windows-services/0.26.1/windows_services/
+
+[^3]: https://fluxsec.red/communicating-from-hooked-syscall-rust
+
+[^4]: https://v2.tauri.app/plugin/websocket/
+
+[^5]: https://github.com/tauri-apps/tauri-plugin-websocket
+
+[^6]: https://v2.tauri.app/reference/javascript/websocket/
+
+[^7]: https://stackoverflow.com/questions/78840116/tauri-websocket-client-cant-run-together
+
+[^8]: https://lib.rs/crates/windows-services
+
+[^9]: https://blog.csdn.net/gitblog_00467/article/details/151251605
+
+[^10]: https://github.com/tauri-apps/tauri-plugin-websocket/blob/v1/README.md
+
+[^11]: https://users.rust-lang.org/t/how-to-do-inter-process-comunication/4441
+
+[^12]: https://github.com/tauri-apps/tauri/discussions/8992
+
+[^13]: https://users.rust-lang.org/t/windows-service-in-rust/137389
+
+[^14]: https://www.youtube.com/watch?v=BAOl0XGeQSM
+
+[^15]: https://docs.rs/crate/windows-services/latest
+
