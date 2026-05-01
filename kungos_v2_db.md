@@ -1,6 +1,6 @@
 # KungOS v2 — Database Source of Truth
 
-**Ground-truthed:** 2026-04-28  
+**Ground-truthed:** 2026-04-29 (verified against live databases)  
 **Sources:** PostgreSQL 16 introspection (`information_schema`), MongoDB 8 introspection (`KungOS_Mongo_One`), Django model scan (`rebellion/cafe/models.py`, `users/models.py`, etc.), kuro-gaming-dj-backend code scan  
 **Purpose:** Single authoritative reference for all database tables, collections, columns, constraints, indexes, and migration status  
 **Status:** ✅ Verified against live databases — no speculation
@@ -11,16 +11,19 @@
 
 | Aspect | Status |
 |---|---|
-| **PostgreSQL tables** | 35 tables across 4 schema areas — all verified via `information_schema` |
-| **MongoDB collections** | 30 collections, 68,441 documents in `KungOS_Mongo_One` |
+| **PostgreSQL tables** | 34 KungOS tables (users:8, platform:2, cafe:14, tenant:4, entity:4, careers:1, view:1) — 9 Django framework tables excluded |
+| **MongoDB collections** | 31 collections, 68,443 documents in `KungOS_Mongo_One` — 100% tenant-scoped |
 | **Cafe platform** | 14 `caf_platform_*` PostgreSQL tables (NOT MongoDB) — all implemented |
 | **Gaming integration** | 12/13 gaming collections MISSING from MongoDB; 5 gaming PG models NOT merged |
-| **Tenant fields** | 9/30 collections have `(bgcode, entity)` tenant fields; 21 lack them |
+| **Tenant fields** | ✅ All 31 collections have `(bgcode, entity, branch)` tenant fields — migration complete |
+| **PostgreSQL RLS** | ❌ NOT implemented — tenant isolation via app-level filtering (deferred to Phase 4) |
+| **Tenant indexes** | 31/31 collections have `(bgcode, entity)` compound index (including `bgData` ✅, `entities` ✅) |
+| **Tenant entity model** | ✅ New `tenant` app: `brands`, `entities`, `entity_branches`, `bg_entity_branches` with composite FK enforcement |
 | **DB name** | `KungOS_Mongo_One` (NOT `kuropurchase` as spec says) |
 
 ---
 
-## 1. PostgreSQL Schema — 35 Tables
+## 1. PostgreSQL Schema — 34 Tables (verified 2026-04-29)
 
 ### 1.1 Table Inventory by Schema Area
 
@@ -32,7 +35,7 @@
 | `users_accesslevel` | 55 | `id` | 50+ permission fields are **varchar** (not integer) |
 | `users_user_tenant_context` | 9 | `id` | Field is `scope` (NOT `scope_type`) |
 | `users_businessgroup` | 10 | `id` | Maps bg_code → db_name (legacy routing) |
-| `users_kurouser` | 36 | `id` | Extended user profile |
+| `users_kurouser` | 42 | `id` | Extended user profile — 6 new fields: `edit`, `paid_offs`, `phone_verified`, `businessgroups`, `primary_bg`, `festival_offs`, `roles` |
 | `users_phonemodel` | 4 | `id` | OTP verification |
 | `users_switchgroupmodel` | 4 | `id` | BG switching tokens |
 | `users_common_counters` | 3 | `id` | Legacy counter tracking |
@@ -71,6 +74,50 @@
 | `kungos_tenant_domain_config` | Domain routing |
 | `kungos_tenant_profile` | Tenant profile |
 | `kungos_tenant_templates` | Email/content templates |
+
+#### Tenant Entity Schema (4 tables) — `tenant` app
+
+| Table | PK | FKs | Notes |
+|---|---|---|---|
+| `brands` | `id` (BIGSERIAL) | — | Brand identity: `brand_code` (VARCHAR(8)), `brand_name` (VARCHAR(50)) |
+| `entities` | `id` (BIGSERIAL) | `brand_id` → brands.id (nullable) | Entity: `entity_code` (VARCHAR(8)), `entity_type` CHECK(trading/gaming/rentals/cafe), brand link |
+| `entity_branches` | `id` (BIGSERIAL) | — | Branch: `entity_code` + `branch_code` + `branch_name`, UNIQUE(entity_code, branch_code), UNIQUE(entity_code, branch_name) |
+| `bg_entity_branches` | `(bg_code, entity_code, branch_id)` composite | `branch_id` → entity_branches.id; composite FK `(entity_code, branch_id)` → entity_branches(entity_code, id) | BG↔Entity↔Branch junction. Composite FK enforces branch belongs to entity. |
+
+**Tenant scope view:** `tenant_scope_view` — flat view joining all 4 tables for tenant resolver queries.
+
+#### New Tenant Schema (4 tables) — `tenant` app, cascade code PKs
+
+> **Replaces legacy Brand/Entity/EntityBranch/BgEntityBranch** with normalized cascade-code model.
+> Legacy tables kept for backward compatibility during parallel run.
+
+| Table | PK | FKs | Notes |
+|---|---|---|---|
+| `tenant_business_groups` | `bg_code` (VARCHAR(10)) | — | Legal entity. Code = first 4 letters of legal name + seq (e.g. `KURO0001`). Fields: `legal_name`, `tax_gst`, `tax_pan`, `db_name`, `licence_type`, `licence_cert` |
+| `tenant_divisions` | `div_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Operational division (replaces Entity). Code = `bg_code_XXX` (e.g. `KURO0001_001`). Fields: `brand_name`, `type`, `dj_apps`, `ent_status_code`, `ent_op_code`, `logo_url` |
+| `tenant_branches` | `branch_code` (VARCHAR(30)) | `division` → tenant_divisions.div_code (`db_column='div_code'`) | Physical outlet. Code = `div_code_XXX` (e.g. `KURO0001_001_001`). Fields: `incharge_userid`, `pincode`, `inv_series_code`, `primary_bk` → tenant_bank_accounts |
+| `tenant_bank_accounts` | `bank_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Bank account per BG. Code = `bg_code_BK_XXX` (e.g. `KURO0001_BK_001`). Fields: `account_holder_name`, `account_type` |
+
+**Current data:**
+- 2 BusinessGroups: `KURO0001` (KURO CADENCE LLP), `DUNE0003` (DUNE LABS LLP)
+- 4 Divisions: `KURO0001_001` (Kuro Gaming), `_002` (Rebellion), `_003` (RenderEdge), `DUNE0003_001` (Rebellion)
+- 6 Branches across all divisions
+- Nazarick Labs (`BG0002`) removed — no longer active
+
+#### RBAC Tables (6 tables) — `users` app
+
+> **Replaces legacy `users_accesslevel`** (40+ varchar columns). All roles are user-created (no system roles).
+
+| Table | PK | FKs | Notes |
+|---|---|---|---|
+| `rbac_permissions` | `perm_code` (VARCHAR(50)) | — | Permission registry. 35 perms across modules: invoices, orders, products, inventory, sales, payments, financials, analytics, data, hr, admin |
+| `rbac_roles` | `role_code` (VARCHAR(30)) | `parent_role` → self (`db_column='parent_role_code'`, nullable) | User-created roles. `is_system` flag reserved (currently all False). Single-level inheritance via parent_role |
+| `rbac_role_permissions` | `(role_code, perm_code)` composite | FK → both parent tables | Permission level per role: 0=Revoked, 1=View, 2=Edit, 3=Supervisor |
+| `rbac_user_roles` | `id` (BIGSERIAL) | `userid` → CustomUser, `role` → rbac_roles | Role assignment scoped by `bg_code` + `division` (nullable = BG-wide). UNIQUE(userid, role, bg_code, division) |
+| `rbac_user_role_branches` | `(user_role_id, branch_code)` composite | FK → rbac_user_roles.id | Branch-level scoping for role assignments |
+| `rbac_user_permissions` | `(userid, perm_code, bg_code, division)` composite | FK → CustomUser.userid, rbac_permissions.perm_code | Direct permission overrides. Fields: `level`, `reason`, `expires_at`, `granted_by`. Partial UNIQUE index on NULL division |
+
+**Resolution engine:** `users/permissions.py` — `resolve_permission()` cascades: exact division → BG-wide → global. Max-level wins across all sources. Roles are always additive.
 
 ### 1.2 Critical Column Details (Verified via `information_schema.columns`)
 
@@ -310,7 +357,7 @@
 
 ---
 
-## 2. MongoDB Schema — 30 Collections, 68,441 Documents
+## 2. MongoDB Schema — 31 Collections, 68,443 Documents
 
 ### 2.1 Database
 
@@ -320,62 +367,64 @@
 
 ### 2.2 Collection Inventory
 
-#### Tenant-Scoped Collections (9 collections, 49,356 docs) — 100% bgcode/entity/branch
+#### Tenant-Scoped Collections (31 collections, 68,443 docs) — 100% bgcode/entity/branch ✅
 
-| Collection | Docs | bgcode | entity | branch | (bgcode,entity) index |
-|---|---|---|---|---|---|
-| `purchaseorders` | 15,216 | 0 null | ✅ | ✅ | ✅ |
-| `inwardpayments` | 21,026 | 0 null | ✅ | ✅ | ✅ |
-| `estimates` | 4,308 | 0 null | ✅ | ✅ | ✅ |
-| `misc` | 5,512 | 0 null | ✅ | ✅ | ✅ |
-| `products` | 82 | 0 null | ✅ | ✅ | ✅ |
-| `accounts` | 7 | 0 null | ✅ | ✅ | ✅ |
-| `players` | 117 | 0 null | ✅ | ✅ | ✅ |
-| `tournaments` | 3 | 0 null | ✅ | ✅ | ✅ |
-| `reb_users` | 1,982 | 0 null | ✅ | ✅ | ✅ |
+**All collections have been migrated.** The `restore_kuropurchase.py` management command populated `bgcode`, `entity`, and `branch` fields on every document during the kuropurchase → KungOS_Mongo_One migration.
+
+| Collection | Docs | bgcode | entity | branch | (bgcode,entity) index | Notes |
+|---|---|---|---|---|---|---|
+| `purchaseorders` | 15,216 | ✅ | ✅ | ✅ | ✅ | ~99.96% kurogaming |
+| `inwardpayments` | 21,026 | ✅ | ✅ | ✅ | ✅ | ~81% rebellion |
+| `estimates` | 4,308 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
+| `misc` | 5,512 | ✅ | ✅ | ✅ | ✅ | Mixed entity |
+| `products` | 82 | ✅ | ✅ | ✅ | ✅ | Retail products |
+| `accounts` | 7 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
+| `players` | 117 | ✅ | ✅ | ✅ | ✅ | Esports players |
+| `tournaments` | 3 | ✅ | ✅ | ✅ | ✅ | Esports tournaments |
+| `reb_users` | 1,982 | ✅ | ✅ | ✅ | ✅ | Rebellion users |
+| `kgorders` | 9,162 | ✅ | ✅ | ✅ | ✅ | Mixed (8561 rebellion, 601 kurogaming) |
+| `tporders` | 229 | ✅ | ✅ | ✅ | ✅ | TP orders |
+| `tpbuilds` | 123 | ✅ | ✅ | ✅ | ✅ | TP builds |
+| `serviceRequest` | 1,625 | ✅ | ✅ | ✅ | ✅ | Service requests |
+| `outward` | 754 | ✅ | ✅ | ✅ | ✅ | Outward documents |
+| `outwardInvoices` | 1,165 | ✅ | ✅ | ✅ | ✅ | Outward invoices |
+| `outwardCreditNotes` | 150 | ✅ | ✅ | ✅ | ✅ | Outward credit notes |
+| `paymentVouchers` | 3,459 | ✅ | ✅ | ✅ | ✅ | Payment vouchers |
+| `stock_register` | 194 | ✅ | ✅ | ✅ | ✅ | Stock register |
+| `indentpos` | 247 | ✅ | ✅ | ✅ | ✅ | Indent positions |
+| `indentproduct` | 1,490 | ✅ | ✅ | ✅ | ✅ | Indent products |
+| `employee_attendance` | 966 | ✅ | ✅ | ✅ | ✅ | Employee attendance |
+| `vendors` | 409 | ✅ | ✅ | ✅ | ✅ | Vendor records |
+| `teams` | 14 | ✅ | ✅ | ✅ | ✅ | Teams |
+| `presets` | 6 | ✅ | ✅ | ✅ | ✅ | Gaming presets |
+| `tourneyregister` | 56 | ✅ | ✅ | ✅ | ✅ | Tournament registrations |
+| `bgData` | 1 | ✅ | ✅ | ✅ | ✅ | BG metadata |
+| `inwardCreditNotes` | 106 | ✅ | ✅ | ✅ | ✅ | Inward credit notes |
+| `inwardDebitNotes` | 3 | ✅ | ✅ | ✅ | ✅ | Inward debit notes |
+| `inwardInvoices` | 16 | ✅ | ✅ | ✅ | ✅ | Inward invoices |
+| `outwardDebitNotes` | 13 | ✅ | ✅ | ✅ | ✅ | Outward debit notes |
 
 **Note:** `reb_users` (with underscore) — NOT `rebusers` (no underscore).
 
-#### Collections Without Tenant Fields (21 collections, 19,085 docs) — Phase 1 incomplete
+**Note:** `entities` collection (2 docs) — entity metadata (logo, contact, bill/shipping addresses) for kurogaming and rebellion. Has `bgcode`, `entity`, `branch` fields and compound index. Added after initial migration.
 
-| Collection | Docs | Notes |
-|---|---|---|
-| `kgorders` | 9,162 | Kuro Gaming orders — no tenant fields |
-| `tporders` | 229 | TP orders |
-| `tpbuilds` | 123 | TP builds |
-| `serviceRequest` | 1,625 | Service requests |
-| `outward` | 754 | Outward documents |
-| `outwardInvoices` | 1,165 | Outward invoices |
-| `outwardCreditNotes` | 150 | Outward credit notes |
-| `paymentVouchers` | 3,459 | Payment vouchers |
-| `stock_register` | 194 | Stock register |
-| `indentpos` | 247 | Indent positions |
-| `indentproduct` | 1,490 | Indent products |
-| `employee_attendance` | 966 | Employee attendance |
-| `vendors` | 409 | Vendor records |
-| `teams` | 14 | Teams |
-| `presets` | 6 | Gaming presets (no tenant fields) |
-| `tourneyregister` | 56 | Tournament registrations |
-| `bgData` | 1 | BG metadata |
-| `inwardCreditNotes` | 106 | Inward credit notes |
-| `inwardDebitNotes` | 3 | Inward debit notes |
-| `inwardInvoices` | 16 | Inward invoices |
-| `outwardDebitNotes` | 13 | Outward debit notes |
+**Migration note:** All tenant fields were populated by `restore_kuropurchase.py` during the kuropurchase → KungOS_Mongo_One migration. The legacy dump in `/home/chief/Coding-Projects/db/` contains pre-migration data (without `bgcode`/`branch`).
 
 ### 2.3 Entity Distribution
 
-**Total:** 68,441 docs across 2 entities only. **No legacy/None entity.**
+**Total:** 68,443 docs across 2 entities only. **No legacy/None entity.**
 
 | Entity | Docs | % |
 |---|---|---|
-| `kurogaming` | 38,905 | 56.8% |
-| `rebellion` | 29,536 | 43.2% |
+| `kurogaming` | 38,906 | 56.8% |
+| `rebellion` | 29,537 | 43.2% |
 
 **Per-collection breakdown (tenant-scoped collections):**
 
 | Collection | kurogaming | rebellion | Notes |
 |---|---|---|---|
 | `purchaseorders` | 15,210 (99.96%) | 6 (0.04%) | ~100% kurogaming |
+| `entities` | 1 (50.0%) | 1 (50.0%) | Entity metadata |
 | `inwardpayments` | 3,899 (18.6%) | 17,127 (81.4%) | ~81% rebellion |
 | `estimates` | 4,308 (100%) | 0 | 100% kurogaming |
 | `accounts` | 7 (100%) | 0 | 100% kurogaming |
@@ -470,36 +519,69 @@ The kuro-gaming-dj-backend defines these models but they are NOT in kteam-dj-chi
 
 ## 5. Tenant Field Coverage
 
-### 5.1 Collections WITH Tenant Fields (9 collections, 49,356 docs)
+### 5.1 Status: ALL 31 Collections Migrated ✅
 
-All have `(bgcode, entity)` compound index. **Zero documents with null/empty bgcode.**
+All 31 collections have `(bgcode, entity, branch)` fields on 100% of documents.
 
-| Collection | bgcode ✅ | entity ✅ | branch ✅ |
-|---|---|---|---|
-| `purchaseorders` | ✅ | ✅ | ✅ |
-| `inwardpayments` | ✅ | ✅ | ✅ |
-| `estimates` | ✅ | ✅ | ✅ |
-| `misc` | ✅ | ✅ | ✅ |
-| `products` | ✅ | ✅ | ✅ |
-| `accounts` | ✅ | ✅ | ✅ |
-| `players` | ✅ | ✅ | ✅ |
-| `tournaments` | ✅ | ✅ | ✅ |
-| `reb_users` | ✅ | ✅ | ✅ |
+**Migration completed via:** `python manage.py restore_kuropurchase --dump <file> --restore`
 
-### 5.2 Collections WITHOUT Tenant Fields (21 collections, 19,085 docs)
+**Compound index coverage:** 31/31 collections have `(bgcode, entity)` compound index — all complete ✅
 
-These legacy collections have NOT been migrated to include `bgcode`, `entity`, `branch` fields.
+### 5.2 Complete — All Compound Indices Added ✅
 
-**Order-related:** `kgorders`, `tporders`, `tpbuilds`, `outward`, `outwardInvoices`, `outwardCreditNotes`  
-**Financial:** `paymentVouchers`  
-**Inventory:** `stock_register`, `indentpos`, `indentproduct`  
-**Admin:** `employee_attendance`, `vendors`, `teams`, `bgData`  
-**Service:** `serviceRequest`, `tourneyregister`  
-**Other:** `inwardInvoices`, `outwardDebitNotes`, `inwardCreditNotes`
+All 31 collections now have `(bgcode, entity)` compound indexes. No remaining actions.
 
 ---
 
-## 6. Management Commands
+## 6. Constraints & Security Status
+
+### 6.1 PostgreSQL RLS — NOT IMPLEMENTED ⚠️
+
+**Status:** Zero tables have RLS enabled. Zero RLS policies exist.
+
+Tenant isolation in PostgreSQL relies entirely on **application-level filtering** (tenant context in views, `TenantCollection` wrapper for MongoDB). This is a known gap — RLS was planned in Phase 1 P0 #3 but deferred.
+
+**Risk:** A rogue query or ORM bypass could access other tenants' data at the DB level.
+
+**Recommendation:** Implement RLS on all tenant-scoped tables before production cutover, or document that app-level filtering is the enforced strategy.
+
+### 6.2 CHECK Constraints
+
+| Table | Constraint | Status |
+|---|---|---|
+| `users_customuser` | Boolean fields (is_active, is_staff, etc.) | ✅ Enforced by boolean type (no explicit CHECK needed) |
+| `entities` | `entity_type IN ('trading', 'gaming', 'rentals', 'cafe')` | ✅ Added 2026-04-29 |
+
+### 6.3 Legacy Tables Removed
+
+| Table | Action | Date |
+|---|---|---|
+| `knox_authtoken` | **DROPPED** — Knox auth removed from INSTALLED_APPS, 129 stale rows purged | 2026-04-29 |
+
+### 6.4 Undocumented Tables (Excluded from This Doc)
+
+| Table | Cols | Purpose | Notes |
+|---|---|---|---|
+| `careers_jobapps` | 21 | Careers/jobs app | KungOS app table, not yet documented |
+| `auth_group` | 2 | Django auth groups | Framework table |
+| `auth_group_permissions` | 3 | Django auth | Framework table |
+| `auth_permission` | 4 | Django auth | Framework table |
+| `django_admin_log` | 8 | Django admin | Framework table |
+| `django_content_type` | 3 | Django ORM | Framework table |
+| `django_migrations` | 4 | Django migrations | Framework table |
+| `django_session` | 3 | Django sessions | Framework table |
+| `token_blacklist_blacklistedtoken` | 3 | JWT blacklist | Framework table |
+| `token_blacklist_outstandingtoken` | 6 | JWT outstanding | Framework table |
+
+### 6.5 MongoDB Extra Databases
+
+| Database | Collections | Purpose |
+|---|---|---|
+| `tmp` | `mongo_backup` | Backup staging area |
+
+---
+
+## 7. Management Commands
 
 | Command | Purpose | DB Target |
 |---|---|---|
@@ -510,7 +592,7 @@ These legacy collections have NOT been migrated to include `bgcode`, `entity`, `
 
 ---
 
-## 7. References
+## 8. References
 
 | Document | Purpose |
 |---|---|
@@ -523,5 +605,7 @@ These legacy collections have NOT been migrated to include `bgcode`, `entity`, `
 
 ---
 
-**Last verified:** 2026-04-28 against live PostgreSQL 16 and MongoDB 8 databases.  
-**Next verification:** Before any schema migration or gaming integration merge.
+**Last verified:** 2026-04-29 against live PostgreSQL 16 and MongoDB 8 databases.
+**Audit fixes applied 2026-04-29:** brand_slug corrected (BG0001→kurogaming), entities CHECK constraint added, knox_authtoken dropped, collection count updated to 31, bgData index confirmed present.  
+**Next verification:** Before any schema migration or gaming integration merge.  
+**Tenant field migration date:** 2026-04-23 (via `restore_kuropurchase.py` management command)

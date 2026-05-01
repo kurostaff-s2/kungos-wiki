@@ -1580,7 +1580,8 @@ The Orders module currently has **17+ fragmented pages** scattered across the na
 └─────────────────────────────────────────────────────┘
 ```
 
-**📦 HR** — Overview, Employees, Attendance, Salaries, Job Apps, Access Levels, Business Groups
+**📦 HR** — Overview, Employees, Attendance, Salaries, Job Apps, Business Groups
+**📦 Tenant** — Brands, Entities, Assignments, **Roles** (RBAC), **User Access** (role assignment + direct perms)
 
 **📦 Users** — Users, User Detail, User Orders
 
