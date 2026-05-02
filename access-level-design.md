@@ -11,7 +11,7 @@ Single source of truth for access control architecture, migration plan, and impl
 Accesslevel (40+ columns):
   userid       → FK to CustomUser
   bg_code      → Business Group scope
-  entity       → Entity scope (label like "rebellion")
+  division     → Division scope (div_code like "KURO0001_002")
   branches     → JSON array of allowed branches
   inward_invoices    INTEGER (0=none, 1=view, 2=edit, 3=admin)
   outward_invoices   INTEGER
@@ -33,7 +33,7 @@ BG switch → bgSwitch POST returns only current BG's access levels → Redux up
 | Function | What it does | Problem |
 |---|---|---|
 | `business_accesslevel()` | Clones permissions from template JSON file to new user | Static `accesslevels.json` must be manually updated for every new permission |
-| `entity_accesslevel()` | Bulk-creates zero-permission rows for all employees when entity is added | Creates N×M rows (employees × entities) — bloats DB |
+| `entity_accesslevel()` | Bulk-creates zero-permission rows for all employees when division is added | Creates N×M rows (employees × divisions) — bloats DB |
 | `bgSwitch` POST | Returns access levels for switched BG | Only returns current BG's levels → frontend loses other BG permissions |
 | `useNavAccess()` | Frontend permission checker with KEY_ALIAS mapping | Fragile manual mapping between sidebar keys and backend field names |
 
@@ -59,13 +59,13 @@ Every user gets individual permissions. To give 10 new employees the same "Store
 **Impact:** Doesn't scale beyond ~50 users. No standard roles ("Staff", "Manager", "Admin").
 
 ### 3. Row Duplication
-User with access to 3 entities = 3 Accesslevel rows, each with all 40 columns duplicated.
-100 users × 3 entities = 300 rows × 40 columns = **12,000 permission cells** in the DB.
+User with access to 3 divisions = 3 Accesslevel rows, each with all 40 columns duplicated.
+100 users × 3 divisions = 300 rows × 40 columns = **12,000 permission cells** in the DB.
 
 ### 4. Mixed Storage Patterns
 - Permissions: Flat integer columns
 - Branches: JSON array
-- Entities scope: Single varchar column (one entity per row)
+- Division scope: Single varchar column (one division per row, stores div_code)
 - Business groups: Derived from bg_code column
 
 No consistent pattern. Hard to query "what does user X have access to?" across all dimensions.
@@ -98,7 +98,7 @@ If backend renames `inward_payments` → `incoming_payments`, frontend breaks si
                      │ userid    │
                      │ role_code │
                      │ bg_code   │ (nullable — NULL = global)
-                     │ entity    │ (nullable — NULL = all entities)
+                     │ division  │ (nullable — NULL = all divisions)
                      │ assigned_by│
                      │ assigned_at│
                      └────┬──────┘
@@ -115,7 +115,7 @@ If backend renames `inward_payments` → `incoming_payments`, frontend breaks si
               │ perm_code        │
               │ level            │
               │ bg_code (nullable)│
-              │ entity (nullable)│
+              │ division (nullable)│
               │ reason           │  ← required justification
               │ granted_by       │
               │ granted_at       │
@@ -209,14 +209,14 @@ assigned_by    FK → CustomUser
 assigned_at    TIMESTAMP
 ```
 
-> **NULL Uniqueness:** Standard `UNIQUE(userid, role_code, bg_code, entity)` does NOT prevent duplicates when `bg_code` or `entity` is NULL (PostgreSQL/MySQL treat `NULL != NULL`). Use partial indexes:
+> **NULL Uniqueness:** Standard `UNIQUE(userid, role_code, bg_code, division)` does NOT prevent duplicates when `bg_code` or `division` is NULL (PostgreSQL/MySQL treat `NULL != NULL`). Use partial indexes:
 > ```sql
 > CREATE UNIQUE INDEX uq_user_roles_global ON user_roles (userid, role_code)
->   WHERE bg_code IS NULL AND entity IS NULL;
+>   WHERE bg_code IS NULL AND division IS NULL;
 > CREATE UNIQUE INDEX uq_user_roles_bg ON user_roles (userid, role_code, bg_code)
->   WHERE bg_code IS NOT NULL AND entity IS NULL;
-> CREATE UNIQUE INDEX uq_user_roles_entity ON user_roles (userid, role_code, bg_code, entity)
->   WHERE bg_code IS NOT NULL AND entity IS NOT NULL;
+>   WHERE bg_code IS NOT NULL AND division IS NULL;
+> CREATE UNIQUE INDEX uq_user_roles_division ON user_roles (userid, role_code, bg_code, division)
+>   WHERE bg_code IS NOT NULL AND division IS NOT NULL;
 > ```
 
 ### 5.5 UserRoleBranch — Normalized Branch Scoping
@@ -245,11 +245,11 @@ expires_at     TIMESTAMP         — NULL = permanent; set for temporary grants
 > **Partial indexes** (same NULL pattern as UserRole):
 > ```sql
 > CREATE UNIQUE INDEX uq_user_perms_global ON user_permissions (userid, perm_code)
->   WHERE bg_code IS NULL AND entity IS NULL;
+>   WHERE bg_code IS NULL AND division IS NULL;
 > CREATE UNIQUE INDEX uq_user_perms_bg ON user_permissions (userid, perm_code, bg_code)
->   WHERE bg_code IS NOT NULL AND entity IS NULL;
-> CREATE UNIQUE INDEX uq_user_perms_entity ON user_permissions (userid, perm_code, bg_code, entity)
->   WHERE bg_code IS NOT NULL AND entity IS NOT NULL;
+>   WHERE bg_code IS NOT NULL AND division IS NULL;
+> CREATE UNIQUE INDEX uq_user_perms_division ON user_permissions (userid, perm_code, bg_code, division)
+>   WHERE bg_code IS NOT NULL AND division IS NOT NULL;
 > ```
 
 > Use `level = 0` to **explicitly revoke** a permission that a role would otherwise grant.
@@ -269,7 +269,7 @@ expires_at     TIMESTAMP         — NULL = permanent; set for temporary grants
 ```python
 from django.utils import timezone
 
-def resolve_permission(userid, perm_code, bg_code=None, entity=None):
+def resolve_permission(userid, perm_code, bg_code=None, division=None):
     """
     Returns {"level": int, "source": str} for a user+permission+scope.
     Checks user overrides first, then aggregates max level across all matching roles.
@@ -277,7 +277,7 @@ def resolve_permission(userid, perm_code, bg_code=None, entity=None):
 
     # --- Step 1: Check direct user_permissions override (checked FIRST) ---
     override = UserPermission.objects.filter(
-        userid=userid, perm_code=perm_code, bg_code=bg_code, entity=entity,
+        userid=userid, perm_code=perm_code, bg_code=bg_code, division=division,
     ).filter(
         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
     ).first()
@@ -288,9 +288,9 @@ def resolve_permission(userid, perm_code, bg_code=None, entity=None):
 
     # --- Step 2: Collect all applicable role assignments (scope cascade) ---
     scopes = [
-        {"bg_code": bg_code, "entity": entity},   # Exact scope match
-        {"bg_code": bg_code, "entity": None},      # BG-wide
-        {"bg_code": None,    "entity": None},      # Global
+        {"bg_code": bg_code, "division": division},   # Exact scope match
+        {"bg_code": bg_code, "division": None},      # BG-wide
+        {"bg_code": None,    "division": None},      # Global
     ]
 
     max_level = 0
@@ -341,10 +341,10 @@ A user can hold multiple roles (e.g. `store_manager` at BG level and `super_admi
 
 ## 7. Edge Cases — Conflict Resolution
 
-### Scenario: Two Entity-Scoped Roles Conflict
+### Scenario: Two Division-Scoped Roles Conflict
 ```
 User: KCAD002
-Scope: bg_code=KURO0001, entity=rebellion
+Scope: bg_code=KURO0001, division=KURO0001_002
 
 Role 1: cashier        → invoices.outward = 0 (no access)
 Role 2: store_manager  → invoices.outward = 2 (edit)
@@ -367,9 +367,9 @@ INCOMPATIBLE_ROLES = {
     frozenset({'viewer', 'super_admin'}),
 }
 
-def validate_role_assignment(userid, role_code, bg_code, entity):
+def validate_role_assignment(userid, role_code, bg_code, division):
     existing = UserRole.objects.filter(
-        userid=userid, bg_code=bg_code, entity=entity
+        userid=userid, bg_code=bg_code, division=division
     ).values_list('role_code', flat=True)
 
     for pair in INCOMPATIBLE_ROLES:
@@ -492,8 +492,8 @@ function hasLevel(permCode, minLevel) {
     "analytics.view":   {"level": 1, "source": "store_manager"}
   },
   "_roles": [
-    {"role_code": "store_manager", "bg_code": "KURO0001", "entity": null},
-    {"role_code": "super_admin",   "bg_code": "KURO0001", "entity": "rebellion"}
+    {"role_code": "store_manager", "bg_code": "KURO0001", "division": null},
+    {"role_code": "super_admin",   "bg_code": "KURO0001", "division": "KURO0001_002"}
   ],
   "_overrides": [
     {
@@ -503,9 +503,9 @@ function hasLevel(permCode, minLevel) {
       "expires_at": "2026-05-15T00:00:00Z"
     }
   ],
-  "_branches": {
-    "kurogaming": ["Madhapur"],
-    "rebellion":  ["Madhapur", "LB Nagar"]
+  "_divisions": {
+    "KURO0001_001": ["Madhapur"],
+    "KURO0001_002":  ["Madhapur", "LB Nagar"]
   }
 }
 ```
@@ -516,7 +516,7 @@ function hasLevel(permCode, minLevel) {
 
 ## 11. Role Explosion Risk
 
-As BGs and entities grow, avoid creating one role per business unit variant (e.g. `store_manager_kuro`, `store_manager_rebellion`). Use **scoped role assignments** instead — the same `store_manager` role assigned with different `bg_code`/`entity` values. Only create new roles when the **permission set itself** genuinely differs.
+As BGs and divisions grow, avoid creating one role per business unit variant (e.g. `store_manager_kuro`, `store_manager_rebellion`). Use **scoped role assignments** instead — the same `store_manager` role assigned with different `bg_code`/`division` values. Only create new roles when the **permission set itself** genuinely differs.
 
 > **Guideline:** No system roles exist. Admins create roles freely via `/tenant/roles` UI. Typical pattern: create a "Store Manager" role with permissions for orders, inventory, invoices, etc., then assign it to users at BG or division scope.
 
@@ -567,7 +567,7 @@ All tenant identifiers use **cascade codes** derived from the legal entity name:
 - ~~Prerequisite: Signed-off mismatch report showing <1% discrepancies~~
 - ~~Switch all backend permission checks to new resolution algorithm~~
 - ~~Deprecate Accesslevel model (keep as read-only audit table)~~
-- ~~Remove old endpoints (`business_accesslevel()`, `entity_accesslevel()`)
+- ~~Remove old endpoints (`business_accesslevel()` rewritten for Division model, `entity_accesslevel()` param renamed to `division`)
 - ~~Enable Redis cache invalidation hooks on role/permission writes~~
 
 ### Phase 4: Cleanup — PENDING
@@ -608,7 +608,7 @@ All tenant identifiers use **cascade codes** derived from the legal entity name:
 | User exception handling | Impossible without cloning | `user_permissions` override with TTL |
 | "What can User X do?" | Query 3 rows × 40 cols | JOIN user_roles → role_permissions |
 | Audit "who changed what" | Impossible | Trivial (log role + override assignments) |
-| Multi-entity scaling | N rows per user | 1 row with entity=NULL |
+| Multi-division scaling | N rows per user | 1 row with division=NULL |
 | Permission check speed | Fast (single row fetch) | Needs Redis cache for equivalent perf |
 | Refactor risk | None | ~3 weeks, needs testing |
 | **Verdict** | ❌ Doesn't scale | ✅ Worth the investment |

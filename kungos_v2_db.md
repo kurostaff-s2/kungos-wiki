@@ -34,7 +34,7 @@
 | `users_customuser` | 16 | `userid` | CustomUser model, `USERNAME_FIELD='phone'` |
 | `users_accesslevel` | 55 | `id` | 50+ permission fields are **varchar** (not integer) |
 | `users_user_tenant_context` | 9 | `id` | Field is `scope` (NOT `scope_type`) |
-| `users_businessgroup` | 10 | `id` | Maps bg_code → db_name (legacy routing) |
+| `users_businessgroup` | 10 | `id` | **DELETED** — merged into `tenant_business_groups` (migration 0012) |
 | `users_kurouser` | 42 | `id` | Extended user profile — 6 new fields: `edit`, `paid_offs`, `phone_verified`, `businessgroups`, `primary_bg`, `festival_offs`, `roles` |
 | `users_phonemodel` | 4 | `id` | OTP verification |
 | `users_switchgroupmodel` | 4 | `id` | BG switching tokens |
@@ -75,28 +75,29 @@
 | `kungos_tenant_profile` | Tenant profile |
 | `kungos_tenant_templates` | Email/content templates |
 
-#### Tenant Entity Schema (4 tables) — `tenant` app
+#### ~~Tenant Entity Schema (4 tables)~~ — **DELETED**, replaced by cascade-code models
 
 | Table | PK | FKs | Notes |
 |---|---|---|---|
-| `brands` | `id` (BIGSERIAL) | — | Brand identity: `brand_code` (VARCHAR(8)), `brand_name` (VARCHAR(50)) |
-| `entities` | `id` (BIGSERIAL) | `brand_id` → brands.id (nullable) | Entity: `entity_code` (VARCHAR(8)), `entity_type` CHECK(trading/gaming/rentals/cafe), brand link |
-| `entity_branches` | `id` (BIGSERIAL) | — | Branch: `entity_code` + `branch_code` + `branch_name`, UNIQUE(entity_code, branch_code), UNIQUE(entity_code, branch_name) |
-| `bg_entity_branches` | `(bg_code, entity_code, branch_id)` composite | `branch_id` → entity_branches.id; composite FK `(entity_code, branch_id)` → entity_branches(entity_code, id) | BG↔Entity↔Branch junction. Composite FK enforces branch belongs to entity. |
+| ~~`brands`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — brand data folded into `tenant_divisions.brand_name/brand_code` |
+| ~~`entities`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — replaced by `tenant_divisions` |
+| ~~`entity_branches`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — replaced by `tenant_branches` |
+| ~~`bg_entity_branches`~~ | ~~composite~~ | — | **DELETED** (migration 0007) — replaced by FK chain `branch → division → bg` |
 
-**Tenant scope view:** `tenant_scope_view` — flat view joining all 4 tables for tenant resolver queries.
+> **`tenant_scope_view`** — **DROPPED** (migration 0004 created it, dropped during entity→division migration). No longer needed — division/branch FKs provide scope resolution.
 
-#### New Tenant Schema (4 tables) — `tenant` app, cascade code PKs
+#### Tenant Schema (5 tables) — `tenant` app, cascade code PKs
 
 > **Replaces legacy Brand/Entity/EntityBranch/BgEntityBranch** with normalized cascade-code model.
-> Legacy tables kept for backward compatibility during parallel run.
+> Legacy tables **deleted** (migration 0007).
 
 | Table | PK | FKs | Notes |
 |---|---|---|---|
-| `tenant_business_groups` | `bg_code` (VARCHAR(10)) | — | Legal entity. Code = first 4 letters of legal name + seq (e.g. `KURO0001`). Fields: `legal_name`, `tax_gst`, `tax_pan`, `db_name`, `licence_type`, `licence_cert` |
-| `tenant_divisions` | `div_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Operational division (replaces Entity). Code = `bg_code_XXX` (e.g. `KURO0001_001`). Fields: `brand_name`, `type`, `dj_apps`, `ent_status_code`, `ent_op_code`, `logo_url` |
-| `tenant_branches` | `branch_code` (VARCHAR(30)) | `division` → tenant_divisions.div_code (`db_column='div_code'`) | Physical outlet. Code = `div_code_XXX` (e.g. `KURO0001_001_001`). Fields: `incharge_userid`, `pincode`, `inv_series_code`, `primary_bk` → tenant_bank_accounts |
-| `tenant_bank_accounts` | `bank_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Bank account per BG. Code = `bg_code_BK_XXX` (e.g. `KURO0001_BK_001`). Fields: `account_holder_name`, `account_type` |
+| `tenant_business_groups` | `bg_code` (VARCHAR(10)) | — | Legal entity. Code = first 4 letters of legal name + seq (e.g. `KURO0001`). Fields: `bg_label`, `legal_name`, `tax_gst`, `tax_pan`, `db_name`, `licence_type`, `licence_cert` |
+| `tenant_divisions` | `div_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Operational division (replaces Entity). Code = `bg_code_XXX` (e.g. `KURO0001_001`). Fields: `div_label`, `brand_code`, `brand_name`, `type`, `dj_apps`, `ent_status_code`, `ent_op_code`, `logo_url` |
+| `tenant_branches` | `branch_code` (VARCHAR(30)) | `division` → tenant_divisions.div_code (`db_column='div_code'`) | Physical outlet. Code = `div_code_XXX` (e.g. `KURO0001_001_001`). Fields: `branch_label`, `branch_name`, `incharge_userid`, `pincode`, `inv_series_code`, `primary_bk` → tenant_bank_accounts |
+| `tenant_bank_accounts` | `bank_code` (VARCHAR(20)) | `bg` → tenant_business_groups.bg_code (`db_column='bg_code'`) | Bank account per BG. Code = `bg_code_BK_XXX` (e.g. `KURO0001_BK_001`). Fields: `bk_label`, `bank_name`, `account_holder_name`, `account_type` |
+| `tenant_division_addresses` | `address_code` (VARCHAR(30)) | `division` → tenant_divisions.div_code (`db_column='div_code'`) | Bill/shipping addresses per division. Code = `div_code_TYPE_XXX` (e.g. `KURO0001_001_BILL_001`). Fields: `address_type` (bill/ship/registered/office/warehouse/other), `label`, `address_line1/2`, `city`, `state`, `country`, `pincode`, `phone_no`, `is_default` |
 
 **Current data:**
 - 2 BusinessGroups: `KURO0001` (KURO CADENCE LLP), `DUNE0003` (DUNE LABS LLP)
@@ -131,8 +132,7 @@
 | `email` | varchar | NULL | — | UNIQUE + indexed |
 | `name` | varchar | NOT NULL | — | |
 | `password` | varchar | NOT NULL | — | |
-| `usertype` | varchar | NULL | — | |
-| `user_status` | varchar | NULL | — | |
+| ~~`usertype`~~ | ~~varchar~~ | **DEPRECATED** (migration 0010) — removed from model code || `user_status` | varchar | NULL | — | |
 | `last_login` | timestamptz | NULL | — | |
 | `is_active` | boolean | NOT NULL | — | CHECK constraint |
 | `is_staff` | boolean | NOT NULL | — | CHECK constraint |
@@ -151,7 +151,7 @@
 | `analytics` | **integer** | Only int field besides id |
 | `branches` | jsonb | Entity branches array |
 | `bg_code` | varchar | Business group |
-| `entity` | varchar | Entity name |
+| `division` | varchar | Division code (was `entity`). Stores div_code like `KURO0001_001` (was brand slug like `kurogaming`) |
 | `userid` | varchar | User reference |
 | `inward_invoices` | varchar | Permission field (string) |
 | `inward_creditnotes` | varchar | Permission field (string) |
@@ -212,7 +212,7 @@
 | `id` | bigint | NOT NULL | PRIMARY KEY |
 | `userid` | varchar | NOT NULL | Index: `usr_tenant_uid_bg` (composite with bg_code) |
 | `bg_code` | varchar | NOT NULL | Index: composite + standalone |
-| `entity` | jsonb | NOT NULL | Multi-entity context |
+| `division` | jsonb | NOT NULL | Division context (was `entity`) |
 | `branches` | jsonb | NOT NULL | Branch array |
 | `token_key` | varchar | NULL | |
 | `scope` | varchar | NOT NULL | **NOT `scope_type`** — confirmed |
@@ -371,7 +371,7 @@
 
 **All collections have been migrated.** The `restore_kuropurchase.py` management command populated `bgcode`, `entity`, and `branch` fields on every document during the kuropurchase → KungOS_Mongo_One migration.
 
-| Collection | Docs | bgcode | entity | branch | (bgcode,entity) index | Notes |
+| Collection | Docs | bgcode | division | branch_code | (bgcode,division) index | Notes |
 |---|---|---|---|---|---|---|
 | `purchaseorders` | 15,216 | ✅ | ✅ | ✅ | ✅ | ~99.96% kurogaming |
 | `inwardpayments` | 21,026 | ✅ | ✅ | ✅ | ✅ | ~81% rebellion |
@@ -406,22 +406,27 @@
 
 **Note:** `reb_users` (with underscore) — NOT `rebusers` (no underscore).
 
-**Note:** `entities` collection (2 docs) — entity metadata (logo, contact, bill/shipping addresses) for kurogaming and rebellion. Has `bgcode`, `entity`, `branch` fields and compound index. Added after initial migration.
+**Note:** `entities` collection (2 docs) — legacy entity metadata for kurogaming and rebellion. Has `bgcode`, `division`, `branch_code` fields. Bill/shipping address data migrated to `tenant_division_addresses` table.
 
 **Migration note:** All tenant fields were populated by `restore_kuropurchase.py` during the kuropurchase → KungOS_Mongo_One migration. The legacy dump in `/home/chief/Coding-Projects/db/` contains pre-migration data (without `bgcode`/`branch`).
 
-### 2.3 Entity Distribution
+### 2.3 Division Distribution (was Entity Distribution)
 
-**Total:** 68,443 docs across 2 entities only. **No legacy/None entity.**
+**Total:** 68,443 docs across 4 divisions. MongoDB `division` field stores div_code cascade codes (not brand slugs). Old brand_slug values (`kurogaming`, `rebellion`) migrated to div_codes (`KURO0001_001`, `KURO0001_002`, `KURO0001_003`, `DUNE0003_001`).
 
-| Entity | Docs | % |
-|---|---|---|
-| `kurogaming` | 38,906 | 56.8% |
-| `rebellion` | 29,537 | 43.2% |
+| Division (div_code) | Brand Code | Docs | % |
+|---|---|---|---|
+| `KURO0001_001` | kurogaming | 15,216 | 22.2% |
+| `KURO0001_002` | rebellion | 17,127 | 25.0% |
+| `KURO0001_003` | renderedge | 0 | 0% |
+| `DUNE0003_001` | rebellion | 36,099 | 52.8% |
+| **Total** | — | **68,443** | **100%** |
+
+> **Note:** Division distribution differs from the old entity distribution because the migration split brand_slug `rebellion` into two divisions: `KURO0001_002` (KURO CADENCE LLP) and `DUNE0003_001` (DUNE LABS LLP).
 
 **Per-collection breakdown (tenant-scoped collections):**
 
-| Collection | kurogaming | rebellion | Notes |
+| Collection | KURO0001_001 (kurogaming) | KURO0001_002 (rebellion) | Notes |
 |---|---|---|---|
 | `purchaseorders` | 15,210 (99.96%) | 6 (0.04%) | ~100% kurogaming |
 | `entities` | 1 (50.0%) | 1 (50.0%) | Entity metadata |
@@ -521,7 +526,7 @@ The kuro-gaming-dj-backend defines these models but they are NOT in kteam-dj-chi
 
 ### 5.1 Status: ALL 31 Collections Migrated ✅
 
-All 31 collections have `(bgcode, entity, branch)` fields on 100% of documents.
+All 31 collections have `(bgcode, division, branch_code)` fields on 100% of documents. Field rename: `entity` → `division` (value changed from brand slug to div_code), `branch` → `branch_code`.
 
 **Migration completed via:** `python manage.py restore_kuropurchase --dump <file> --restore`
 
@@ -529,7 +534,7 @@ All 31 collections have `(bgcode, entity, branch)` fields on 100% of documents.
 
 ### 5.2 Complete — All Compound Indices Added ✅
 
-All 31 collections now have `(bgcode, entity)` compound indexes. No remaining actions.
+All 31 collections now have `(bgcode, division)` compound indexes. Old `(bgcode, entity)` indexes dropped. No remaining actions.
 
 ---
 
@@ -550,7 +555,7 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 | Table | Constraint | Status |
 |---|---|---|
 | `users_customuser` | Boolean fields (is_active, is_staff, etc.) | ✅ Enforced by boolean type (no explicit CHECK needed) |
-| `entities` | `entity_type IN ('trading', 'gaming', 'rentals', 'cafe')` | ✅ Added 2026-04-29 |
+| ~~`entities`~~ | ~~entity_type CHECK~~ | **DELETED** (migration 0007) — table dropped |
 
 ### 6.3 Legacy Tables Removed
 
@@ -586,7 +591,8 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 | Command | Purpose | DB Target |
 |---|---|---|
 | `backup_kuropurchase` | Pre-restore backup of all collections to JSON | `KungOS_Mongo_One` |
-| `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with entity population | `KungOS_Mongo_One` |
+| `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with division population | `KungOS_Mongo_One` |
+| `migrate_entity_to_division` | Rename `entity` → `division` (brand slug → div_code), `branch` → `branch_code`, rebuild indexes | `KungOS_Mongo_One` |
 
 **Note:** Command name says `kuropurchase` but targets `KungOS_Mongo_One`. The name is legacy from the spec.
 
@@ -605,7 +611,7 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 
 ---
 
-**Last verified:** 2026-04-29 against live PostgreSQL 16 and MongoDB 8 databases.
+**Last verified:** 2026-05-01 against live PostgreSQL 16 and MongoDB 8 databases.
 **Audit fixes applied 2026-04-29:** brand_slug corrected (BG0001→kurogaming), entities CHECK constraint added, knox_authtoken dropped, collection count updated to 31, bgData index confirmed present.  
-**Next verification:** Before any schema migration or gaming integration merge.  
-**Tenant field migration date:** 2026-04-23 (via `restore_kuropurchase.py` management command)
+**Next verification:** After gaming integration merge.  
+**Tenant field migration date:** 2026-04-23 (initial `bgcode`/`entity`/`branch` via `restore_kuropurchase.py`) → 2026-05-01 (entity→division rename via `migrate_entity_to_division.py`)

@@ -90,7 +90,7 @@ The following will be retired:
 
 ### 1. Tenant-first everywhere
 
-Tenant context is a platform concern, not a view concern. Every request, query, event, job, and write path must carry `bg_code`, `entity`, and `branch` scope explicitly. Data access must fail closed when that scope is missing.
+Tenant context is a platform concern, not a view concern. Every request, query, event, job, and write path must carry `bg_code`, `division`, and `branch_code` scope explicitly. Data access must fail closed when that scope is missing.
 
 ### 2. Observable by default
 
@@ -242,7 +242,7 @@ kteam-dj-chief (unified backend)
 
 ### MongoDB tenancy target
 
-Move from one MongoDB database per Business Group to a single MongoDB database (`kuropurchase`) with `bgcode`, `entity`, and `branch` fields on documents. Supported by compound indexes: `(bgcode, entity)`, `(bgcode, entity, branch)`, `(bgcode, userid)`. Simplifies schema changes, backups, cross-BG aggregation, and query-level tenant enforcement.
+Move from one MongoDB database per Business Group to a single MongoDB database (`KungOS_Mongo_One`) with `bgcode`, `division`, and `branch_code` fields on documents. Supported by compound indexes: `(bgcode, division)`, `(bgcode, division, branch_code)`, `(bgcode, userid)`. Simplifies schema changes, backups, cross-BG aggregation, and query-level tenant enforcement.
 
 ---
 
@@ -254,7 +254,7 @@ The goals of this program are:
 - Eliminate the 9+ hardcoded credentials and critical security issues in the gaming backend before merge.
 - Remove upgrade-hostile and deprecated dependencies from the backend and frontend.
 - Replace duplicated access-control and pandas-based filtering with a centralized tenant-aware permission system.
-- Consolidate MongoDB tenancy routing from per-BG databases to query-level tenant filtering using `bgcode`, `entity`, and `branch`.
+- Consolidate MongoDB tenancy routing from per-BG databases to query-level tenant filtering using `bgcode`, `division`, and `branch_code`.
 - Integrate 5 gaming apps with 12 MongoDB collections, 25 API endpoints, and e-commerce functionality into the unified platform.
 - Reconcile user models between kteam-dj-chief and kuro-gaming-dj-backend (both use `CustomUser` but with different schemas).
 - Migrate the frontend toward modern server-state handling and safer auth/session management.
@@ -308,7 +308,7 @@ These workstreams are designed during the core program but implemented after cor
 
 ### Data model and tenancy
 
-- Tenant context expansion to include Business Group, entity, and branch scope in the active session model.
+- Tenant context expansion to include Business Group, division, and branch scope in the active session model.
 - MongoDB consolidation from one database per Business Group to a single database with tenant fields and compound indexes.
 - Add `bgcode` field to all 12 gaming MongoDB collections and all 5 gaming PostgreSQL models (Cart, Wishlist, Addresslist, Orders, OrderItems).
 - PostgreSQL RLS for tenant-scoped tables.
@@ -335,7 +335,7 @@ A production-ready migration tool has been implemented and deployed to support d
 ### Features
 
 - Parses MongoDB 8.0+ concurrent dump format (49.88 MB, 47,009 docs)
-- Populates `entity` field for tenant isolation (54.1% kurogaming, 37.8% rebellion, 7.9% legacy)
+- Populates `division` field for tenant isolation (migrated from brand slugs to div_code cascade codes)
 - Handles duplicate `_id`s gracefully (52 duplicates skipped during initial restore)
 - S3 support: `--s3-key s3://bucket/path/dump`
 - Confirmation prompts for safety: `--force` bypasses confirmation
@@ -359,25 +359,26 @@ python manage.py deploy_restore --s3-key s3://bucket/path/dump --verify
 python manage.py restore_kuropurchase --dump /path/to/dump --dry-run
 ```
 
-### Entity Distribution (from restore)
+### Division Distribution (from restore + entity→division migration)
 
-| Entity | Documents | Percentage |
-|---|---|---|
-| `kurogaming` | 25,428 | 54.1% |
-| `rebellion` | 17,787 | 37.8% |
-| `None` (legacy) | 3,734 | 7.9% |
+| Division (div_code) | Brand | Documents | Percentage |
+|---|---|---|---|
+| `KURO0001_001` | kurogaming | 15,216 | 22.2% |
+| `KURO0001_002` | rebellion | 17,127 | 25.0% |
+| `DUNE0003_001` | rebellion | 36,099 | 52.8% |
+| **Total** | — | **68,443** | **100%** |
 
 ### Collections Restored
 
-| Collection | Documents | Entity |
+| Collection | Documents | Division |
 |---|---|---|
-| `purchaseorders` | 15,366 | 100% kurogaming |
-| `inwardpayments` | 21,546 | 81.8% rebellion, 18.2% kurogaming |
-| `estimates` | 4,320 | 100% kurogaming |
-| `inwardInvoices` | 16 | 100% kurogaming |
-| `products` | 82 | 100% rebellion |
-| `outwardDebitNotes` | 13 | 100% kurogaming |
-| `misc` | 5,554 | mixed entities |
+| `purchaseorders` | 15,366 | KURO0001_001 |
+| `inwardpayments` | 21,546 | KURO0001_002 + DUNE0003_001 |
+| `estimates` | 4,320 | KURO0001_001 |
+| `inwardInvoices` | 16 | KURO0001_001 |
+| `products` | 82 | KURO0001_002 |
+| `outwardDebitNotes` | 13 | KURO0001_001 |
+| `misc` | 5,554 | mixed divisions |
 
 ### Rollback
 
@@ -476,7 +477,7 @@ gunicorn
 |---|---|---|---|
 | 1 | Tenant-context expansion defined + permission abstraction implemented | **Pandas removal** — cannot replace pandas filtering until central permission abstraction exists | Phase 1 P0 |
 | 2 | Tenant-context expansion + pandas removal | **MongoDB consolidation** — query-level tenant filtering must exist before per-BG routing removal | Phase 1 P0→P1 |
-| 3 | MongoDB consolidation: all documents migrated with `bgcode`, compound indexes created | **Removal of per-BG database routing** (`client[bg.db_name]`) | Phase 1 P1 |
+| 3 | MongoDB consolidation: all documents migrated with `bgcode`/`division`/`branch_code`, compound indexes created | **Removal of per-BG database routing** (`client[bg.db_name]`) | Phase 1 P1 |
 | 4 | Frontend cookie-readiness (tokens no longer from `localStorage`) | **SimpleJWT cutover** — switching auth without cookie-ready frontend causes login failures | Phase 2 P0→Phase 3 P0 |
 | 5 | PostgreSQL user model reconciliation | **Merged auth/session rollout** — activating JWT before user reconciliation causes token mismatches | Phase 1 P0→Phase 3 P0 |
 | 6 | MongoDB consolidation + per-BG routing removal | **Gaming multi-tenant integration (Phase 3b)** | Phase 3b |
@@ -497,7 +498,7 @@ Phase 0: Security remediation
     │       │                                          MongoDB consolidation (P0)
     │       │                                                  │
     │       │                                                  ▼
-    │       │                                          Per-BG routing removal (P1)
+    │       │                                          Per-BG routing removal (P1) + entity→division migration
     │       │                                                  │
     │       │                                                  ├──► Gaming multi-tenant (3b)
     │       │                                                  │          │
@@ -531,7 +532,7 @@ Phase 0: Security remediation
 | # | Prerequisite | Depends on it | Notes |
 |---|---|---|---|
 | 10 | Unified identity model: `CustomUser.phone` as universal key, wallet model created | **Cafe platform** — unified identity is foundation for walk-in registration, wallet billing, cross-brand linkage | Designed during core, implemented after Phase 4 |
-| 11 | Tenant context with `bg_code`, `entity`, `branch` | **Cafe platform** — station/session data must be tenant-scoped | Built in Phase 1 |
+| 11 | Tenant context with `bg_code`, `division`, `branch_code` | **Cafe platform** — station/session data must be tenant-scoped | Built in Phase 1 |
 | 12 | Shared wallet PostgreSQL model | **Cafe platform** — wallet bridges cafe, esports, retail | Designed during core, implemented after Phase 4 |
 | 13 | MongoDB consolidation with `bgcode` field | **Cafe platform** — new cafe collections need tenant filtering | Built in Phase 1 |
 | 14 | React Query + cookie-ready auth | **Cafe platform** — kiosk needs authenticated mode, dashboard needs real-time polling | Built in Phase 2 |
@@ -549,6 +550,9 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 | Knox auth retained in `REST_FRAMEWORK` | Phase 3 P0 #1 — SimpleJWT migration | Approved (per dependency chain #4) |
 | Debug/audit tools kept in codebase | Phase 4 — Testing | Approved — permanent debugging infrastructure |
 | `EmptyState` default icon `FileSearch` handled with `Icon.render` check | Phase 4 — Crash fixes | Fixed — commit `3395aed` |
+| Legacy `users_businessgroup` model deleted | Phase 1 — Tenant schema | Completed — merged into `tenant_business_groups` |
+| Brand/Entity/EntityBranch/BgEntityBranch models deleted | Phase 1 — Tenant schema | Completed — replaced by Division/Branch/DivisionAddress |
+| MongoDB entity→division field rename | Phase 1 — Data migration | Completed — 68,443 docs migrated |
 
 ### Debug & Audit Tooling
 
@@ -640,8 +644,8 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 
 | # | Task | Hours | Notes |
 |---|---|---:|---|
-| 1 | Expand `UserTenantContext` model: `user_id`, `bg_code`, `entity`, `branches`, `scope_type`, `permission_snapshot`, `switched_at`, `switched_by`, `request_defaults` | 4 | |
-| 2 | Define tenant scope semantics: `entity=null, branches=null` → full BG scope; `entity=set, branches=null` → entity scope; `entity=set, branches=set` → branch scope | 2 | |
+| 1 | Expand `UserTenantContext` model: `user_id`, `bg_code`, `division`, `branches`, `scope`, `permission_snapshot`, `switched_at`, `switched_by`, `request_defaults` | 4 | |
+| 2 | Define tenant scope semantics: `division=null, branches=null` → full BG scope; `division=set, branches=null` → division scope; `division=set, branches=set` → branch scope | 2 | |
 | 3 | Implement centralized tenant-aware permission abstraction (resolve scope once per request, apply without pandas) | 8 | |
 | 4 | Replace pandas-based permission filtering in 50+ locations with native ORM or query-layer logic | 16 | |
 | 5 | Add `bgcode` to MongoDB documents; prepare single-database tenancy migration | 3 | |
@@ -661,7 +665,7 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 |---|---|---:|---|
 | 1 | Migrate from per-BusinessGroup MongoDB databases to single database with tenant fields | 4 | |
 | 2 | Remove code that switches Mongo databases using `client[bg.db_name]` | 3 | |
-| 3 | Add PostgreSQL RLS for tenant-scoped tables | 6 | `SET app.current_bg_code`, policies with `current_setting()` |
+| 3 | Add PostgreSQL RLS for tenant-scoped tables (deferred — app-level filtering is current strategy) | 6 | `SET app.current_bg_code`, policies with `current_setting()` |
 | 4 | Replace direct `db["collection"]` access with `TenantCollection` repo by repo | 8 | |
 | 5 | Add CI grep/lint rule that blocks new raw collection usage outside approved infrastructure modules | 2 | |
 | 6 | Refactor large view modules (especially `kuroadmin/views.py` → `teams/`) into domain-specific files | 8 | |
@@ -775,7 +779,7 @@ Pages not yet migrated from `useEffect`+`axios` to React Query. These are primar
 |---|---|---:|---|
 | 1 | Implement `djangorestframework-simplejwt` and finalize JWT auth flows | 8 | |
 | 2 | Document and execute auth migration data strategy: Knox token invalidation, active session handling, re-login communication, failure fallback | 6 | |
-| 3 | Ensure token/session payloads carry tenant scope (`bg_code`, `entity`, `branches`), not only `bg_code` | 4 | |
+| 3 | Ensure token/session payloads carry tenant scope (`bg_code`, `division`, `branches`), not only `bg_code` | 4 | |
 | 4 | Copy gaming apps (`accounts`, `products`, `orders`, `payment`, `games`) into kteam-dj-chief and update `INSTALLED_APPS` | 6 | |
 | 5 | Create DRF serializers for all gaming models: `Cart`, `Wishlist`, `Addresslist`, `Orders`, `OrderItems`, product catalog, game catalog | 12 | |
 | 6 | Standardize error responses across both codebases — stop returning raw `traceback.format_exc()` | 3 | |
@@ -853,7 +857,7 @@ Pages not yet migrated from `useEffect`+`axios` to React Query. These are primar
 | 2 | Add `bgcode` field to all 12 gaming MongoDB documents (migration from Phase 1) | 4 | |
 | 3 | Create `TenantContextPermission` class for gaming endpoints | 3 | Similar to existing access control |
 | 4 | Add `Switchgroupmodel` awareness to product catalog — only show products for current BG | 3 | |
-| 5 | Add entity/branch routing to order creation — orders tied to specific entity | 3 | |
+| 5 | Add division/branch routing to order creation — orders tied to specific division | 3 | |
 | 6 | Add BG-scoped product listing — different BGs can have different catalogs | 3 | |
 | 7 | Add BG-scoped cart/wishlist/address isolation | 3 | |
 | 8 | Add BG-scoped order visibility — users only see orders from their BG | 3 | |
