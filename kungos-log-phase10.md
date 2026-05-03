@@ -181,9 +181,73 @@ tenant/models.py               — SCOPE_ENTITY→SCOPE_DIVISION, help_text clea
 
 ---
 
+## StatusBadge → shadcn Badge Migration
+
+**Goal:** Replace custom `StatusBadge` component with shadcn `Badge` across all pages.
+
+**Variant mapping:** `error` → `destructive`, `neutral` → `muted`, rest unchanged.
+
+### Commit `2c86f3e` — 26 files migrated
+
+| Section | Files | Instances |
+|---|---|---|
+| **Accounts** | CreditDebitNotes, Financials, ITCGST, InvoiceDetail, InvoicesList, PaymentVouchers, PurchaseOrders, VendorsList | 8 |
+| **Hr** | Dashboard, Employees, JobApps | 3 |
+| **Inventory** | Audit, AuditDetail, StockDetail, StockRegister, TPBuilds, TPBuildsDetail | 6 |
+| **Orders** | OrdersList | 1 |
+| **Products** | Presets, ProductDetail, ProductsList | 3 |
+| **ServiceRequests** | ServiceRequestsDetail | 1 |
+
+**Removed unused imports:** InvoiceDetail, OrderCreate, OrderDetail, TPBuildsNew, Stock (5 files)
+
+**Left as-is:** `cafe/SharedComponents.jsx` — local `StatusBadge` wrapper that already renders shadcn `Badge` internally
+
+### Commit `1aa2a4b` — Duplicate import fix
+
+`ProductDetail.jsx` had two Badge imports (from `@/components/ui/Badge` and `@/components/ui`). Removed the duplicate.
+
+---
+
+## Raw `<select>` → Radix `<Select>` Migration
+
+**Goal:** Replace all native `<select>/<option>` with Radix Select primitives (`SelectTrigger` + `SelectContent` + `SelectItem`) for consistency and accessibility.
+
+**Pattern change:** `onChange={(e) => handler(e.target.value)}` → `onValueChange={(v) => handler(v)}`
+
+### Commit `778aa47` — Batch 1 (7 files, 14 elements)
+
+| File | Selects | Fields |
+|---|---|---|
+| `OutwardInvoice.jsx` | 6 | division, collection, type, category, maker, tax_rate |
+| `InwardDebitNote.jsx` | 4 | division, gstin, pay_status, settled |
+| `CreateOutwardDNote.jsx` | 3 | division, vendor, gstin |
+| `SearchResults.jsx` | 1 | filter dropdown |
+| `CreatePaymentLink.jsx` | 1 | link expiry |
+| `EmployeesSalary.jsx` | 1 | division assignment |
+| `CreateEstimate.jsx` | 1 | division |
+
+### Commit `a3c1467` — Batch 2 (9 files, 29 elements)
+
+| File | Selects | Fields |
+|---|---|---|
+| `GenerateInvoice.jsx` | 12 | search type, comp collection/type/maker, prod collection/type/category/maker, tax_rate, division, billadd state, shpadd state |
+| `CreateTPBuild.jsx` | 5 | division, channel, preset type, 2× margin |
+| `InwardPayment.jsx` | 4 | 2× mode, 2× account (edit + add) |
+| `Hr/EmployeeAccessLevel.jsx` | 1 | permission level (dynamic color classes on SelectTrigger) |
+| `IndentList.jsx` | 2 | division, vendor |
+| `Inventory/Stock.jsx` | 1 | collection filter |
+| `cafe/PricingConfig.jsx` | 1 | tier |
+| `cafe/StationsList.jsx` | 2 | status filter, zone filter |
+| `CreatePO.jsx` | 1 | division |
+
+### Totals
+- **43 select elements** migrated across **16 files** (2 commits)
+- **Zero raw `<select>` elements remain** in `src/pages/`
+
+---
+
 ## Next
 - Phase 11: Sidebar quick-wins (A-F) from `side-nav-design.md`
 - Phase 12: Audit other pages for `useTenantQuery` double-`?` URL pattern
 - Phase 13: Broader e2e suite to confirm backend signature fixes
 - Audit remaining list pages for `pageSize` vs `defaultPageSize` prop alignment
-- Migrate any remaining raw `<select>` elements to Radix `<Select>` across codebase
