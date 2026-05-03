@@ -1,5 +1,19 @@
 # E2E Test TODO — Pages Modified on 2026-05-04
 
+---
+
+## Rules
+
+1. **Do not deviate from the UI design** — Tailwind + Radix + shadcn-ui is the approved stack. Every component must align with these primitives.
+2. **Always commit when a bug is fixed** — Small, atomic commits. Never batch multiple unrelated fixes.
+3. **Never roll back commits during E2E testing** — If a test fails, fix the code, don't revert the commit.
+4. **Don't make things more complex** — Simple fixes over clever solutions. Follow existing patterns.
+5. **Never deviate from the access level design** — `access-level-design.md` is the source of truth for RBAC.
+6. **Never deviate from the KungOS v2 plan** — `KungOS_v2.md` and `kungos_v2_db.md` are the source of truth for tenant architecture.
+7. **Always assume there is data in the DB** — If a page shows nothing, check the database first before assuming a code bug. When in doubt, query MongoDB/Postgres to confirm data exists.
+
+---
+
 **Commits:** `62d6907` → `a3c1467` (10 commits)
 **Scope:** Nomenclature cleanup, TDZ fixes, StatusBadge→Badge, select→Radix Select, Redux connect→useSelector, TanStack Table cell renderers
 
