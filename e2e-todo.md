@@ -12,6 +12,7 @@
 6. **Never deviate from the KungOS v2 plan** — `KungOS_v2.md` and `kungos_v2_db.md` are the source of truth for tenant architecture.
 7. **Always assume there is data in the DB** — If a page shows nothing, check the database first before assuming a code bug. When in doubt, query MongoDB/Postgres to confirm data exists.
 8. **Stick to the standardized naming nomenclature** — Use `tenant`, `BG`, `Division`, `Branch`. Never use `entity` in new code. Variables: `divs`, `accessibleDivs`, `filterByDiv`, `division_accesslevel`. Backend fields: `bg_code`, `division`, `branch`. Show **labels** to users, use **codes** for filtering/API calls.
+9. **E2E login credentials are in `.env.e2e` and `e2e/fixtures.js`** — Never hardcode credentials in test files. Use the fixtures for auth setup.
 
 ---
 
