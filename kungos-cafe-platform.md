@@ -26,8 +26,9 @@ This plan upgrades the existing **Rebellion esports platform** into a full **gam
 ### Key Design Decisions
 
 1. **Phone is the universal key** — Every identity traces to `CustomUser.phone` in PostgreSQL
-2. **Cafe data in PostgreSQL, esports data in MongoDB** — Station/sessions/wallets/games all in `caf_platform_*` PG tables; esports stays in `players`/`tournaments` MongoDB collections
-3. **Shared wallet in PostgreSQL** — Bridges cafe sessions, tournament prizes, and retail purchases
+2. **All cafe + esports data in PostgreSQL** — Station/sessions/wallets/games/players/tournaments all in `caf_platform_*` PG tables; MongoDB used only for high-volume operational data (products, stock, invoices)
+3. **Shared wallet in PostgreSQL** — Bridges cafe sessions, tournament prizes, and retail purchases. Owned via FK to `CafeWalkin` or `CafeUser` (not redundant tenant fields)
+4. **Walk-in identity** — `CafeWalkin` uses stable `walkin_id` (WLN0001) + tenant-scoped phone lookup. Same phone at different branches = different records
 4. **Walk-in mode (no login)** — Staff enters phone number → system finds/creates customer → starts session
 5. **JWT mode (registered)** — Customer logs in on kiosk → auto-billing from wallet
 
@@ -36,10 +37,11 @@ This plan upgrades the existing **Rebellion esports platform** into a full **gam
 **The cafe platform was implemented entirely in PostgreSQL — NOT in MongoDB.**
 
 The original design planned `stations`, `gamers`, `game_library`, `cafe_payments` as MongoDB collections. All were migrated to PostgreSQL `caf_platform_*` tables instead, because:
-- Relational integrity (FKs between stations→sessions→wallets)
+- Relational integrity (FKs between stations→sessions→wallets→walkins/users)
 - ACID transactions for session billing + wallet deduction
 - Complex queries (revenue reports, station utilization, session timelines)
 - Row-level locking for wallet balance updates
+- Esports data (players/teams/tournaments) has relational structure with clear FKs to identity — no MongoDB justification
 
 The 4 planned MongoDB collections were replaced by 14 PostgreSQL tables:
 
@@ -48,8 +50,8 @@ The 4 planned MongoDB collections were replaced by 14 PostgreSQL tables:
 - **Google Play Game Services (GPGS) integration** — user explicitly rejected this direction
 - **Senet integration** — user explicitly rejected this direction
 - **Migrating `reb_users` to PostgreSQL** — stays in MongoDB as lightweight staff lookup (confirmed)
-- **Migrating `players` to PostgreSQL** — stays in MongoDB as esports data distinct from auth users (confirmed)
 - **Cafe data in MongoDB** — all cafe data moved to PostgreSQL `caf_platform_*` tables (ground truth update)
+- **Esports data in MongoDB** — `players`, `teams`, `tournaments` moved to PostgreSQL `caf_platform_*` tables (relational, FK to identity)
 
 ---
 
@@ -98,9 +100,9 @@ The 4 planned MongoDB collections were replaced by 14 PostgreSQL tables:
 
 | Brand | Identity | Auth | Wallet | Cafe Data |
 |---|---|---|---|---|
-| **Kuro Gaming** (cafe) | `CustomUser.phone` | Walk-in (phone lookup) or JWT (registered) | `caf_platform_wallets` (shared) | `caf_platform_*` (14 PG tables) |
+| **Kuro Gaming** (cafe) | `CustomUser.phone` | Walk-in (`walkin_id` + tenant phone) or JWT (registered) | `caf_platform_wallets` (shared, FK to walkin/user) | `caf_platform_*` (14 PG tables) |
 | **RenderEdge** (retail) | `CustomUser.phone` | Same as above | `caf_platform_wallets` (shared) — can redeem at retail | `caf_platform_*` (14 PG tables) |
-| **Rebellion** (esports) | `CustomUser.phone` + `players` (MongoDB) | JWT required | `caf_platform_wallets` (shared) — tournament prizes | `caf_platform_*` (14 PG tables) + `players`/`tournaments` (MongoDB) |
+| **Rebellion** (esports) | `CustomUser.phone` + `TournamentPlayer` (PG) | JWT or walkin FK | `caf_platform_wallets` (shared) — tournament prizes | `caf_platform_*` (14 PG tables) + `caf_platform_tournament_players` (PG) |
 
 ### Three Layers of Delivery
 

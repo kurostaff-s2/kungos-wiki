@@ -601,6 +601,7 @@ def customer_register(request):
     """
     POST /api/v1/cafe/customer/register
     Tenant context: station_id → Station.cafe → Cafe.{bg_code, div_code, branch_code}
+    Walkin record persists tenant fields for isolation and lookup.
     """
     station = Station.objects.select_related('cafe').get(
         id=request.data['station_id']
@@ -609,12 +610,16 @@ def customer_register(request):
     div_code = station.cafe.div_code
     branch_code = station.cafe.branch_code
 
-    # Create walk-in customer scoped to this tenant
+    # Persist tenant scope on the walk-in record
     walkin = CafeWalkin.objects.create(
-        phone=request.data['phone'],
+        walkin_id=generate_walkin_id(),  # WLN0001, stable ID
+        primary_phone=request.data['phone'],
         name=request.data.get('name', ''),
+        bg_code=bg_code,
+        div_code=div_code,
+        branch_code=branch_code,
     )
-    # ... scoped to bg_code/div_code/branch_code
+    # ... proceed with session creation
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
@@ -622,6 +627,7 @@ def customer_lookup(request):
     """
     POST /api/v1/cafe/customer/lookup
     Tenant context: station_id → Station.cafe → Cafe.{bg_code, div_code, branch_code}
+    Results are branch-scoped — same phone at different branches returns different records.
     """
     station = Station.objects.select_related('cafe').get(
         id=request.data['station_id']
@@ -630,14 +636,17 @@ def customer_lookup(request):
     div_code = station.cafe.div_code
     branch_code = station.cafe.branch_code
 
-    # Lookup scoped to this tenant's cafes
+    # Lookup scoped to tenant — prevents cross-tenant phone leakage
     walkin = CafeWalkin.objects.filter(
-        phone=request.data['phone'],
+        primary_phone=request.data['phone'],
+        bg_code=bg_code,
+        div_code=div_code,
+        branch_code=branch_code,
     ).first()
-    # ... scoped to bg_code/div_code/branch_code
+    # ... return walk-in data or 404
 ```
 
-**Security note:** The whitelist is route-specific and method-restricted (POST only). GET requests to these routes still require authentication. The view must validate that `station_id` references an active station belonging to a valid tenant — no tenant leakage.
+**Security note:** The whitelist is route-specific and method-restricted (POST only). GET requests to these routes still require authentication. The view must validate that `station_id` references an active station belonging to a valid tenant — no tenant leakage. All public cafe endpoints must both derive tenant context from `station_id` and persist/filter against that same tenant scope in downstream records and queries.
 
 ### 5.2 MongoDB Tenant Filtering
 
@@ -664,7 +673,11 @@ class VendorRepository:
 
 ### 5.3 PostgreSQL Tenant Filtering
 
-**Rule:** All PostgreSQL queries use `bg_code` FK filtering. Row-Level Security (RLS) deferred to Phase 4.
+**General rule:** All PostgreSQL queries filter by tenant ownership fields. Every table carries at minimum `bg_code`. Row-Level Security (RLS) deferred to Phase 4.
+
+**Cafe-specific rule:** Cafe domain uses full tenant cascade (`bg_code` + `div_code` + `branch_code`) via `cafe__` FK lookups or direct tenant fields on tables without cafe FKs (`CafeWalkin`, `CafeUser`).
+
+**Denormalization contract:** Where tenant fields are copied to child tables (`Station.bg_code/div_code/branch_code` from `Cafe`), they are write-time denormalized and read-time indexed. The FK parent (`Station.cafe → Cafe`) is the authoritative source for tenant scope changes.
 
 ```python
 # repositories/cafe.py
@@ -683,6 +696,16 @@ class StationRepository:
         if branch_code:
             query['cafe__branch_code'] = branch_code
         return Station.objects.filter(**query).select_related('cafe')
+
+    @staticmethod
+    def lookup_walkin(phone: str, bg_code: str, div_code: str, branch_code: str):
+        # CafeWalkin has direct tenant fields (no cafe FK)
+        return CafeWalkin.objects.filter(
+            primary_phone=phone,
+            bg_code=bg_code,
+            div_code=div_code,
+            branch_code=branch_code,
+        ).first()
 ```
 
 ---
@@ -1713,7 +1736,35 @@ PostgreSQL caf_platform_* (14 tables):
 └── caf_platform_auth_tokens      — Auth token storage
 ```
 
-**Tenant fields:** Every `caf_platform_*` table carries `bg_code`. `Cafe` and `Station` carry full tenant cascade: `bg_code` → `div_code` → `branch_code`. Queries filter via `cafe__bg_code`, `cafe__div_code`, `cafe__branch_code`.
+**Tenant fields:** Every `caf_platform_*` table carries `bg_code`. Tables carry full tenant cascade or resolve via FK as shown below.
+
+**Per-table tenant strategy:**
+
+| Table | Tenant fields | Resolution | Notes |
+|-------|--------------|------------|-------|
+| `caf_platform_cafes` | `bg_code`, `div_code`, `branch_code` | Direct | Authoritative tenant source |
+| `caf_platform_stations` | `bg_code`, `div_code`, `branch_code` | Direct + `cafe` FK | Denormalized from Cafe |
+| `caf_platform_sessions` | `bg_code` | `cafe` FK, `station` FK | Full cascade via `session.cafe` |
+| `caf_platform_session_leases` | `bg_code` | `station` FK | Full cascade via `lease.station.cafe` |
+| `caf_platform_station_commands` | `bg_code` | `station` FK | Full cascade via `command.station.cafe` |
+| `caf_platform_station_events` | `bg_code` | `station` FK | Full cascade via `event.station.cafe` |
+| `caf_platform_price_plans` | `bg_code` | `cafe` FK | Full cascade via `plan.cafe` |
+| `caf_platform_member_plans` | `bg_code`, `div_code`, `branch_code` | Direct | Plans scoped to tenant |
+| `caf_platform_games` | `bg_code` | `cafe` FK | Full cascade via `game.cafe` |
+| `caf_platform_walkins` | `bg_code`, `div_code`, `branch_code` | Direct | No cafe FK — phone-keyed, tenant-scoped |
+| `caf_platform_wallets` | — | `walkin` FK or `user` FK | Tenant via owner, not stored redundantly |
+| `caf_platform_wallet_transactions` | — | `wallet` FK | Tenant via `transaction.wallet → walkin/user` |
+| `caf_platform_users` | `bg_code`, `div_code`, `branch_code` | Direct | Branch-registered cafe users |
+| `caf_platform_auth_tokens` | `bg_code` | `user` FK → CustomUser | Full cascade via `token.user` |
+
+**Wallet ownership model:** `CafeWallet` has two nullable FKs — `walkin` (`CafeWalkin`) and `user` (`CafeUser`) — with a `CheckConstraint` requiring exactly one. Tenant scope resolves through the owner relation, not stored redundantly on the wallet row. This avoids sync bugs when a person's branch changes.
+
+**Walk-in identity:** `CafeWalkin` uses `walkin_id` (stable, generated, e.g. `WLN0001`) as the primary lookup key. `primary_phone` + tenant fields have a composite `UniqueConstraint`. `secondary_phones` stored as JSON array. Same person at different branches = different records.
+
+**Uniqueness rules:**
+- `CafeWalkin`: `UniqueConstraint(['primary_phone', 'bg_code', 'div_code', 'branch_code'])`
+- `CafeWallet`: `UniqueConstraint(['walkin_id', 'bg_code'])` or `UniqueConstraint(['user_id', 'bg_code'])`
+- `CafeUser`: `UniqueConstraint(['user_id', 'bg_code', 'div_code', 'branch_code'])`
 
 **Rationale for PostgreSQL (not MongoDB):** Relational integrity (FKs between stations→sessions→wallets), ACID transactions for session billing + wallet deduction, complex queries (revenue reports, station utilization, session timelines), row-level locking for wallet balance updates.
 

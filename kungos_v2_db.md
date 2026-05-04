@@ -372,6 +372,59 @@ Replaces 4 MongoDB collections: `estimates`, `kgorders`, `tporders`, `serviceReq
 
 **Unique constraint:** `(cafe_id, code)`
 
+#### `caf_platform_walkins` (tenant-scoped walk-in customers)
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `id` | bigint | NOT NULL | PRIMARY KEY |
+| `walkin_id` | varchar | NOT NULL | UNIQUE — stable ID (e.g. WLN0001) |
+| `primary_phone` | varchar | NOT NULL | Lookup key (not unique globally) |
+| `secondary_phones` | jsonb | NOT NULL | Array of alternate phone numbers |
+| `name` | varchar | NOT NULL | |
+| `bg_code` | varchar | NOT NULL | Tenant: business group |
+| `div_code` | varchar | NOT NULL | Tenant: division |
+| `branch_code` | varchar | NOT NULL | Tenant: branch |
+| `created_at` | timestamptz | NOT NULL | |
+| `last_visit` | timestamptz | NULL | |
+
+**Unique constraint:** `(primary_phone, bg_code, div_code, branch_code)` — same phone at different branches = different records
+**Indexes:** `(bg_code, div_code, branch_code)`, `(walkin_id)`
+
+#### `caf_platform_wallets` (owner via FK, not redundant tenant fields)
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `id` | bigint | NOT NULL | PRIMARY KEY |
+| `wallet_id` | varchar | NOT NULL | UNIQUE — stable ID (e.g. WAL0001) |
+| `walkin_id` | varchar | NULL | FK → caf_platform_walkins.walkin_id (nullable) |
+| `user_id` | varchar | NULL | FK → caf_platform_users.user_id (nullable) |
+| `balance` | numeric(10,2) | NOT NULL | |
+| `status` | varchar | NOT NULL | active/suspended |
+| `created_at` | timestamptz | NOT NULL | |
+| `updated_at` | timestamptz | NOT NULL | |
+
+**Check constraint:** exactly one of `walkin_id` or `user_id` is NOT NULL — wallet always has one owner
+**Unique constraints:** `(walkin_id, bg_code)` where walkin_id IS NOT NULL, `(user_id, bg_code)` where user_id IS NOT NULL
+**Tenant resolution:** `wallet → walkin.bg_code/div_code/branch_code` OR `wallet → user.bg_code/div_code/branch_code`
+
+#### `caf_platform_users` (branch-registered cafe users)
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `id` | bigint | NOT NULL | PRIMARY KEY |
+| `user_id` | varchar | NOT NULL | UNIQUE — FK → users_customuser.userid |
+| `user_type` | varchar | NOT NULL | walk_in/member/admin/staff |
+| `display_name` | varchar | NOT NULL | |
+| `bg_code` | varchar | NOT NULL | Tenant: business group |
+| `div_code` | varchar | NOT NULL | Tenant: division |
+| `branch_code` | varchar | NOT NULL | Tenant: branch |
+| `status` | varchar | NOT NULL | active/suspended |
+| `created_at` | timestamptz | NOT NULL | |
+| `updated_at` | timestamptz | NOT NULL | |
+
+**Unique constraint:** `(user_id, bg_code, div_code, branch_code)` — one registration per tenant
+**Indexes:** `(bg_code, div_code, branch_code)`, `(user_id)`
+
 ### 1.3 Key Constraints (All Verified via `information_schema`)
 
 | Table | Constraint | Details |
@@ -393,6 +446,13 @@ Replaces 4 MongoDB collections: `estimates`, `kgorders`, `tporders`, `serviceReq
 | `caf_platform_sessions` | FK | `cafe_id`, `game_id`, `price_plan_id`, `station_id` |
 | `caf_platform_stations` | UNIQUE | `(cafe_id, code)` |
 | `caf_platform_stations` | FK | `cafe_id` → `caf_platform_cafes.id` |
+| `caf_platform_walkins` | UNIQUE | `(primary_phone, bg_code, div_code, branch_code)` |
+| `caf_platform_walkins` | PK | `id`, UNIQUE `walkin_id` |
+| `caf_platform_wallets` | CHECK | exactly one of `walkin_id` or `user_id` NOT NULL |
+| `caf_platform_wallets` | FK | `walkin_id` → `caf_platform_walkins.walkin_id` |
+| `caf_platform_wallets` | FK | `user_id` → `caf_platform_users.user_id` |
+| `caf_platform_users` | UNIQUE | `(user_id, bg_code, div_code, branch_code)` |
+| `caf_platform_users` | FK | `user_id` → `users_customuser.userid` |
 | `caf_platform_member_plans` | UNIQUE | `plan_id`, `tier` |
 
 ---
