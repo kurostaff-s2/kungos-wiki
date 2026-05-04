@@ -19,12 +19,14 @@
    - [6.2 Orders Domain](#62-orders-domain)
    - [6.3 Eshop Domain](#63-eshop-domain)
    - [6.4 Products Domain](#64-products-domain)
+     - [6.4.1 Asset Register Endpoint](#641-asset-register-endpoint)
    - [6.5 Vendors Domain](#65-vendors-domain)
    - [6.6 Teams Domain](#66-teams-domain)
    - [6.7 Cafe Domain](#67-cafe-domain)
    - [6.8 Esports Domain](#68-esports-domain)
    - [6.9 Search Domain](#69-search-domain)
    - [6.10 Shared Domain](#610-shared-domain)
+   - [6.11 Admin Domain (MongoDB)](#611-admin-domain-mongodb)
 7. [Migration Mapping](#7-migration-mapping)
 8. [Error Response Standard](#8-error-response-standard)
 9. [Pagination & Filtering](#9-pagination--filtering)
@@ -76,9 +78,10 @@
 | Export | `GET /accounts/export/inward-invoices?duration=month` |
 
 **Naming rules:**
-- Plural nouns for collections: `vendors`, `orders`, `invoices`
-- Kebab-case: `payment-vouchers`, `credit-notes`, `stock-audit`
-- No verbs in path: `GET /vendors` (not `GET /getVendors`)
+- Plural nouns for collections with `/list` suffix: `vendors/list`, `employees/list`
+- `/list` is a structural convention (not a verb) — signals a paginated collection endpoint
+- Kebab-case: `payment-vouchers`, `outward-credit-notes`, `stock-audit`
+- No action verbs in path: `GET /vendors/list` (not `GET /getVendors`)
 - HTTP method implies action: `POST` = create, `PATCH` = update, `DELETE` = remove
 
 ### 1.4 Versioning
@@ -112,7 +115,7 @@
 ├── auth/              # Authentication (login, logout, refresh, verify, pwdreset)
 ├── users/             # Identity & auth (me, profile, RBAC)
 ├── tenant/            # Multi-tenant config (business-groups, divisions, branches)
-├── admin/             # Sys Admin only (tenant bootstrap, templates, domains, api-keys)
+├── admin/             # Sys Admin only (tenant bootstrap, templates, domains, api-keys, mongo-admin)
 ├── accounts/          # Finance domain
 ├── orders/            # Orders domain (estimates, in-store, tp, service)
 ├── eshop/             # E-commerce domain (online retail orders)
@@ -406,7 +409,12 @@ def session_start(request):
     request.bg_code = station.cafe.bg_code
     request.division = station.cafe.div_code
     request.branch = station.cafe.branch_code  # tenant scoping
-    started_by = request.user.userid if request.user.is_authenticated else request.data.get('phone')
+    # Safe user resolution on AllowAny endpoint — request.user may be AnonymousUser
+    started_by = None
+    if request.user and request.user.is_authenticated:
+        started_by = getattr(request.user, 'userid', None)
+    if not started_by:
+        started_by = request.data.get('phone', 'anonymous')
     ...
 ```
 
@@ -459,6 +467,9 @@ def vendors_list(request):
 | **orders** | `GET /orders/estimates` | ✅ All | ✅ Division | ✅ Own | ❌ |
 | **products** | `GET /products/catalog` | ✅ All | ✅ All | ✅ All | ✅ All |
 | **products** | `POST /products/catalog` | ✅ | ❌ | ❌ | ❌ |
+| **products** | `GET /products/assets` | ✅ All | ✅ Division | ✅ Branch | ❌ |
+| **products** | `POST /products/assets` | ✅ | ✅ | ❌ | ❌ |
+| **products** | `POST /products/assets/calculate-depreciation` | ✅ | ✅ | ❌ | ❌ |
 | **vendors** | `GET /vendors/list` | ✅ All | ✅ Division | ✅ Read | ❌ |
 | **vendors** | `POST /vendors/list` | ✅ | ✅ | ❌ | ❌ |
 | **teams** | `GET /teams/employees` | ✅ All | ✅ Division | ✅ Own | ❌ |
@@ -473,6 +484,39 @@ def vendors_list(request):
 | **orders** | `POST /orders/payment-links` | ✅ | ✅ | ✅ | ❌ |
 | **eshop** | `GET /eshop/orders` | ✅ All | ✅ Division | ✅ Read | ✅ Own |
 | **eshop** | `POST /eshop/orders` | ✅ | ✅ | ❌ | ✅ (checkout) |
+| **cafe** | `POST /cafe/customer/register` | ✅ | ✅ | ✅ | ✅ (public) |
+| **cafe** | `POST /cafe/customer/lookup` | ✅ | ✅ | ✅ | ✅ (public) |
+| **cafe** | `GET /cafe/customer/profile` | ✅ | ✅ | ✅ | ✅ Own |
+| **cafe** | `POST /cafe/wallet/recharge` | ✅ | ✅ | ✅ | ✅ |
+| **cafe** | `POST /cafe/sessions/pause` | ✅ | ✅ | ✅ | ❌ |
+| **cafe** | `POST /cafe/sessions/resume` | ✅ | ✅ | ✅ | ❌ |
+| **cafe** | `POST /cafe/sessions/end` | ✅ | ✅ | ✅ | ❌ |
+| **cafe** | `GET /cafe/food-orders` | ✅ All | ✅ Division | ✅ Read | ✅ Own |
+| **cafe** | `POST /cafe/food-orders` | ✅ | ✅ | ✅ | ✅ |
+| **esports** | `GET /esports/players` | ✅ | ✅ | ✅ | ✅ |
+| **esports** | `GET /esports/teams` | ✅ | ✅ | ✅ | ✅ |
+| **esports** | `POST /esports/tourney-register` | ✅ | ✅ | ✅ | ✅ |
+| **esports** | `GET /esports/gamers` | ✅ | ✅ | ✅ | ✅ |
+| **search** | `POST /search/index` | ✅ | ❌ | ❌ | ❌ |
+| **search** | `POST /search/update-document` | ✅ | ❌ | ❌ | ❌ |
+| **search** | `POST /search/delete-document` | ✅ | ❌ | ❌ | ❌ |
+| **search** | `POST /search/drop-index` | ✅ (SysAdmin) | ❌ | ❌ | ❌ |
+| **search** | `POST /search/drop-all` | ✅ (SysAdmin) | ❌ | ❌ | ❌ |
+| **shared** | `GET /shared/home` | ✅ | ✅ | ✅ | ✅ |
+
+### 4.4 Mandatory Permission Guard Contract
+
+**Rule:** Every endpoint must declare its permission requirement. No endpoint ships without an explicit `@permission_classes` decorator or ViewSet `permission_classes` attribute.
+
+**Default:** `IsAuthenticated` + domain-specific permission codename (e.g., `vendors.view`, `orders.create`).
+
+**Exception list (must be explicitly justified):**
+- `auth/login`, `auth/refresh` — pre-authentication
+- `health/`, `ping/` — infrastructure
+- `cafe/customer/register`, `cafe/customer/lookup`, `cafe/sessions/start` — walk-in kiosk flow (§4.1)
+- OpenAPI schema/docs — public documentation
+
+**Enforcement:** `test_permissions.py` validates every URL pattern has a permission class. Endpoints with `AllowAny` fail the test unless listed in the exception whitelist.
 
 ---
 
@@ -757,13 +801,13 @@ urlpatterns = [
         'get': 'list', 'post': 'create'
     }), name='purchase-orders'),
 
-    # Credit/Debit notes
-    path('credit-notes', views.CreditNoteViewSet.as_view({
+    # Credit/Debit notes (outward = business issues, inward = vendor issues)
+    path('outward-credit-notes', views.OutwardCreditNoteViewSet.as_view({
         'get': 'list', 'post': 'create'
-    }), name='credit-notes'),
-    path('debit-notes', views.DebitNoteViewSet.as_view({
+    }), name='outward-credit-notes'),
+    path('outward-debit-notes', views.OutwardDebitNoteViewSet.as_view({
         'get': 'list', 'post': 'create'
-    }), name='debit-notes'),
+    }), name='outward-debit-notes'),
     path('inward-credit-notes', views.InwardCreditNoteViewSet.as_view({
         'get': 'list', 'post': 'create'
     }), name='inward-credit-notes'),
@@ -773,7 +817,7 @@ urlpatterns = [
 
     # Accounts (sundry creditors/debtors, banks, partners, loans)
     path('accounts', views.AccountsViewSet.as_view({
-        'get': 'list', 'post': 'update'
+        'get': 'list', 'post': 'create', 'patch': 'update'
     }), name='accounts'),
 
     # Financial reports
@@ -924,15 +968,15 @@ Sundry creditors/debtors track **vendor and expense transactions**. Inward payme
 |--------|----------------|-------------------|-----------|-------------|------------|
 | `invoice` | `inward_invoices` | `accounts/inward-invoices` | `invoice_no` | `totalprice` | credit (+) |
 | `payment` | `outward_payments` | `accounts/outward-payments` | `payment_voucher_no` | `amount` | debit (-) |
-| `credit_note` | `credit_notes` | `accounts/credit-notes` | `credit_note_no` | `totalprice` | debit (-) |
-| `debit_note` | `debit_notes` | `accounts/debit-notes` | `debit_note_no` | `totalprice` | credit (+) |
+| `credit_note` | `outward_credit_notes` | `accounts/outward-credit-notes` | `credit_note_no` | `totalprice` | debit (-) |
+| `debit_note` | `outward_debit_notes` | `accounts/outward-debit-notes` | `debit_note_no` | `totalprice` | credit (+) |
 
 **Side distinction:**
 
 | Side | Collections | Purpose |
 |------|-------------|----------|
 | **Revenue (customer)** | `inward_payments`, `outward_invoices` | Customer orders, sales, receipts |
-| **Expense (vendor)** | `outward_payments`, `inward_invoices`, `credit_notes`, `debit_notes` | Vendor purchases, payments, adjustments |
+| **Expense (vendor)** | `outward_payments`, `inward_invoices`, `outward_credit_notes`, `outward_debit_notes` | Vendor purchases, payments, adjustments |
 
 **Backend implementation:**
 ```python
@@ -955,11 +999,11 @@ def get_ledger_detail(vendor_code, date_from, date_to):
         "vendor": vendor_code,
         "payment_date": {"$gte": date_from, "$lte": date_to}
     })
-    credit_notes = credit_notes.find({
+    out_credit_notes = outward_credit_notes.find({
         "vendor": vendor_code,
         "credit_note_date": {"$gte": date_from, "$lte": date_to}
     })
-    debit_notes = debit_notes.find({
+    out_debit_notes = outward_debit_notes.find({
         "vendor": vendor_code,
         "debit_note_date": {"$gte": date_from, "$lte": date_to}
     })
@@ -976,7 +1020,7 @@ def get_ledger_detail(vendor_code, date_from, date_to):
             "balance": running_balance + inv["totalprice"],
             "description": inv.get("description", "")
         })
-    # ... same for payments, credit_notes, debit_notes
+    # ... same for payments, out_credit_notes, out_debit_notes
 
     return {
         "brought_forward": bf,
@@ -1512,7 +1556,7 @@ urlpatterns = [
 
 ### 6.4 Products Domain
 
-**Purpose:** Product catalog, builds, inventory, stock management.
+**Purpose:** Product catalog, builds, inventory, stock management, fixed asset register.
 
 **File:** `kungos_dj/domains/products/urls.py`
 
@@ -1556,19 +1600,37 @@ urlpatterns = [
         'get': 'list'
     }), name='presets'),
 
-    # Inventory
+    # Inventory (stock register + serial lookups + transfers)
     path('inventory', views.InventoryViewSet.as_view({
-        'get': 'list'
+        'get': 'list', 'post': 'create'
     }), name='inventory'),
+    path('inventory/<str:pk>', views.InventoryViewSet.as_view({
+        'get': 'retrieve', 'patch': 'update', 'delete': 'destroy'
+    }), name='inventory-detail'),
 
-    # Stock
-    path('stock', views.StockViewSet.as_view({
-        'get': 'list', 'post': 'update'
-    }), name='stock'),
+    # Asset register (fixed assets — replaces former /products/stock)
+    path('assets', views.AssetRegisterViewSet.as_view({
+        'get': 'list', 'post': 'create'
+    }), name='assets'),
+    path('assets/<str:pk>', views.AssetRegisterViewSet.as_view({
+        'get': 'retrieve', 'patch': 'update', 'delete': 'destroy'
+    }), name='asset-detail'),
+    path('assets/calculate-depreciation', views.AssetRegisterViewSet.as_view({
+        'post': 'calculate_depreciation'
+    }), name='calculate-depreciation'),
+    path('assets/summary', views.AssetRegisterViewSet.as_view({
+        'get': 'summary'
+    }), name='asset-summary'),
+    path('assets/tax-blocks', views.AssetRegisterViewSet.as_view({
+        'get': 'tax_blocks'
+    }), name='tax-blocks'),
+    path('assets/depreciation-defaults', views.AssetRegisterViewSet.as_view({
+        'get': 'depreciation_defaults'
+    }), name='depreciation-defaults'),
 
-    # Stock audit
+    # Stock audit (audit trail for stock changes)
     path('stock-audit', views.StockAuditViewSet.as_view({
-        'get': 'list'
+        'get': 'list', 'post': 'create'
     }), name='stock-audit'),
 
     # Indent (purchase requisition — triggered by stock levels, stays in Mongo)
@@ -1581,6 +1643,237 @@ urlpatterns = [
         'get': 'list', 'post': 'create'
     }), name='temp-products'),
 ]
+```
+
+#### 6.4.1 Asset Register Endpoint
+
+**Purpose:** Fixed asset management — laptops, furniture, equipment with depreciation tracking per Indian Income Tax Act (Section 35).
+
+**Collection:** `asset_register` (MongoDB)
+
+**Permission:** `inventory` (read/write)
+
+---
+
+**Asset Document Schema**
+
+```json
+{
+    "asset_no": "FA000001",
+    "name": "Dell Latitude 5540",
+    "category": "laptop",
+    "serial_no": "8XJ2K4L5",
+    "vendor": "VEN001",
+    "invoice_no": "INV-2024-001",
+    "purchase_cost": 85000,
+    "purchase_date": "2024-03-15",
+    "induction_date": "2024-03-20",
+    "salvage_value": 5000,
+    "warranty": "3 years",
+    "bg_code": "BG001",
+    "division_code": "DIV001",
+    "branch_code": "BR001",
+    "cost_center": "CC-IT-01",
+    "department": "Engineering",
+    "assigned_to": "EMP001",
+    "status": "active",
+    "delete_flag": false,
+    "depreciation": {
+        "block": "BLOCK_I",
+        "block_name": "Computers & IT Equipment",
+        "method": "wdv",
+        "rate": 100,
+        "annual_depreciation": 80000,
+        "monthly_depreciation": 6666.67,
+        "accumulated_depreciation": 20000,
+        "book_value": 65000,
+        "periods_charged": 3,
+        "last_calculated": "2024-06-30"
+    },
+    "created_by": "EMP001",
+    "created_date": "2024-03-20T10:30:00+05:30",
+    "updated_by": "EMP001",
+    "updated_date": "2024-06-30T12:00:00+05:30"
+}
+```
+
+---
+
+**GET /products/assets** — List assets
+
+Query params:
+| Param | Type | Description |
+|-------|------|-------------|
+| `bg_code` | string | Filter by business group code |
+| `division_code` | string | Filter by division code (aggregates all branches) |
+| `branch_code` | string | Filter by branch code |
+| `asset_no` | string | Filter by asset number |
+| `serial_no` | string | Filter by serial number |
+| `category` | string | Filter by category (laptop, furniture, equipment, etc.) |
+| `vendor` | string | Filter by vendor code |
+| `invoice_no` | string | Filter by purchase invoice number |
+| `cost_center` | string | Filter by cost center |
+| `department` | string | Filter by department |
+| `assigned_to` | string | Filter by assigned person |
+| `status` | string | Filter by status (active, disposed, under_maintenance) |
+
+Hierarchical scoping (mutually exclusive, highest specificity wins):
+- `?branch_code=BR001` → branch-level assets only
+- `?division_code=DIV001` → all branches in division
+- `?bg_code=BG001` → all divisions in BG
+- no filter → tenant-wide (scoped by tenant middleware)
+
+Response:
+```json
+{
+    "status": "success",
+    "data": [ /* asset documents */ ]
+}
+```
+
+---
+
+**POST /products/assets** — Create or update asset
+
+Create (no query params):
+```json
+{
+    "name": "Dell Latitude 5540",
+    "category": "laptop",
+    "serial_no": "8XJ2K4L5",
+    "vendor": "VEN001",
+    "invoice_no": "INV-2024-001",
+    "purchase_cost": 85000,
+    "purchase_date": "2024-03-15",
+    "induction_date": "2024-03-20",
+    "salvage_value": 5000,
+    "branch_code": "BR001",
+    "division_code": "DIV001",
+    "cost_center": "CC-IT-01",
+    "department": "Engineering",
+    "assigned_to": "EMP001"
+}
+```
+
+Depreciation is **auto-populated** from Indian tax law defaults based on `category`:
+| Category | Tax Block | Rate | Method | Life |
+|----------|-----------|------|--------|------|
+| laptop, desktop, server | Block I | 100% | WDV | 3 yrs |
+| ac_split, generator, cctv | Block II | 40% | WDV | 5-15 yrs |
+| building, interior_work | Block III | 6% | SL | 10-50 yrs |
+| desk, chair, cabinet, sofa | Block IV | 10% | SL | 10 yrs |
+| car, suv, motorcycle | Block V | 20% | WDV | 5 yrs |
+| delivery_van, truck | Block VI | 10% | WDV | 10 yrs |
+| tools, workshop_equipment | Block VII | 20% | WDV | 5-10 yrs |
+
+Override by sending explicit `depreciation` object in request body.
+
+Response:
+```json
+{
+    "status": "success",
+    "data": {
+        "inserted_id": "...",
+        "asset_no": "FA000001",
+        "status": "created"
+    }
+}
+```
+
+Update (`?asset_no=FA000001`):
+```json
+{ "assigned_to": "EMP002", "status": "under_maintenance" }
+```
+
+---
+
+**PATCH /products/assets/<id>** — Update asset
+
+**DELETE /products/assets/<id>** — Soft delete (marks `delete_flag=true`, `status=disposed`)
+
+---
+
+**POST /products/assets/calculate-depreciation** — Batch depreciation run
+
+Charges depreciation from `induction_date` (or `last_calculated`) to `as_of` date.
+Respects WDV (on book value) vs SL (fixed amount). Never depreciates below `salvage_value`.
+
+Body:
+```json
+{
+    "as_of": "2024-06-30",
+    "branch_code": "BR001"  // optional — scope to branch/division
+}
+```
+
+Response:
+```json
+{
+    "status": "success",
+    "data": {
+        "as_of": "2024-06-30",
+        "assets_updated": 45,
+        "method": "Section 35 (WDV/SL per tax block)"
+    }
+}
+```
+
+---
+
+**GET /products/assets/summary** — Hierarchical asset summary
+
+Aggregates assets by branch_code → division_code → bg_code.
+
+Query params:
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `level` | string | `division` | `branch`, `division`, or `bg` |
+| `status` | string | `active` | Filter by status |
+
+Response:
+```json
+{
+    "status": "success",
+    "data": {
+        "level": "division",
+        "status": "active",
+        "groups": [
+            {"_id": "DIV001", "count": 45, "total_cost": 1200000, "total_book_value": 980000, "total_depreciation": 220000},
+            {"_id": "DIV002", "count": 23, "total_cost": 650000, "total_book_value": 520000, "total_depreciation": 130000}
+        ],
+        "bg_totals": {"count": 68, "total_cost": 1850000, "total_book_value": 1500000, "total_depreciation": 350000}
+    }
+}
+```
+
+---
+
+**GET /products/assets/tax-blocks** — Reference: all tax blocks + asset classes
+
+Returns `TAX_BLOCKS` (7 blocks) and `ASSET_CLASS_DEFAULTS` (50+ categories) for frontend dropdowns.
+
+---
+
+**GET /products/assets/depreciation-defaults** — Tax defaults for a category
+
+Query params:
+| Param | Type | Description |
+|-------|------|-------------|
+| `category` | string | Asset class (e.g. `laptop`, `desk`, `ac_split`) |
+
+Response:
+```json
+{
+    "status": "success",
+    "data": {
+        "block": "BLOCK_I",
+        "block_name": "Computers & IT Equipment",
+        "rate": 100,
+        "method": "wdw",
+        "useful_life_years": 3,
+        "description": "Computers, printers, scanners, fax machines, servers, routers, switches, data centre equipment"
+    }
+}
 ```
 
 ---
@@ -1768,6 +2061,14 @@ PostgreSQL caf_platform_* (14 tables):
 
 **Rationale for PostgreSQL (not MongoDB):** Relational integrity (FKs between stations→sessions→wallets), ACID transactions for session billing + wallet deduction, complex queries (revenue reports, station utilization, session timelines), row-level locking for wallet balance updates.
 
+**Payment boundary (`cafe/payments` vs `accounts/inward-payments`):**
+
+`cafe/payments` handles **cafe-specific payment recording** — wallet deductions, session billing settlements, kiosk cash collections. These are operational records scoped to a cafe branch.
+
+`accounts/inward-payments` handles **financial ledger entries** — the accounting record that feeds sundry debtors, revenue reports, and financial statements. A cafe payment *may* create a corresponding inward-payment record for financial reconciliation, but the primary source of truth for cafe billing is `cafe/payments`.
+
+**Rule:** Cafe operations read from `cafe/payments`. Financial reports aggregate from `accounts/inward-payments`. Cross-domain sync is handled by the accounts service consuming cafe payment events.
+
 ```
 orders_core + detail tables  — estimates, in_store, tp, service, eshop
 caf_platform_sessions        — gaming sessions (time-based, real-time, separate)
@@ -1865,6 +2166,8 @@ urlpatterns = [
 
 **Purpose:** MeiliSearch index operations.
 
+**Authorization:** Read endpoints (`search`, `index`) require `IsAuthenticated`. Write endpoints (`update-document`, `delete-document`) require `search.manage` permission. Destructive endpoints (`drop-index`, `drop-all`) require SysAdmin role.
+
 **File:** `kungos_dj/domains/search/urls.py`
 
 ```python
@@ -1889,6 +2192,8 @@ urlpatterns = [
 
 **Purpose:** Shared utilities — home data, document generation, SMS, misc.
 
+**Authorization:** All endpoints require `IsAuthenticated`. Admin-portal endpoints require `shared.admin` permission.
+
 **File:** `kungos_dj/domains/shared/urls.py`
 
 ```python
@@ -1905,9 +2210,22 @@ urlpatterns = [
     path('misc-data', views.misc_data, name='misc-data'),
     path('admin-portal', views.admin_portal, name='admin-portal'),
     path('kurodata', views.kurodata, name='kurodata'),
-    path('create-collection', views.create_collection, name='create-collection'),
-    path('get-collection', views.get_collection, name='get-collection'),
 ]
+```
+
+### 6.11 Admin Domain (MongoDB Operations)
+
+**Purpose:** SysAdmin-only MongoDB administration — collection management.
+
+**Authorization:** All endpoints require SysAdmin role (`admin.mongo_manage` permission).
+
+**File:** `kungos_admin/urls.py` (appended to existing admin routes)
+
+```python
+# MongoDB administration (SysAdmin only)
+path('mongo/create-collection', views.create_collection, name='admin-create-collection'),
+path('mongo/get-collection', views.get_collection, name='admin-get-collection'),
+```
 ```
 
 ---
@@ -1945,8 +2263,8 @@ response['Link'] = '<https://api.kurocadence.com/api/v1/vendors/list>; rel=succe
 | `kuroadmin/outwardpayments` | `accounts/outward-payments` |
 | `kuroadmin/paymentvouchers` | `accounts/payment-vouchers` |
 | `kuroadmin/purchaseorders` | `accounts/purchase-orders` |
-| `kuroadmin/outwardcreditnotes` | `accounts/credit-notes` |
-| `kuroadmin/outwarddebitnotes` | `accounts/debit-notes` |
+| `kuroadmin/outwardcreditnotes` | `accounts/outward-credit-notes` | Renamed for symmetry |
+| `kuroadmin/outwarddebitnotes`  | `accounts/outward-debit-notes`  | Renamed for symmetry |
 | `kurostaff/inwardcreditnotes` | `accounts/inward-credit-notes` |
 | `kurostaff/inwarddebitnotes` | `accounts/inward-debit-notes` |
 | `kuroadmin/accounts` | `accounts/accounts` |
@@ -1992,10 +2310,14 @@ response['Link'] = '<https://api.kurocadence.com/api/v1/vendors/list>; rel=succe
 | `kuroadmin/presets` | `products/presets` |
 | `kuroadmin/tempproducts` | `products/temp-products` |
 | `kuroadmin/addproduct` | `POST /products/catalog` | merge into catalog create |
-| `kurostaff/inventory` | `products/inventory` |
-| `kurostaff/stock` | `products/stock` |
+| `kurostaff/inventory` | `products/inventory` | Stock register + serial lookups + transfers |
+| `kurostaff/stock` | `products/assets` | **Replaced** — fixed asset register with depreciation |
 | `kuroadmin/stockaudit` | `products/stock-audit` |
 | `kuroadmin/indent` + `kurostaff/indent` | `products/indent` | Stock-driven procurement (stays in Mongo) |
+| — | `products/assets/calculate-depreciation` | **NEW** — batch depreciation run |
+| — | `products/assets/summary` | **NEW** — hierarchical asset summary |
+| — | `products/assets/tax-blocks` | **NEW** — reference: tax blocks + asset classes |
+| — | `products/assets/depreciation-defaults` | **NEW** — defaults per category |
 
 ### 7.4 Vendors Domain
 
@@ -2278,6 +2600,41 @@ class VendorListViewTest:
 ### 11.5 Dynamic Route Tests
 
 **Rule:** `test_dynamic_pages.py` validates all dynamic routes with real IDs after migration.
+
+### 11.6 Permission Coverage Tests
+
+**Rule:** Automated test validates every URL pattern against the permission matrix (§4.3). Endpoints with `AllowAny` must appear in the exception whitelist (§4.4).
+
+```python
+# tests/test_permission_coverage.py
+from django.urls import get_resolver
+
+ALLOW_ANY_WHITELIST = {
+    'auth/login',
+    'auth/refresh',
+    'health-check',
+    'ping',
+    'schema',
+    'swagger-ui',
+    'cafe-customer-register',
+    'cafe-customer-lookup',
+    'session-start',
+}
+
+def test_all_endpoints_have_permissions():
+    """Every URL must have an explicit permission class."""
+    urls = get_resolver(urlconf='backend.urls')
+    for pattern in urls.url_patterns:
+        if hasattr(pattern, 'callback'):
+            view = pattern.callback
+            perms = getattr(view, 'permission_classes', None)
+            name = getattr(pattern, 'name', None)
+            if name in ALLOW_ANY_WHITELIST:
+                continue  # whitelisted public endpoint
+            assert perms is not None, f"{pattern.pattern} (name={name}) has no permission_classes"
+```
+
+**Rule:** Unlisted `AllowAny` endpoints fail CI. The whitelist is maintained in `test_permission_coverage.py` and reviewed during code review.
 
 ---
 
