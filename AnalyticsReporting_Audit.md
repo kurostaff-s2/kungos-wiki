@@ -295,202 +295,119 @@ Backend should return **numeric values** (not formatted strings) so frontend can
 
 ---
 
-## 5. Shared Reporting Architecture — Proposed
+## 5. Reporting on Existing Foundations — Revised Plan
 
-### 5.1 Problem Statement
-Every reporting endpoint reinvents:
-- Period/duration parsing (`monthly`, `quarterly`, `yearly`, `curr_fy`, `last_fy`)
-- Tenant context resolution (`resolve_access()` called per-endpoint)
-- Division/branch scoping filters (duplicated `build_division_filter()` logic)
-- Response shape (no standard `{data, meta}` envelope)
-- Pagination (none — unbounded queries)
-- Error handling (`sys.stderr.write` debug noise, silent `except Exception`)
-- Feature flags (hardcoded — no per-BG/brand configuration)
+### 5.1 Existing KungOS v2 Primitives (already built)
 
-### 5.2 Proposed: `ReportingViewSet` Base Layer
+KungOS v2 already provides the infrastructure. Reporting should **plug into** these, not recreate them.
 
-```
-domains/
-  reporting/
-    __init__.py
-    base.py          # ReportingViewSet mixin + ReportingMixin
-    periods.py       # PeriodParser — period/duration → MongoDB date filters
-    tenant_scope.py  # TenantScopeBuilder — bg/division/branch filter resolution
-    response.py      # ReportingResponse — {data, meta} envelope
-    observability.py # CorrelationID middleware, structured logging
-    config.py        # TenantConfig defaults for reporting behavior
-```
+| Primitive | Location | What it does | Reporting uses it for |
+|-----------|----------|-------------|----------------------|
+| `resolve_access(request)` | `backend/auth_utils.py:80` | Full tenant context: user, bg, switchgroup, access_dict | Single tenant resolution per request |
+| `resolve_minimal(request)` | `backend/auth_utils.py:128` | Lightweight: bg + switchgroup only | Read-only reports without access checks |
+| `get_collection(name, bg_code, division, branch)` | `backend/utils.py:261` | MongoDB collection + tenant filter dict | All data access, automatic bg/division/branch scoping |
+| `find_all(name, filters, bg_code, division, branch, sort, limit, skip)` | `backend/utils.py:301` | Query helper with tenant filtering + pagination | Paginated report results |
+| `BusinessGroup` model | `tenant/models.py:16` | BG config: db_name, brand, settings | TenantConfig-driven defaults |
+| `Division` model | `tenant/models.py:100` | Division hierarchy, cascade codes | Division scoping |
+| `Branch` model | `tenant/models.py:185` | Branch details | Branch scoping |
+| `/api/v1/` routing | `backend/urls.py` | Domain-based URL routing | All reporting endpoints |
+| `CookieJWTAuthentication` | `users/cookie_auth.py` | Cookie-based JWT auth | Auth on all endpoints |
+| `check_access()` / `check_write_access()` | `backend/auth_utils.py` | Permission checks by codename | Report access control |
 
-#### `ReportingViewSet` Mixin
+### 5.2 What's Missing (thin layer on top of existing)
+
+| Gap | Solution | Plugs into |
+|-----|----------|------------|
+| Period/duration parsing | `backend/periods.py` — `PeriodParser` utility class | Standalone utility, no new infrastructure |
+| Standardized response shape | `backend/response_utils.py` — `reporting_response(data, meta)` | Existing `error_response()` pattern |
+| Correlation IDs | `backend/middleware.py` — `CorrelationIdMiddleware` | Existing Django middleware stack |
+| Structured logging | `backend/logging.py` — `structlog` config | Existing `settings.py` LOGGING config |
+| Reporting ViewSet mixin | `backend/reporting_base.py` — `ReportingViewSet` | Existing `GenericViewSet` pattern |
+| TenantConfig for reporting | Extend `BusinessGroup` model or add `reporting_config` field | Existing tenant model |
+
+### 5.3 Proposed: `ReportingViewSet` (thin mixin, not greenfield)
+
 ```python
-class ReportingViewSet(viewsets.GenericViewSet):
-    """Base ViewSet for all reporting endpoints.
+# backend/reporting_base.py — plugs into existing primitives
 
-    Provides:
-      - Single tenant context resolution (bg, division, branch)
-      - Period/duration parsing → MongoDB date filters
-      - Standardized {data, meta} response envelope
-      - Pagination via Django REST Framework
+class ReportingViewSet(viewsets.GenericViewSet):
+    """Thin mixin for reporting endpoints.
+
+    Plugs into existing KungOS v2 primitives:
+      - resolve_access() for tenant context
+      - get_collection() for data access
+      - CookieJWTAuthentication for auth
+      - check_access() for permissions
+
+    Adds only:
+      - PeriodParser for date range filtering
+      - reporting_response() for {data, meta} envelope
       - Correlation ID injection
-      - Structured logging (replaces sys.stderr.write)
-      - TenantConfig-driven defaults
+      - Structured logging
     """
     authentication_classes = [CookieJWTAuthentication]
     permission_classes = [permissions.IsAuthenticated]
 
     # Override per-endpoint
-    COLLECTIONS = []  # list of collection names this report queries
+    COLLECTIONS = []  # list of collection names
     DEFAULT_PERIOD = 'monthly'
     ALLOWED_PERIODS = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly']
-    ENABLED_BY_CONFIG = None  # TenantConfig feature flag key, or None = always enabled
 
     def initial(self, request, *args, **kwargs):
-        """Resolve tenant context once, set correlation ID."""
+        """Resolve tenant context once (uses existing resolve_access)."""
         super().initial(request, *args, **kwargs)
-        self.tenant_context = self.resolve_tenant(request)
-        self.correlation_id = generate_correlation_id(request)
+        self.tenant_context = resolve_access(request)  # existing primitive
+        self.correlation_id = request.META.get('HTTP_X_CORRELATION_ID') or uuid4().hex
 
-    def resolve_tenant(self, request):
-        """Resolve bg, division, branch once. Apply TenantConfig defaults."""
-        result = resolve_access(request)
-        config = self.load_tenant_config(result['bg'])
-        return {
-            'bg': result['bg'],
-            'user': result['user'],
-            'access_dict': result['access_dict'],
-            'division': self.resolve_division(request, result),
-            'branch': self.resolve_branch(request, result),
-            'config': config,  # TenantConfig-driven defaults
-        }
-
-    def build_tenant_filters(self):
-        """Build MongoDB tenant scoping filters from resolved context."""
-        return TenantScopeBuilder.build(
+    def get_collection(self, name):
+        """Use existing get_collection() with resolved tenant context."""
+        return get_collection(
+            name,
             bg_code=self.tenant_context['bg'].bg_code,
-            division=self.tenant_context['division'],
-            branch=self.tenant_context['branch'],
-            access_dict=self.tenant_context['access_dict'],
+            division=self.tenant_context.get('division'),
+            branch=self.tenant_context.get('branch'),
         )
 
     def parse_period(self, request):
-        """Parse period/duration params → MongoDB date range filter."""
+        """Parse period/duration → MongoDB date filter (new PeriodParser)."""
         period = request.query_params.get('period',
                     request.query_params.get('duration', self.DEFAULT_PERIOD))
         return PeriodParser.parse(period, self.ALLOWED_PERIODS)
 
     def reporting_response(self, data, meta=None):
-        """Standardized {data, meta} response envelope."""
-        return Response({
-            'data': data,
-            'meta': {
-                'period': meta.get('period', self.DEFAULT_PERIOD),
-                'division': meta.get('division', self.tenant_context['division']),
-                'branch': meta.get('branch', self.tenant_context['branch']),
-                'count': meta.get('count', len(data) if isinstance(data, list) else 1),
-                'correlation_id': self.correlation_id,
-                'generated_at': datetime.now(timezone('Asia/Kolkata')).isoformat(),
-                **(meta or {}),
-            }
+        """Standardized {data, meta} envelope (new response_utils)."""
+        return reporting_response(data, meta={
+            'period': meta.get('period', self.DEFAULT_PERIOD),
+            'correlation_id': self.correlation_id,
+            'generated_at': datetime.now(timezone('Asia/Kolkata')).isoformat(),
+            **(meta or {}),
         })
-
-    def log(self, level, message, **ctx):
-        """Structured logging with correlation ID and tenant context."""
-        structlog.get_logger().log(
-            level, message,
-            correlation_id=self.correlation_id,
-            bg_code=self.tenant_context['bg'].bg_code,
-            user_id=self.tenant_context['user'].userid,
-            **ctx
-        )
 ```
 
-#### `PeriodParser` — Centralized Period/Duration Parsing
-```
-class PeriodParser:
-    """Parse period/duration strings → MongoDB date range filters.
+### 5.4 Migration Path (lean — no greenfield infrastructure)
 
-    Supports:
-      - Periods: daily, weekly, monthly, quarterly, yearly
-      - Durations: curr_month, last_month, curr_fy, last_fy, curr_quarter, last_quarter
-      - Custom: start_date/end_date params
-    """
-    @staticmethod
-    def parse(period_str, allowed=None):
-        # Returns PeriodResult: { start_date, end_date, label, type }
-        ...
-```
-
-#### `TenantScopeBuilder` — Centralized Tenant Scoping
-```
-class TenantScopeBuilder:
-    """Build MongoDB tenant scoping filters.
-
-    Applies:
-      - bg_code (tenant isolation)
-      - division (from query param or user access)
-      - branch (from query param)
-      - Access-level division filters (read/write)
-    """
-    @staticmethod
-    def build(bg_code, division=None, branch=None, access_dict=None):
-        # Returns dict of MongoDB filters
-        ...
-```
-
-#### `TenantConfig` Integration
-```
-class ReportingConfig:
-    """Load tenant-specific reporting defaults from TenantConfig.
-
-    Configurable per BG/brand:
-      - default_period: 'monthly' | 'weekly' | 'yearly'
-      - enabled_reports: ['financials', 'analytics', 'itc-gst', ...]
-      - date_format: 'ISO' | 'DD-MM-YYYY'
-      - currency: 'INR' | 'USD'
-      - fiscal_year_start: 4 (April) | 1 (January)
-      - max_report_rows: 10000
-      - cache_ttl_seconds: 300
-    """
-    @staticmethod
-    def load(bg):
-        # Load from TenantConfig collection
-        ...
-```
-
-#### Observability: Correlation IDs + Structured Logging
-```
-# Middleware: inject X-Correlation-Id header
-# Each request gets a UUID, logged on every reporting query
-# Replaces sys.stderr.write with structlog:
-#   {"level": "info", "msg": "analytics query", "correlation_id": "abc-123",
-#    "bg_code": "BG001", "period": "monthly", "rows_scanned": 15420, "duration_ms": 234}
-```
-
-### 5.3 Migration Path
-
-| Step | Action | Endpoints Affected |
-|------|--------|--------------------|
-| 1 | Build `domains/reporting/` — `ReportingViewSet` mixin, `PeriodParser`, `TenantScopeBuilder`, `ReportingResponse` | Infrastructure |
-| 2 | Add correlation ID middleware — `X-Correlation-Id` header injection | All endpoints |
-| 3 | Add structured logging — `structlog` integration, replace `sys.stderr.write` | All endpoints |
-| 4 | Wire `TenantConfig` — reporting defaults, feature flags, per-BG/brand config | All reporting |
-| 5 | Migrate `analytics()` → `SharedViewSet` using `ReportingViewSet` | `shared/analytics` |
-| 6 | Migrate `financials()` → `FinancialsViewSet` using `ReportingViewSet` | `accounts/financials` |
-| 7 | Migrate `itc_gst()` → `ITCGSTViewSet` using `ReportingViewSet` | `accounts/itc-gst` |
-| 8 | Migrate `sales()`/`purchases()` → `RevenueViewSet`/`ExpenditureViewSet` | `accounts/revenue`, `accounts/expenditure` |
+| Step | Action | Uses Existing |
+|------|--------|---------------|
+| 1 | Add `PeriodParser` to `backend/periods.py` | Standalone utility |
+| 2 | Add `reporting_response()` to `backend/response_utils.py` | Existing `error_response()` pattern |
+| 3 | Add `CorrelationIdMiddleware` to `backend/middleware.py` | Existing Django middleware stack |
+| 4 | Add `ReportingViewSet` to `backend/reporting_base.py` | Existing `GenericViewSet` pattern |
+| 5 | Migrate `analytics()` → `SharedViewSet` using `ReportingViewSet` | `resolve_access()`, `get_collection()` |
+| 6 | Migrate `financials()` → `FinancialsViewSet` using `ReportingViewSet` | `resolve_access()`, `get_collection()` |
+| 7 | Migrate `itc_gst()` → `ITCGSTViewSet` using `ReportingViewSet` | `resolve_access()`, `get_collection()` |
+| 8 | Migrate `sales()`/`purchases()` → `RevenueViewSet`/`ExpenditureViewSet` | `resolve_access()`, `get_collection()` |
 | 9 | Decommission legacy FBVs (`teams/financial.py`, `teams/analytics.py`) | Cleanup |
 
-### 5.4 Benefits
+### 5.5 Benefits
 
 | Area | Before | After |
 |------|--------|-------|
-| **Tenant resolution** | Called per-endpoint, duplicated | Resolved once in `initial()`, shared via `self.tenant_context` |
-| **Period parsing** | Duplicated across 6 FBVs | Single `PeriodParser` class |
-| **Division/branch scoping** | `build_division_filter()` copied everywhere | `TenantScopeBuilder.build()` |
-| **Response shape** | Ad-hoc per endpoint | Standardized `{data, meta}` envelope |
-| **Pagination** | None (unbounded) | DRF pagination via mixin |
+| **Tenant resolution** | Duplicated `resolve_access()` per FBV | Once in `initial()`, shared via `self.tenant_context` |
+| **Period parsing** | Duplicated across 6 FBVs | Single `PeriodParser` utility |
+| **Data access** | Manual `get_collection()` + filter building | `self.get_collection()` with auto-scoping |
+| **Response shape** | Ad-hoc per endpoint | `reporting_response()` envelope |
 | **Error handling** | `sys.stderr.write` + silent `except` | Structured logging + correlation IDs |
-| **Feature flags** | Hardcoded | `TenantConfig`-driven per BG/brand |
+| **New infrastructure** | Would need separate reporting subsystem | **Zero new infrastructure** — plugs into existing primitives |
 | **Testing** | Hard (FBV + request mocking) | Easy (mixin unit tests, collection mocks) |
 
 ---
@@ -564,7 +481,7 @@ class ReportingConfig:
 | **Financials format** | Fix backend to match frontend | Fix frontend to match backend | Fix backend — frontend contract is cleaner |
 | **Export paths** | Add alias routes (no hyphen) | Fix frontend to use hyphens | Add alias routes — less frontend risk |
 | **sales_func collection** | Keep `outwardDebitNotes` | Switch to `outwardInvoices` | Verify with DB admin first |
-| **Base layer approach** | Inline FBVs directly into ViewSets | Build `ReportingViewSet` mixin first | **ReportingViewSet mixin** — shared layer prevents future duplication |
+| **Base layer approach** | Greenfield reporting subsystem | Thin mixin on existing primitives | **Thin mixin** — KungOS v2 already has resolve_access, get_collection, tenant models |
 | **Missing reports** | Build all 8 missing reports | Build top 3 (P&L, balance sheet, inventory) | Top 3 first — MVP approach |
 | **Caching** | Redis for all reporting | No cache, optimize queries | Redis — reporting is read-heavy, configurable via TenantConfig |
 | **Error handling** | Keep `sys.stderr.write` + silent except | Structured logging + correlation IDs | **Structured logging** — observable, debuggable, no production noise |
