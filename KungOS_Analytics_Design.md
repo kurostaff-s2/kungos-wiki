@@ -2,7 +2,7 @@
 
 > **Version:** 1.0  
 > **Status:** Design  
-> **Date:** 2025-01-04  
+> **Date:** 2026-05-04  
 > **Scope:** Reporting endpoints, dashboard analytics, financial reports, export pipelines  
 > **Architecture:** Thin layer on KungOS v2 primitives — no greenfield infrastructure
 
@@ -12,6 +12,7 @@
 
 1. [Overview](#1-overview)
 2. [Frontend Data Contracts](#2-frontend-data-contracts)
+   - [2.5 Response Envelope & Accessor Compatibility](#25-response-envelope--accessor-compatibility)
 3. [Existing KungOS v2 Primitives](#3-existing-kungos-v2-primitives)
 4. [New Thin-Layer Components](#4-new-thin-layer-components)
 5. [Endpoint Specifications](#5-endpoint-specifications)
@@ -101,7 +102,47 @@ Frontend uses `@/components/common/StatCard`. Values are computed from response 
 | Financials | `type` | `"income"` → `success`, `"expense"` → `destructive` |
 | ITC-GST | `status` | `"Claimed"` → `success`, `"Pending"` → `warning`, `"Rejected"` → `destructive` |
 
-### 2.5 Formatting Rules
+### 2.5 Response Envelope & Accessor Compatibility
+
+**Rule:** All reporting endpoints return `{data, meta}` envelope. Frontend must read from `response.data.*`, not `response.*`.
+
+| Page | Current Accessor | New Accessor | Change |
+|------|-----------------|--------------|--------|
+| Analytics.jsx | `data.totalRevenue` | `data.data.totalRevenue` | Add `.data` accessor |
+| Analytics.jsx | `data.chartData` | `data.data.chartData` | Add `.data` accessor |
+| Analytics.jsx | `data.paymentTrend` | `data.data.paymentTrend` | Add `.data` accessor |
+| Financials.jsx | `data[0].amount` | `data.data[0].amount` | Add `.data` accessor |
+| ITCGST.jsx | `data[0].igst` | `data.data[0].igst` | Add `.data` accessor |
+
+**Migration:** Update frontend `useQuery` selectors at the same time as backend cutover.
+
+```js
+// Before (current — flat response):
+const { data } = useQuery({
+  queryKey: queryKeys.analytics,
+  queryFn: () => api.get('/shared/analytics'),
+});
+// data.totalRevenue, data.chartData, ...
+
+// After (envelope):
+const { data } = useQuery({
+  queryKey: queryKeys.analytics,
+  queryFn: () => api.get('/shared/analytics'),
+  select: (response) => response.data, // unwrap envelope
+});
+// data.totalRevenue, data.chartData, ... (same as before)
+```
+
+**Alternative:** Add `select: (r) => r.data` in every `useQuery` call, or create a shared wrapper:
+
+```js
+// lib/api.jsx — shared envelope unwrapper
+export const reportingApi = {
+  get: (url, params) => api.get(url, params).then(r => r.data),
+};
+```
+
+### 2.6 Formatting Rules
 
 | Field Type | Backend Returns | Frontend Formats |
 |-----------|----------------|-----------------|
@@ -593,6 +634,17 @@ class ReportingViewSet(viewsets.GenericViewSet):
 - Tenant scoping: `bg_code` from `resolve_access()`, `div_code`/`branch_code` from query params
 - Collection access: `get_collection(name, bg_code=..., div_code=..., branch_code=...)` from `backend/utils.py`
 
+#### ⚠️ Envelope Compatibility
+
+Current backend returns flat object: `{totalRevenue, chartData, ...}` → frontend reads `data.totalRevenue`.
+New envelope wraps it: `{data: {totalRevenue, chartData, ...}, meta: {...}}` → frontend must read `data.data.totalRevenue`.
+
+**Fix:** Update `Analytics.jsx` `useQuery` selector at cutover:
+```js
+select: (response) => response.data, // unwrap {data, meta} envelope
+```
+Or use shared wrapper from `lib/api.jsx`: `reportingApi.get('/shared/analytics')`.
+
 ---
 
 ### 5.2 `GET /accounts/financials` — Financial Report
@@ -954,15 +1006,21 @@ collection, tenant_filter = get_collection(
 pipeline = [
     {"$match": {**tenant_filter, "delete_flag": {"$ne": True}}},
     {"$project": {
-        "month": {"$toInt": {"$substr": ["$invoice_date", 5, 2]}},
-        "year": {"$toInt": {"$substr": ["$invoice_date", 0, 4]}},
+        "parsed_date": {
+            "$dateFromString": {
+                "dateString": "$invoice_date",
+                "format": "%Y-%m-%dT%H:%M:%S",
+                "onError": null,
+                "onNull": null,
+            }
+        },
         "total": "$totalprice",
         "type": "$invoice_type",
     }},
     {"$group": {
         "_id": {
-            "month": "$month",
-            "year": "$year",
+            "month": {"$month": "$parsed_date"},
+            "year": {"$year": "$parsed_date"},
             "type": "$type",
         },
         "total": {"$sum": "$total"},
