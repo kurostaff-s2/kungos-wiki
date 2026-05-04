@@ -1212,24 +1212,38 @@ GET /shared/health/reports
 | Envelope compatibility | All reporting | Added `reportingFetcher()` — unwraps `{data, meta}` | ✅ Fixed |
 | Code param standardization | All reporting | `division`→`div_code`, `branch`→`branch_code` | ✅ Fixed |
 
-### Phase 2: Migrate Endpoints
+### Phase 2: Migrate Endpoints ✅ COMPLETE
 
-| Item | Endpoint | ViewSet | Canonical Module |
-|------|----------|---------|----------------|
-| Analytics | `shared/analytics` | `SharedViewSet.analytics()` | `kungos_dj/domains/shared/views.py` |
-| Financials | `accounts/financials` | `FinancialsViewSet` | `kungos_dj/domains/accounts/views.py` |
-| ITC-GST | `accounts/itc-gst` | `ITCGSTViewSet` | `kungos_dj/domains/accounts/views.py` |
-| Revenue | `accounts/revenue` | `RevenueViewSet` | `kungos_dj/domains/accounts/views.py` |
-| Expenditure | `accounts/expenditure` | `ExpenditureViewSet` | `kungos_dj/domains/accounts/views.py` |
-| Export | `accounts/export/*` | `ExportViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Item | Endpoint | ViewSet | Canonical Module | Status |
+|------|----------|---------|----------------|--------|
+| Analytics | `shared/analytics` | `AnalyticsViewSet` (ReportingViewSet) | `domains/shared/viewsets.py` | ✅ Migrated |
+| Financials | `accounts/financials` | `FinancialsViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Migrated |
+| ITC-GST | `accounts/itc-gst` | `ITCGSTViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Migrated |
+| Revenue | `accounts/revenue` | `RevenueViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Migrated |
+| Expenditure | `accounts/expenditure` | `ExpenditureViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Migrated |
+| Export | `accounts/export/*` | `ExportViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Migrated |
 
-### Phase 3: Add Missing Reports
+**Migration notes:**
+- All 6 ViewSets now extend `ReportingViewSet` from `backend/reporting_base.py`
+- Legacy FBV delegation removed from: `teams.analytics.analytics`, `teams.financial.sales`, `teams.financial.purchases`, `teams.financial.itc_gst`
+- `FinancialsViewSet` was partially migrated (Phase 1) — now fully on ReportingViewSet
+- `RevenueViewSet` and `ExpenditureViewSet` replaced 21 separate aggregation queries with single-pipeline approach
+- `ExportViewSet` uses `PeriodParser` for date filtering instead of regex-based date matching
+- `accounts/analytics` alias ViewSet delegates to `shared/analytics` for backward compatibility
 
-| Item | Endpoint | ViewSet | Canonical Module |
-|------|----------|---------|----------------|
-| P&L | `accounts/profit-loss` | `ProfitLossViewSet` | `kungos_dj/domains/accounts/views.py` |
-| Balance Sheet | `accounts/balance-sheet` | `BalanceSheetViewSet` | `kungos_dj/domains/accounts/views.py` |
-| Inventory Valuation | `products/inventory/valuation` | `InventoryValuationViewSet` | `kungos_dj/domains/products/views.py` |
+### Phase 3: Add Missing Reports ✅ COMPLETE
+
+| Item | Endpoint | ViewSet | Canonical Module | Status |
+|------|----------|---------|----------------|--------|
+| P&L | `accounts/profit-loss` | `ProfitLossViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Created |
+| Balance Sheet | `accounts/balance-sheet` | `BalanceSheetViewSet` (ReportingViewSet) | `domains/accounts/viewsets.py` | ✅ Created |
+| Inventory Valuation | `products/inventory/valuation` | `InventoryValuationViewSet` (BaseProductsViewSet) | `domains/products/viewsets.py` | ✅ Created |
+
+**Implementation notes:**
+- `ProfitLossViewSet`: Revenue from outwardinvoices, COGS from inwardinvoices, expenses from paymentvouchers. Prior period comparison auto-computed.
+- `BalanceSheetViewSet`: Receivables from outwardinvoices, payables from inwardinvoices, fixed assets from asset_register, inventory from products domain. Accounting equation validated.
+- `InventoryValuationViewSet`: Stock levels from stock_register, pricing from products. Low stock / out of stock alerts. Slow-moving placeholder.
+- Placeholders marked for: interest, tax, cash, loans, capital — need dedicated collections
 
 ### Phase 4: Cleanup
 
