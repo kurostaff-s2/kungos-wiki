@@ -18,6 +18,7 @@
 
 **Commits:** `62d6907` → `a3c1467` (10 commits)
 **Scope:** Nomenclature cleanup, TDZ fixes, StatusBadge→Badge, select→Radix Select, Redux connect→useSelector, TanStack Table cell renderers
+**Status:** E2E regression testing needed — see priority list below
 
 ---
 
