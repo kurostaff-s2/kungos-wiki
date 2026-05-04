@@ -2364,4 +2364,83 @@ The Ledgers page shows vendor codes (`AMAZ290010`) instead of names because the 
 3. Update frontend to use `vendors/list` endpoint
 4. Ledgers page lookup: `vendors.find(v => v.vendor_code === key)` → `vendor.name`
 
+---
+
+## TO BE DECIDED — Unified Identity Model
+
+These items define the target architecture but require schema reconciliation before implementation. All ship in the single big-bang deployment.
+
+### TBD-1: Merge kteam + gaming `CustomUser` schemas
+
+**Current state:** kteam and gaming backends each have their own `CustomUser` with different field sets. Both use `userid` as PK and `phone` as a key, but field names, types, and constraints differ.
+
+**Target:** Single `users_customuser` table. One identity per person. `phone` as universal lookup key.
+
+**Decision needed:** Read gaming backend `CustomUser` schema, reconcile field differences, produce merged model.
+
+### TBD-2: Identity vs. role separation
+
+**Target model:**
+
+```
+CustomUser (identity — one row per person)
+  ├── userid (PK, e.g. USR001)
+  ├── phone (universal lookup key)
+  └── bg_code, div_code, branch_code (tenant)
+
+Roles (separate tables, FK to CustomUser or CafeWalkin):
+  ├── CafeUser — cafe role (member/staff/admin), branch-registered
+  ├── TournamentPlayer — esports participant (skills, rank, history)
+  └── TeamMembership — team roster (team FK, player FK, role)
+```
+
+**Decision needed:** Confirm role table boundaries. Does esports need a separate `TournamentPlayer` or is `CustomUser` + team membership enough?
+
+### TBD-3: Walkin-to-user merge flow
+
+**Target:** `CafeWalkin` is pre-identity. When a walkin registers, create `CustomUser`, link existing walkin, merge wallets.
+
+```
+1. Walkin exists: walkin_id=WLN001, phone=98765, tenant=BG/DIV/BR
+2. Walkin registers → CustomUser(userid=USR001, phone=98765, tenant=BG/DIV/BR)
+3. CafeUser(user=USR001, user_type=member)
+4. CafeWalkin.user → USR001 (link, don't delete)
+5. Wallet (walkin=WLN001) → resolves to user via walkin.user
+```
+
+**Decision needed:** Does `CafeWalkin` get a `user` FK post-registration, or is it archived and replaced? Wallet ownership transfer strategy.
+
+### TBD-4: Esports data migration (MongoDB → PostgreSQL)
+
+**Current:** `players`, `teams`, `tournaments` in MongoDB. No FKs to identity.
+
+**Target:** PostgreSQL tables with FKs to `CustomUser`/`CafeWalkin`.
+
+```
+TournamentPlayer:
+  player_id (PK)
+  user (FK → CustomUser, nullable)
+  walkin (FK → CafeWalkin, nullable)
+  display_name, skills, rank
+  bg_code, div_code, branch_code
+
+EsportsTeam:
+  team_id (PK)
+  name, captain (FK → TournamentPlayer)
+  bg_code
+
+TeamMembership:
+  team (FK → EsportsTeam)
+  player (FK → TournamentPlayer)
+  role (player/substitute/coach)
+```
+
+**Decision needed:** Esports MongoDB schema audit. Field mapping from Mongo docs to PG columns. Data migration strategy (deduplication, phone→userid resolution).
+
+### TBD-5: Gaming backend `CustomUser` schema audit
+
+**Blocker for TBD-1 through TBD-4.** Gaming backend `CustomUser` has not been read. Field differences from kteam version are unknown. Cannot produce merged model without it.
+
+**Action:** Read gaming backend `users/models.py` (or equivalent). Produce field-by-field diff. Decide keep/drop/merge for each field.
+
 
