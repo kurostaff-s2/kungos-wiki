@@ -1204,11 +1204,13 @@ GET /shared/health/reports
 
 ### Phase 1: Fix Broken Contracts
 
-| Item | Endpoint | Fix |
-|------|----------|-----|
-| Financials format | `accounts/financials` | Return `{date, description, type, amount, reference}` list |
-| Export path alias | `accounts/inwardinvoices` | Add alias route (no hyphen → hyphen) |
-| Sales collection | `accounts/revenue` | Verify `outwardinvoices` vs `outwarddebitnotes` |
+| Item | Endpoint | Fix | Status |
+|------|----------|-----|--------|
+| Financials format | `accounts/financials` | Return `{date, description, type, amount, reference}` list | ✅ Fixed |
+| Export path alias | `accounts/export` | Added dynamic `export_data` action with `type` param | ✅ Fixed |
+| Sales collection | `accounts/revenue` | Fixed: queries `outwardInvoices` (was `outwardDebitNotes`) | ✅ Fixed |
+| Envelope compatibility | All reporting | Added `reportingFetcher()` — unwraps `{data, meta}` | ✅ Fixed |
+| Code param standardization | All reporting | `division`→`div_code`, `branch`→`branch_code` | ✅ Fixed |
 
 ### Phase 2: Migrate Endpoints
 
