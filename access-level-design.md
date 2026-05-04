@@ -574,6 +574,7 @@ All tenant identifiers use **cascade codes** derived from the legal name:
 - Archive Accesslevel table (move to `accesslevel_archive`)
 - Remove `accesslevels.json` template file
 - Clean up dead code (`KEY_ALIAS`, legacy serializers)
+- **Remove `usertype` field entirely** — DB column dropped (migration 0010), but 50+ stale references remain in `users/views.py`, `users/api/viewsets.py`, `users/otp_utils.py`, `users/serializers.py`, `users/models.py` (manager), `users/management/commands/`. Replace with RBAC role checks.
 
 ### Migration Script — Safety Nets
 
