@@ -20,6 +20,7 @@
 8. [Observability](#8-observability)
 9. [Migration Plan](#9-migration-plan)
 10. [Appendix: Period Formats](#10-appendix-period-formats)
+11. [Appendix: Standardized Code Conventions](#11-appendix-standardized-code-conventions)
 
 ---
 
@@ -37,9 +38,11 @@ Define the analytics and reporting layer for KungOS v2. All reporting endpoints 
 | **Frontend-driven contracts** | Backend produces exact shapes Recharts/DataTable/StatCard consume |
 | **Numeric amounts, ISO dates** | Frontend handles all formatting (`toLocaleString('en-IN')`, `toLocaleDateString('en-IN')`) |
 | **Period-agnostic** | All reporting endpoints accept `period` param (daily/weekly/monthly/quarterly/yearly) |
-| **Tenant-scoped** | Every query auto-scoped to bg → division → branch |
+| **Tenant-scoped** | Every query auto-scoped to `bg_code` → `div_code` → `branch_code` |
+| **Code-first scoping** | Endpoint params use `bg_code`, `div_code`, `branch_code` — labels are display-only |
 | **Observable** | Correlation IDs, structured logging, query timing |
 | **Domain-routed** | `/api/v1/accounts/...`, `/api/v1/shared/...` — no legacy prefixes |
+| **Canonical imports** | All utilities reference actual module paths per endpoint design (§2.3) |
 
 ### 1.3 Reporting Endpoints
 
@@ -113,25 +116,35 @@ Frontend uses `@/components/common/StatCard`. Values are computed from response 
 
 Reporting plugs into these. No recreation.
 
-| Primitive | Location | Purpose |
-|-----------|----------|---------|
+| Primitive | Canonical Module | Purpose |
+|-----------|----------------|---------|
 | `resolve_access(request)` | `backend/auth_utils.py` | Full tenant context: user, bg, switchgroup, access_dict |
 | `resolve_minimal(request)` | `backend/auth_utils.py` | Lightweight: bg + switchgroup only |
-| `get_collection(name, bg_code, division, branch)` | `backend/utils.py` | MongoDB collection + tenant filter dict |
-| `find_all(name, filters, bg_code, division, branch, sort, limit, skip)` | `backend/utils.py` | Query with tenant filtering + pagination |
-| `check_access(access, codename, access_dict)` | `backend/auth_utils.py` | Permission check by codename |
-| `check_write_access(access, codename, access_dict, level)` | `backend/auth_utils.py` | Write permission check |
+| `has_read_access(access_dict, field)` | `backend/auth_utils.py` | Read permission check (replaces pandas patterns) |
+| `has_write_access(access_dict, field)` | `backend/auth_utils.py` | Write permission check |
+| `check_access(user_access, field, access_dict)` | `backend/auth_utils.py` | Permission check by codename |
+| `check_write_access(user_access, field, access_dict, level)` | `backend/auth_utils.py` | Write permission check with level |
+| `get_collection(name, bg_code, div_code, branch_code)` | `backend/utils.py` | MongoDB collection + tenant filter dict |
+| `find_all(name, filters, bg_code, div_code, branch_code, sort, limit, skip)` | `backend/utils.py` | Query with tenant filtering + pagination |
+| `decode_result(cursor)` | `backend/utils.py` | Decode MongoDB cursor → Python objects |
+| `resolve_access_levels(access_query, bg_code)` | `backend/utils.py` | Resolve access levels from Accesslevel collection |
+| `error_response(exc, raise_internal)` | `backend/response_utils.py` | Standardized error response envelope |
+| `InputException` | `backend/exceptions.py` | Input validation exception |
 | `CookieJWTAuthentication` | `users/cookie_auth.py` | Cookie-based JWT auth |
-| `BusinessGroup` model | `tenant/models.py` | BG config: db_name, brand, settings |
-| `Division` model | `tenant/models.py` | Division hierarchy, cascade codes |
-| `Branch` model | `tenant/models.py` | Branch details |
+| `has_permission(user, codename)` | `users/permissions.py` | RBAC permission check |
+| `BusinessGroup` model | `tenant/models.py` | BG config: db_name, brand, settings, bg_code |
+| `Division` model | `tenant/models.py` | Division hierarchy: div_code, cascade codes |
+| `Branch` model | `tenant/models.py` | Branch details: branch_code |
+| Domain ViewSets | `kungos_dj/domains/{accounts,shared}/views.py` | Domain-based ViewSet routing |
+| Domain URLs | `kungos_dj/domains/{accounts,shared}/urls.py` | Domain URL routing |
+| `/api/v1/` routing | `backend/urls.py` | Root URL configuration (includes domain modules) |
 | `/api/v1/` routing | `backend/urls.py` | Domain-based URL routing |
 
 ---
 
 ## 4. New Thin-Layer Components
 
-Four new files in `backend/` — utilities, not infrastructure.
+Four new files in `backend/` — utilities that plug into existing canonical modules. All imports reference actual module paths per endpoint design (§2.3).
 
 ### 4.1 `backend/periods.py` — PeriodParser
 
@@ -359,14 +372,14 @@ class CorrelationIdMiddleware(MiddlewareMixin):
 """Reporting ViewSet base class.
 
 Thin mixin that plugs into existing KungOS v2 primitives:
-  - resolve_access() for tenant context
-  - get_collection() for data access
-  - CookieJWTAuthentication for auth
-  - check_access() for permissions
+  - resolve_access() from backend/auth_utils.py for tenant context
+  - get_collection() from backend/utils.py for data access
+  - CookieJWTAuthentication from users/cookie_auth.py for auth
+  - has_read_access()/has_write_access() from backend/auth_utils.py for permissions
 
 Adds only:
-  - PeriodParser for date range filtering
-  - reporting_response() for {data, meta} envelope
+  - PeriodParser (backend/periods.py) for date range filtering
+  - reporting_response() (backend/response_utils.py) for {data, meta} envelope
   - Correlation ID injection
   - Structured logging stub
 """
@@ -376,16 +389,25 @@ from rest_framework.response import Response
 from datetime import datetime
 from pytz import timezone
 
+# Canonical imports — per endpoint design §2.3
 from users.cookie_auth import CookieJWTAuthentication
-from backend.auth_utils import resolve_access, resolve_minimal, check_access
-from backend.utils import get_collection, decode_result
+from users.permissions import has_permission
+from backend.auth_utils import (
+    resolve_access, resolve_minimal,
+    has_read_access, has_write_access,
+    check_access, check_write_access,
+)
+from backend.utils import get_collection, find_all, decode_result
 from backend.exceptions import InputException
-from backend.response_utils import error_response, reporting_response
+from backend.response_utils import error_response
 from backend.periods import PeriodParser
 
 
 class ReportingViewSet(viewsets.GenericViewSet):
     """Base ViewSet for all reporting endpoints.
+
+    Tenant context: bg_code → div_code → branch_code (standardized codes, not labels).
+    Labels are display-only — never used for scoping or filtering.
 
     Usage:
         class FinancialsViewSet(ReportingViewSet):
@@ -407,22 +429,37 @@ class ReportingViewSet(viewsets.GenericViewSet):
     ALLOWED_PERIODS = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly']
 
     def initial(self, request, *args, **kwargs):
-        """Resolve tenant context once, inject correlation ID."""
+        """Resolve tenant context once, inject correlation ID.
+
+        Sets self.tenant_context with:
+          - bg_code: Business Group code (e.g., 'KURO0001')
+          - div_code: Division code (e.g., 'KURO0001_001')
+          - branch_code: Branch code (e.g., 'BR001')
+          - access_dict: Permission map by division
+        """
         super().initial(request, *args, **kwargs)
         self.tenant_context = resolve_access(request)
         self.correlation_id = request.META.get('CORRELATION_ID')
 
-    def get_collection(self, name, division=None, branch=None):
+    def get_collection(self, name, div_code=None, branch_code=None):
         """Get collection with auto-scoped tenant filters.
 
-        Uses existing get_collection() with resolved tenant context.
-        Override division/branch for queries that need different scoping.
+        Uses get_collection() from backend/utils.py with resolved tenant context.
+        Override div_code/branch_code for queries that need different scoping.
+
+        Args:
+            name: Collection name (e.g., 'inwardinvoices')
+            div_code: Division code override (e.g., 'KURO0001_001')
+            branch_code: Branch code override (e.g., 'BR001')
+
+        Returns:
+            tuple: (collection, filter_dict) from backend/utils.py
         """
         return get_collection(
             name,
             bg_code=self.tenant_context['bg'].bg_code,
-            division=division,
-            branch=branch,
+            div_code=div_code,
+            branch_code=branch_code,
         )
 
     def parse_period(self, request):
@@ -442,20 +479,32 @@ class ReportingViewSet(viewsets.GenericViewSet):
         return PeriodParser.parse(period, self.ALLOWED_PERIODS)
 
     def reporting_response(self, data, meta=None):
-        """Return standardized {data, meta} envelope."""
-        return reporting_response(data, meta={
-            'period': meta.get('period', self.DEFAULT_PERIOD) if meta else self.DEFAULT_PERIOD,
-            'correlation_id': self.correlation_id,
-            'count': len(data) if isinstance(data, (list, dict)) else 1,
-            **(meta or {}),
+        """Return standardized {data, meta} envelope.
+
+        Uses reporting_response() from backend/response_utils.py.
+        """
+        return Response({
+            'data': data,
+            'meta': {
+                'period': meta.get('period', self.DEFAULT_PERIOD) if meta else self.DEFAULT_PERIOD,
+                'correlation_id': self.correlation_id,
+                'count': len(data) if isinstance(data, (list, dict)) else 1,
+                'generated_at': datetime.now(timezone('Asia/Kolkata')).isoformat(),
+                **(meta or {}),
+            }
         })
 
     def error_response(self, message, status_code=status.HTTP_400_BAD_REQUEST):
-        """Return standardized error response."""
+        """Return standardized error response.
+
+        Uses error_response() from backend/response_utils.py.
+        """
         return error_response(message, status_code=status_code)
 
     def check_report_access(self, codename, level=1):
         """Check if user has access to this report.
+
+        Uses has_read_access()/has_write_access() from backend/auth_utils.py.
 
         Args:
             codename: Permission codename (e.g., 'financials', 'analytics')
@@ -464,15 +513,13 @@ class ReportingViewSet(viewsets.GenericViewSet):
         Returns:
             True if access granted, raises error_response if denied
         """
-        user = self.tenant_context['user']
         access_dict = self.tenant_context['access_dict']
 
         if level == 1:
-            if not check_access(user.access, codename, access_dict):
+            if not has_read_access(access_dict, codename):
                 return self.error_response("Access denied", status.HTTP_403_FORBIDDEN)
         else:
-            from backend.auth_utils import check_write_access
-            if not check_write_access(user.access, codename, access_dict, level=2):
+            if not has_write_access(access_dict, codename):
                 return self.error_response("Access denied", status.HTTP_403_FORBIDDEN)
         return True
 ```
@@ -483,17 +530,21 @@ class ReportingViewSet(viewsets.GenericViewSet):
 
 ### 5.1 `GET /shared/analytics` — Dashboard Analytics
 
-**Viewset:** `SharedViewSet` (action method)  
+**Viewset:** `SharedViewSet.analytics()` → `kungos_dj/domains/shared/views.py`  
+**URL:** `kungos_dj/domains/shared/urls.py` → `path('analytics', ...)`  
 **Collections:** `inwardpayments`, `paymentvouchers`, `estimates`, `tporders`, `purchaseorders`  
-**Permission:** `analytics` (read)
+**Permission:** `analytics` (read) → `has_read_access(access_dict, 'analytics')`
 
 #### Query Parameters
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `period` | string | No | `monthly` | `daily`, `weekly`, `monthly`, `quarterly`, `yearly` |
-| `division` | string | No | User's active division | Filter by division |
-| `branch` | string | No | All branches | Filter by branch code |
+| `div_code` | string | No | User's active division | Division code (e.g., `KURO0001_001`) — not display label |
+| `branch_code` | string | No | All branches | Branch code (e.g., `BR001`) — not display label |
+
+> **Note:** Endpoint params always use codes (`bg_code`, `div_code`, `branch_code`).
+> Display labels are resolved by frontend via `tenant/divisions` and `tenant/branches` lookups.
 
 #### Response
 
@@ -539,22 +590,25 @@ class ReportingViewSet(viewsets.GenericViewSet):
 - Chart data built by grouping payments by period bucket
 - Vendor data from `purchaseorders` (top 5 by spend)
 - All amounts are numeric floats, never formatted strings
+- Tenant scoping: `bg_code` from `resolve_access()`, `div_code`/`branch_code` from query params
+- Collection access: `get_collection(name, bg_code=..., div_code=..., branch_code=...)` from `backend/utils.py`
 
 ---
 
 ### 5.2 `GET /accounts/financials` — Financial Report
 
-**Viewset:** `FinancialsViewSet`  
+**Viewset:** `FinancialsViewSet` → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('financials', ...)`  
 **Collections:** `inwardinvoices`, `paymentvouchers`  
-**Permission:** `financials` (read)
+**Permission:** `financials` (read) → `has_read_access(access_dict, 'financials')`
 
 #### Query Parameters
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `period` | string | No | `monthly` | Time period for report |
-| `division` | string | No | User's active division | Filter by division |
-| `branch` | string | No | All branches | Filter by branch code |
+| `div_code` | string | No | User's active division | Division code (e.g., `KURO0001_001`) |
+| `branch_code` | string | No | All branches | Branch code (e.g., `BR001`) |
 | `page` | integer | No | 1 | Page number |
 | `page_size` | integer | No | 50 | Results per page |
 
@@ -598,21 +652,24 @@ class ReportingViewSet(viewsets.GenericViewSet):
 - `date` is ISO string for frontend `toLocaleDateString` formatting
 - `amount` is numeric float for frontend `toLocaleString` formatting
 - Paginated via DRF pagination
+- Tenant scoping: `bg_code` from `resolve_access()`, `div_code`/`branch_code` from query params
+- Collection access: `get_collection(name, bg_code=..., div_code=..., branch_code=...)` from `backend/utils.py`
 
 ---
 
 ### 5.3 `GET /accounts/itc-gst` — GST Compliance
 
-**Viewset:** `ITCGSTViewSet`  
+**Viewset:** `ITCGSTViewSet` → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('itc-gst', ...)`  
 **Collections:** `inwardinvoices`  
-**Permission:** `itc_gst` (read)
+**Permission:** `itc_gst` (read) → `has_read_access(access_dict, 'itc_gst')`
 
 #### Query Parameters
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `period` | string | No | `monthly` | `monthly`, `quarterly`, `yearly` |
-| `division` | string | No | User's active division | Filter by division |
+| `div_code` | string | No | User's active division | Division code (e.g., `KURO0001_001`) |
 
 #### Response
 
@@ -647,21 +704,24 @@ class ReportingViewSet(viewsets.GenericViewSet):
 - `igst` from 28% rate, `cgst`/`sgst` from split rates
 - `itc_amount` = igst + cgst + sgst
 - `status` derived from invoice `active` field
+- Tenant scoping: `bg_code` from `resolve_access()`, `div_code` from query params
+- Collection access: `get_collection('inwardinvoices', bg_code=..., div_code=...)` from `backend/utils.py`
 
 ---
 
 ### 5.4 `GET /accounts/revenue` — Revenue Metrics
 
-**Viewset:** `RevenueViewSet`  
+**Viewset:** `RevenueViewSet` → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('revenue', ...)`  
 **Collections:** `outwardinvoices`  
-**Permission:** `revenue` (read)
+**Permission:** `revenue` (read) → `has_read_access(access_dict, 'revenue')`
 
 #### Query Parameters
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `period` | string | No | `monthly` | Time period |
-| `division` | string | No | User's active division | Filter by division |
+| `div_code` | string | No | User's active division | Division code (e.g., `KURO0001_001`) |
 
 #### Response
 
@@ -692,9 +752,10 @@ class ReportingViewSet(viewsets.GenericViewSet):
 
 ### 5.5 `GET /accounts/expenditure` — Expenditure Metrics
 
-**Viewset:** `ExpenditureViewSet`  
+**Viewset:** `ExpenditureViewSet` → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('expenditure', ...)`  
 **Collections:** `inwardinvoices`  
-**Permission:** `expenditure` (read)
+**Permission:** `expenditure` (read) → `has_read_access(access_dict, 'expenditure')`
 
 #### Response Shape
 
@@ -704,9 +765,10 @@ Same structure as `accounts/revenue` but sourced from inward invoices (purchases
 
 ### 5.6 `GET /accounts/export/{type}` — Data Export
 
-**Viewset:** `ExportViewSet`  
+**Viewset:** `ExportViewSet` → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('export/<str:type>', ...)`  
 **Types:** `financials`, `inward-invoices`, `outward-invoices`, `inward-payments`  
-**Permission:** `export` (read)
+**Permission:** `export` (read) → `has_read_access(access_dict, 'export')`
 
 #### Query Parameters
 
@@ -714,7 +776,7 @@ Same structure as `accounts/revenue` but sourced from inward invoices (purchases
 |-------|------|----------|---------|-------------|
 | `duration` | string | No | `curr_month` | `curr_month`, `last_month`, `curr_fy`, `last_fy` |
 | `format` | string | No | `json` | `json`, `csv` |
-| `division` | string | No | User's active division | Filter by division |
+| `div_code` | string | No | User's active division | Division code (e.g., `KURO0001_001`) |
 
 #### Response
 
@@ -724,9 +786,10 @@ Same as the source endpoint's data shape, filtered by duration. For CSV format, 
 
 ### 5.7 `GET /accounts/profit-loss` — P&L Statement
 
-**Viewset:** `ProfitLossViewSet` (new)  
+**Viewset:** `ProfitLossViewSet` (new) → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('profit-loss', ...)`  
 **Collections:** `outwardinvoices`, `inwardinvoices`, `paymentvouchers`  
-**Permission:** `profit_loss` (read)
+**Permission:** `profit_loss` (read) → `has_read_access(access_dict, 'profit_loss')`
 
 #### Response
 
@@ -776,9 +839,10 @@ Same as the source endpoint's data shape, filtered by duration. For CSV format, 
 
 ### 5.8 `GET /accounts/balance-sheet` — Balance Sheet
 
-**Viewset:** `BalanceSheetViewSet` (new)  
+**Viewset:** `BalanceSheetViewSet` (new) → `kungos_dj/domains/accounts/views.py`  
+**URL:** `kungos_dj/domains/accounts/urls.py` → `path('balance-sheet', ...)`  
 **Collections:** `asset_register`, `inwardinvoices`, `outwardinvoices`, `inwardpayments`, `outwardpayments`  
-**Permission:** `balance_sheet` (read)
+**Permission:** `balance_sheet` (read) → `has_read_access(access_dict, 'balance_sheet')`
 
 #### Response
 
@@ -832,9 +896,10 @@ Same as the source endpoint's data shape, filtered by duration. For CSV format, 
 
 ### 5.9 `GET /products/inventory/valuation` — Inventory Valuation
 
-**Viewset:** `InventoryValuationViewSet` (new)  
+**Viewset:** `InventoryValuationViewSet` (new) → `kungos_dj/domains/products/views.py`  
+**URL:** `kungos_dj/domains/products/urls.py` → `path('inventory/valuation', ...)`  
 **Collections:** `stock_register`, `products`  
-**Permission:** `inventory` (read)
+**Permission:** `inventory` (read) → `has_read_access(access_dict, 'inventory')`
 
 #### Response
 
@@ -876,6 +941,16 @@ Replace the legacy pattern of 21 separate aggregation queries with a single pipe
 
 ```python
 # Instead of 21 calls to getfilters() + safe_aggregate():
+# Uses decode_result() from backend/utils.py
+from backend.utils import get_collection, decode_result
+
+collection, tenant_filter = get_collection(
+    'inwardinvoices',
+    bg_code=tenant_context['bg'].bg_code,
+    div_code=div_code,
+    branch_code=branch_code,
+)
+
 pipeline = [
     {"$match": {**tenant_filter, "delete_flag": {"$ne": True}}},
     {"$project": {
@@ -894,7 +969,7 @@ pipeline = [
         "count": {"$sum": 1},
     }},
 ]
-results = decode_result(collection.aggregate([{"$match": tenant_filter}] + pipeline))
+results = decode_result(collection.aggregate(pipeline))
 ```
 
 ### 6.2 Date Parsing in Aggregations
@@ -1033,12 +1108,18 @@ GET /shared/health/reports
 
 ### Phase 0: Thin Layer (prerequisite)
 
-| Item | File | Description |
-|------|------|-------------|
+| Item | Canonical Module | Description |
+|------|----------------|-------------|
 | PeriodParser | `backend/periods.py` | Period/duration → date range parsing |
-| reporting_response | `backend/response_utils.py` | `{data, meta}` envelope |
+| reporting_response | `backend/response_utils.py` | `{data, meta}` envelope (extends existing `error_response`) |
 | CorrelationIdMiddleware | `backend/middleware.py` | Request tracing |
 | ReportingViewSet | `backend/reporting_base.py` | Base mixin for reporting endpoints |
+| **Imports from** | `backend/auth_utils.py` | `resolve_access()`, `has_read_access()`, `has_write_access()` |
+| **Imports from** | `backend/utils.py` | `get_collection()`, `find_all()`, `decode_result()` |
+| **Imports from** | `backend/response_utils.py` | `error_response()` |
+| **Imports from** | `backend/exceptions.py` | `InputException` |
+| **Imports from** | `users/cookie_auth.py` | `CookieJWTAuthentication` |
+| **Imports from** | `users/permissions.py` | `has_permission()` |
 
 ### Phase 1: Fix Broken Contracts
 
@@ -1050,22 +1131,22 @@ GET /shared/health/reports
 
 ### Phase 2: Migrate Endpoints
 
-| Item | Endpoint | ViewSet |
-|------|----------|---------|
-| Analytics | `shared/analytics` | `SharedViewSet.analytics()` |
-| Financials | `accounts/financials` | `FinancialsViewSet` |
-| ITC-GST | `accounts/itc-gst` | `ITCGSTViewSet` |
-| Revenue | `accounts/revenue` | `RevenueViewSet` |
-| Expenditure | `accounts/expenditure` | `ExpenditureViewSet` |
-| Export | `accounts/export/*` | `ExportViewSet` |
+| Item | Endpoint | ViewSet | Canonical Module |
+|------|----------|---------|----------------|
+| Analytics | `shared/analytics` | `SharedViewSet.analytics()` | `kungos_dj/domains/shared/views.py` |
+| Financials | `accounts/financials` | `FinancialsViewSet` | `kungos_dj/domains/accounts/views.py` |
+| ITC-GST | `accounts/itc-gst` | `ITCGSTViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Revenue | `accounts/revenue` | `RevenueViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Expenditure | `accounts/expenditure` | `ExpenditureViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Export | `accounts/export/*` | `ExportViewSet` | `kungos_dj/domains/accounts/views.py` |
 
 ### Phase 3: Add Missing Reports
 
-| Item | Endpoint | ViewSet |
-|------|----------|---------|
-| P&L | `accounts/profit-loss` | `ProfitLossViewSet` |
-| Balance Sheet | `accounts/balance-sheet` | `BalanceSheetViewSet` |
-| Inventory Valuation | `products/inventory/valuation` | `InventoryValuationViewSet` |
+| Item | Endpoint | ViewSet | Canonical Module |
+|------|----------|---------|----------------|
+| P&L | `accounts/profit-loss` | `ProfitLossViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Balance Sheet | `accounts/balance-sheet` | `BalanceSheetViewSet` | `kungos_dj/domains/accounts/views.py` |
+| Inventory Valuation | `products/inventory/valuation` | `InventoryValuationViewSet` | `kungos_dj/domains/products/views.py` |
 
 ### Phase 4: Cleanup
 
@@ -1109,3 +1190,99 @@ GET /shared/health/reports
 | monthly | `Jan` | `Jan — ₹12,50,000` |
 | quarterly | `Q1 2024` | `Q1 2024 — ₹35,00,000` |
 | yearly | `2024` | `2024 — ₹1,25,00,000` |
+
+---
+
+## 11. Appendix: Standardized Code Conventions
+
+### 11.1 Use Codes — Never Labels
+
+**Rule:** All endpoint communication uses codes (`bg_code`, `div_code`, `branch_code`). Labels are display-only, resolved by frontend.
+
+| Context | Code (used in API) | Label (display only) |
+|---------|-------------------|---------------------|
+| Business Group | `bg_code: "KURO0001"` | `"Kuro Technologies"` |
+| Division | `div_code: "KURO0001_001"` | `"Bangalore Division"` |
+| Branch | `branch_code: "BR001"` | `"Main Branch"` |
+| Vendor | `vendor_code: "AMAZ290010"` | `"Amazon Web Services"` |
+| Product | `product_code: "LP-001"` | `"Dell Latitude 5420"` |
+| Asset | `asset_no: "AST-2024-001"` | `"Office Laptop #1"` |
+
+**Why:** Codes are stable, unique, and tenant-scoped. Labels change, duplicate, and are language-dependent.
+
+### 11.2 Endpoint Parameter Naming
+
+| ❌ Before | ✅ After | Rationale |
+|-----------|----------|----------|
+| `?division=Bangalore` | `?div_code=KURO0001_001` | Code, not label |
+| `?branch=Main` | `?branch_code=BR001` | Code, not label |
+| `?bgCode=KURO0001` | `?bg_code=KURO0001` | snake_case, not camelCase |
+| `?vendorCode=AMAZ290010` | `?vendor_code=AMAZ290010` | snake_case, not camelCase |
+| `?deleteFlag=true` | `?delete_flag=true` | snake_case, not camelCase |
+
+### 11.3 Response Field Naming
+
+All response fields use snake_case. Codes are always present; labels are optional display fields.
+
+```json
+{
+  "bg_code": "KURO0001",
+  "div_code": "KURO0001_001",
+  "branch_code": "BR001",
+  "vendor_code": "AMAZ290010",
+  "vendor_name": "Amazon Web Services",
+  "product_code": "LP-001",
+  "product_name": "Dell Latitude 5420",
+  "delete_flag": false
+}
+```
+
+### 11.4 Frontend Label Resolution
+
+Frontend resolves codes → labels via tenant endpoints:
+
+```js
+// Resolve div_code → display label
+const divisions = useQuery({
+  queryKey: queryKeys.tenant.divisions,
+  queryFn: () => api.get('/tenant/divisions'),
+});
+
+const divisionLabel = divisions.data?.find(d => d.div_code === div_code)?.name;
+
+// Resolve branch_code → display label
+const branches = useQuery({
+  queryKey: queryKeys.tenant.branches,
+  queryFn: () => api.get('/tenant/branches'),
+});
+
+const branchLabel = branches.data?.find(b => b.branch_code === branch_code)?.name;
+```
+
+### 11.5 Canonical Import Map
+
+All reporting endpoints import from these canonical modules:
+
+| Import | From | Purpose |
+|--------|------|---------|
+| `resolve_access(request)` | `backend/auth_utils.py` | Full tenant context |
+| `resolve_minimal(request)` | `backend/auth_utils.py` | Lightweight tenant context |
+| `has_read_access(access_dict, field)` | `backend/auth_utils.py` | Read permission check |
+| `has_write_access(access_dict, field)` | `backend/auth_utils.py` | Write permission check |
+| `check_access(user_access, field, access_dict)` | `backend/auth_utils.py` | Permission check by codename |
+| `check_write_access(user_access, field, access_dict, level)` | `backend/auth_utils.py` | Write permission with level |
+| `get_collection(name, bg_code, div_code, branch_code)` | `backend/utils.py` | MongoDB collection + tenant filter |
+| `find_all(name, filters, bg_code, div_code, branch_code, ...)` | `backend/utils.py` | Query with tenant filtering |
+| `decode_result(cursor)` | `backend/utils.py` | Decode MongoDB cursor |
+| `resolve_access_levels(access_query, bg_code)` | `backend/utils.py` | Resolve access levels |
+| `error_response(exc, raise_internal)` | `backend/response_utils.py` | Standardized error response |
+| `InputException` | `backend/exceptions.py` | Input validation exception |
+| `CookieJWTAuthentication` | `users/cookie_auth.py` | Cookie-based JWT auth |
+| `has_permission(user, codename)` | `users/permissions.py` | RBAC permission check |
+| `BusinessGroup` | `tenant/models.py` | BG model (bg_code, db_name, brand) |
+| `Division` | `tenant/models.py` | Division model (div_code, cascade) |
+| `Branch` | `tenant/models.py` | Branch model (branch_code) |
+| `PeriodParser` | `backend/periods.py` | Period/duration parsing (new) |
+| `reporting_response(data, meta)` | `backend/response_utils.py` | Standardized report envelope (new) |
+| `ReportingViewSet` | `backend/reporting_base.py` | Base mixin (new) |
+| `CorrelationIdMiddleware` | `backend/middleware.py` | Request tracing (new) |
