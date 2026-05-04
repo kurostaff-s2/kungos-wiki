@@ -1047,13 +1047,16 @@ const rows = creditorData?.flatMap(fy =>
 
 #### 6.1.3 Revenue Endpoint
 
-**Endpoint:** `GET /api/v1/accounts/financials?period=<period>`
+**Endpoint:** `GET /api/v1/accounts/revenue?period=<period>`
+
+**Purpose:** All income categories — sales (in-store, TP, service), inward payments, cafe sessions, esports winnings, refunds credit.
 
 **Query parameters:**
 
 | Param | Required | Values | Description |
 |-------|----------|--------|-------------|
 | `period` | Optional | `monthly`, `quarterly`, `yearly` | Report period |
+| `category` | Optional | `sales`, `inward_payments`, `cafe_sessions`, `esports`, `refunds`, `all` | Filter by category |
 
 **Response:**
 
@@ -1061,16 +1064,22 @@ const rows = creditorData?.flatMap(fy =>
 {
   "status": "SUCCESS",
   "data": {
-    "totalRevenue": 500000,
-    "totalExpenses": 350000,
-    "profitMargin": 30,
-    "chartData": [
-      { "period": "Jan", "revenue": 50000, "expenses": 35000 },
-      { "period": "Feb", "revenue": 55000, "expenses": 38000 }
+    "period": "monthly",
+    "total": 500000,
+    "breakdown": {
+      "sales": 300000,
+      "inward_payments": 100000,
+      "cafe_sessions": 50000,
+      "esports": 25000,
+      "refunds": 25000
+    },
+    "trend": [
+      { "period": "Jan", "amount": 45000 },
+      { "period": "Feb", "amount": 52000 }
     ],
-    "vendors": [
-      { "name": "Vendor A", "amount": 45000, "percentage": 35 },
-      { "name": "Vendor B", "amount": 32000, "percentage": 25 }
+    "topSources": [
+      { "source": "In-store sales", "amount": 180000, "percentage": 36 },
+      { "source": "TP orders", "amount": 120000, "percentage": 24 }
     ]
   }
 }
