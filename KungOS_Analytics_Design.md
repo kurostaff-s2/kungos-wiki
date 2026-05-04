@@ -1256,6 +1256,59 @@ GET /shared/health/reports
 
 ---
 
+## 9.1 Collection Migration — Production Deployment
+
+**Management command:** `migrate_reporting_fields`
+
+**Location:** `teams/management/commands/migrate_reporting_fields.py`
+
+### Pre-deployment checklist
+
+1. **Backup MongoDB** — `KungOS_Mongo_One` + all BG-specific DBs
+2. **Run dry-run** — verify document counts before executing:
+   ```bash
+   python manage.py migrate_reporting_fields
+   ```
+3. **Execute migration** — apply normalized fields:
+   ```bash
+   python manage.py migrate_reporting_fields --run
+   ```
+4. **Single BG** — test on one BG first:
+   ```bash
+   python manage.py migrate_reporting_fields --run --bg-code KURO0001
+   ```
+
+### Fields migrated
+
+| Target Field | Source Collection | Source Path | Description |
+|-------------|-------------------|-------------|-------------|
+| `cash_balance` | `accounts` | `type='cash_in_hand'` → `content.amount` | Cash on hand balance |
+| `bank_balance` | `accounts` | `type='banks'` → `content[].accounts[].amount` (sum) | Total bank balances |
+| `capital` | `accounts` | `type='partners'` → `content[].amount` (sum) | Partner capital |
+| `loan_balance` | `accounts` | `type='loans'` → `content[].amount` (sum) | Total loan amounts |
+| `annual_interest` | `accounts` | `type='loans'` → `content[].interest_rate` × amount | Computed annual interest |
+
+### What the migration does
+
+- Reads all BGs from PostgreSQL (`tenant.models.BusinessGroup`)
+- For each BG, queries MongoDB `accounts` collection
+- Flattens nested `content` structures into top-level fields
+- Adds `migrated_at` timestamp to track which documents were processed
+- Idempotent — safe to re-run (skips already-migrated documents)
+
+### Post-migration verification
+
+```bash
+# Check migrated fields exist
+python manage.py migrate_reporting_fields  # should show "already migrated"
+
+# Verify Balance Sheet returns non-zero values
+curl -H "Authorization: Bearer <token>" \
+  "https://api.kurostaff.com/api/accounts/balance-sheet?period=curr_fy"
+```
+
+---
+
 ## 10. Appendix: Period Formats
 
 ### 10.1 Period String → Label Mapping
