@@ -1,6 +1,6 @@
 # KungOS v2 — Database Testing Plan
 
-**Ground-truthed:** 2026-04-28  
+**Ground-truthed:** 2026-04-29 (verified against live databases)  
 **Sources:** PostgreSQL 16 introspection, MongoDB 8 introspection (`KungOS_Mongo_One`), kuro-gaming-dj-backend code scan, `backend/utils.py` routing scan, Django `INSTALLED_APPS` scan  
 **Purpose:** Validate schema integrity, tenant isolation, migration safety, data quality, and gaming integration status
 
@@ -323,47 +323,46 @@ All names are **exact** — verified via `information_schema.tables`. No aliases
 
 ### 2.2 Collection Inventory (30 collections, 68,441 docs)
 
-#### Tenant-Scoped Collections (9 collections, 49,356 docs) — 100% bgcode/entity/branch
+#### Tenant-Scoped Collections (30 collections, 68,441 docs) — 100% bgcode/entity/branch ✅
 
-| Collection | Docs | bgcode | entity | branch | (bgcode,entity) index |
-|---|---|---|---|---|---|
-| `purchaseorders` | 15,216 | 0 null | ✅ | ✅ | ✅ |
-| `inwardpayments` | 21,026 | 0 null | ✅ | ✅ | ✅ |
-| `estimates` | 4,308 | 0 null | ✅ | ✅ | ✅ |
-| `misc` | 5,512 | 0 null | ✅ | ✅ | ✅ |
-| `products` | 82 | 0 null | ✅ | ✅ | ✅ |
-| `accounts` | 7 | 0 null | ✅ | ✅ | ✅ |
-| `players` | 117 | 0 null | ✅ | ✅ | ✅ |
-| `tournaments` | 3 | 0 null | ✅ | ✅ | ✅ |
-| `reb_users` | 1,982 | 0 null | ✅ | ✅ | ✅ |
+**All collections have been migrated.** The `restore_kuropurchase.py` management command populated `bgcode`, `entity`, and `branch` fields on every document during the kuropurchase → KungOS_Mongo_One migration.
+
+| Collection | Docs | bgcode | entity | branch | (bgcode,entity) index | Notes |
+|---|---|---|---|---|---|---|
+| `purchaseorders` | 15,216 | ✅ | ✅ | ✅ | ✅ | ~99.96% kurogaming |
+| `inwardpayments` | 21,026 | ✅ | ✅ | ✅ | ✅ | ~81% rebellion |
+| `estimates` | 4,308 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
+| `misc` | 5,512 | ✅ | ✅ | ✅ | ✅ | Mixed entity |
+| `products` | 82 | ✅ | ✅ | ✅ | ✅ | Retail products |
+| `accounts` | 7 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
+| `players` | 117 | ✅ | ✅ | ✅ | ✅ | Esports players |
+| `tournaments` | 3 | ✅ | ✅ | ✅ | ✅ | Esports tournaments |
+| `reb_users` | 1,982 | ✅ | ✅ | ✅ | ✅ | Rebellion users |
+| `kgorders` | 9,162 | ✅ | ✅ | ✅ | ✅ | Mixed (8561 rebellion, 601 kurogaming) |
+| `tporders` | 229 | ✅ | ✅ | ✅ | ✅ | TP orders |
+| `tpbuilds` | 123 | ✅ | ✅ | ✅ | ✅ | TP builds |
+| `serviceRequest` | 1,625 | ✅ | ✅ | ✅ | ✅ | Service requests |
+| `outward` | 754 | ✅ | ✅ | ✅ | ✅ | Outward documents |
+| `outwardInvoices` | 1,165 | ✅ | ✅ | ✅ | ✅ | Outward invoices |
+| `outwardCreditNotes` | 150 | ✅ | ✅ | ✅ | ✅ | Outward credit notes |
+| `paymentVouchers` | 3,459 | ✅ | ✅ | ✅ | ✅ | Payment vouchers |
+| `stock_register` | 194 | ✅ | ✅ | ✅ | ✅ | Stock register |
+| `indentpos` | 247 | ✅ | ✅ | ✅ | ✅ | Indent positions |
+| `indentproduct` | 1,490 | ✅ | ✅ | ✅ | ✅ | Indent products |
+| `employee_attendance` | 966 | ✅ | ✅ | ✅ | ✅ | Employee attendance |
+| `vendors` | 409 | ✅ | ✅ | ✅ | ✅ | Vendor records |
+| `teams` | 14 | ✅ | ✅ | ✅ | ✅ | Teams |
+| `presets` | 6 | ✅ | ✅ | ✅ | ✅ | Gaming presets |
+| `tourneyregister` | 56 | ✅ | ✅ | ✅ | ✅ | Tournament registrations |
+| `bgData` | 1 | ✅ | ✅ | ✅ | ❌ | BG metadata — **needs compound index** |
+| `inwardCreditNotes` | 106 | ✅ | ✅ | ✅ | ✅ | Inward credit notes |
+| `inwardDebitNotes` | 3 | ✅ | ✅ | ✅ | ✅ | Inward debit notes |
+| `inwardInvoices` | 16 | ✅ | ✅ | ✅ | ✅ | Inward invoices |
+| `outwardDebitNotes` | 13 | ✅ | ✅ | ✅ | ✅ | Outward debit notes |
 
 **Note:** `reb_users` (with underscore) — NOT `rebusers` (no underscore).
 
-#### Collections Without Tenant Fields (21 collections, 19,085 docs) — Phase 1 incomplete
-
-| Collection | Docs | Notes |
-|---|---|---|
-| `kgorders` | 9,162 | Kuro Gaming orders — no tenant fields |
-| `tporders` | 229 | TP orders |
-| `tpbuilds` | 123 | TP builds |
-| `serviceRequest` | 1,625 | Service requests |
-| `outward` | 754 | Outward documents |
-| `outwardInvoices` | 1,165 | Outward invoices |
-| `outwardCreditNotes` | 150 | Outward credit notes |
-| `paymentVouchers` | 3,459 | Payment vouchers |
-| `stock_register` | 194 | Stock register |
-| `indentpos` | 247 | Indent positions |
-| `indentproduct` | 1,490 | Indent products |
-| `employee_attendance` | 966 | Employee attendance |
-| `vendors` | 409 | Vendor records |
-| `teams` | 14 | Teams |
-| `presets` | 6 | Gaming presets (no tenant fields) |
-| `tourneyregister` | 56 | Tournament registrations |
-| `bgData` | 1 | BG metadata |
-| `inwardCreditNotes` | 106 | Inward credit notes |
-| `inwardDebitNotes` | 3 | Inward debit notes |
-| `inwardInvoices` | 16 | Inward invoices |
-| `outwardDebitNotes` | 13 | Outward debit notes |
+**Migration note:** All tenant fields were populated by `restore_kuropurchase.py`. The legacy dump in `/home/chief/Coding-Projects/db/` contains pre-migration data (without `bgcode`/`branch`).
 
 ### 2.3 Entity Distribution
 
@@ -482,7 +481,7 @@ external_collection = 'external'
 | 12/13 gaming collections missing | Product catalog, cart, orders, payment | Migrate gaming data from backup/source |
 | 5 apps not in INSTALLED_APPS | Any gaming API endpoint | Add apps + create PG models |
 | Per-BG routing still in utils.py | Tenant isolation not fully enforced | Replace with TenantCollection |
-| 20 collections lack tenant fields | Tenant filtering incomplete | Migrate legacy data |
+| bgData missing compound index | Query perf on tenant filter | Add (bgcode, entity) index
 
 ---
 
@@ -702,7 +701,8 @@ These tests exist in the plan but are gated on future work:
 | Gaming PG models (Cart, Wishlist, etc.) | Phase 3 gaming integration | 🔴 High |
 | Station Desktop MongoDB tables | Station Desktop Platform | 🟢 Phase 4 |
 | Per-BG routing removal in `backend/utils.py` | TenantCollection migration | 🔴 High |
-| Tenant fields on 20 legacy collections | Phase 1 data migration | 🔴 High |
+| `bgData` compound index | None — can run now | 🟢 Immediate |
+| Tenant fields on legacy collections | ✅ COMPLETE (2026-04-23) | ✅ Done |
 
 ---
 
@@ -711,7 +711,7 @@ These tests exist in the plan but are gated on future work:
 The DB testing plan is complete when:
 
 1. **All 35 PostgreSQL schemas** validated against ground-truth (table names, column types, nullability, constraints, indexes)
-2. **All 30 MongoDB collections** verified for existence and tenant field coverage (100% bgcode/entity/branch on 9 collections, documented gap on 21)
+2. **All 30 MongoDB collections** verified for existence and tenant field coverage (100% bgcode/entity/branch on ALL 30 — migration complete via restore_kuropurchase.py)
 3. **Entity distribution** matches expected patterns within 5% tolerance (56.8% kurogaming / 43.2% rebellion)
 4. **13 gaming collections confirmed missing** — gaming integration gap documented and tracked
 5. **5 gaming apps confirmed not installed** — INSTALLED_APPS gap documented

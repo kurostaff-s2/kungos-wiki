@@ -1,4 +1,0 @@
-[AUTH-TRACE] ✅ Grace period helpers attached to window.__authGracePeriod user.jsx:69:10
-[AUTH-TRACE] loadUser SUCCESS 
-Object { authState: {…}, url: "kuro/user", status: 200, hasUser: true }
-user.jsx:18:11

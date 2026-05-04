@@ -1,0 +1,93 @@
+[AUTH-TRACE] loadUser ERROR 
+Object { authState: {…}, status: 401, cookie: "(empty)", url: "v1/auth/refresh" }
+user.jsx:18:11
+[AUTH-TRACE] loadUser -> AUTH_FAIL (refresh also failed) 
+Object { authState: {…} }
+user.jsx:18:11
+[AUTH-TRACE] pwdLogin START 
+Object { authState: {…}, username: "kuroram@outlook.com" }
+user.jsx:18:11
+[AUTH-TRACE] pwdLogin SUCCESS 
+Object { authState: {…}, status: "SUCCESS", hasUser: true, bg_code: "KURO0001", cookieNote: "jwt_token is httponly (not readable via JS)" }
+user.jsx:18:11
+[pwdLogin] SUCCESS 
+Object { status: "SUCCESS", hasUser: true, bg_code: "KURO0001" }
+user.jsx:111:11
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: true, error: null, dataLength: "undefined" }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: false, isArray: false, searchDataLength: undefined }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: false, isArray: false, searchDataLength: undefined }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: true, error: null, dataLength: "undefined" }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+EstimatesList.jsx:43:10
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_002", enabled: true, isLoading: true, error: null, dataLength: "undefined" }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: false, isArray: false, searchDataLength: undefined }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: false, isArray: false, searchDataLength: undefined }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_002", enabled: true, isLoading: true, error: null, dataLength: "undefined" }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_002", enabled: true, isLoading: false, error: null, dataLength: 0 }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: true, isArray: true, searchDataLength: 0 }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: true, isArray: true, searchDataLength: 0 }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_002", enabled: true, isLoading: false, error: null, dataLength: 0 }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state: 
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+EstimatesList.jsx:43:10
+[EstimatesList] Filtering: 
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+EstimatesList.jsx:53:11
+[EstimatesList] Filtering:  
+Object { hasData: true, isArray: true, searchDataLength: 30 }
+<anonymous code>:1:150327
+[EstimatesList] Query state:  
+Object { isAuthenticated: true, activeDivision: "KURO0001_001", enabled: true, isLoading: false, error: null, dataLength: 30 }
+<anonymous code>:1:150327

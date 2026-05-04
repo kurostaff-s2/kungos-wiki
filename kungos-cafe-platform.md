@@ -366,7 +366,7 @@ This cafe platform **cannot begin until Phase 4 (Testing/CI/CD) is complete** be
 
 1. Unified identity model (`CustomUser.phone` as universal key) depends on user model reconciliation (Phase 1)
 2. Shared wallet requires PostgreSQL schema changes that must not interfere with core data
-3. Tenant context (`bg_code`, `entity`, `branch`) must be stable for cafe data scoping (Phase 1)
+3. Tenant context (`bg_code`, `div_code`, `branch_code`) must be stable for cafe data scoping (Phase 1)
 4. MongoDB consolidation with `bgcode` field must exist for new cafe collections (Phase 1)
 5. React Query + cookie-ready auth must be in place for kiosk app and dashboard (Phase 2)
 6. All core endpoints must be stable before extending the rebellion brand into cafe operations
@@ -380,7 +380,7 @@ This cafe platform **cannot begin until Phase 4 (Testing/CI/CD) is complete** be
 | **Wallet double-spend** | Critical | PostgreSQL row-level locking on wallet balance; transaction log audit trail |
 | **Cross-store partial write** | High | Outbox pattern: both writes in same PostgreSQL transaction, async Mongo side-effect |
 | **Unauthenticated session creation** | Critical | Remove `#@authentication_classes` from `gamers()`; enforce phone lookup + wallet balance check |
-| **Tenant data leakage** | High | `TenantCollection` wrapper enforces `bgcode`+`entity` filtering on all cafe collections |
+| **Tenant data leakage** | High | `TenantCollection` wrapper enforces `bgcode`+`division`+`branch_code` filtering on all cafe collections |
 | **Pricing calculation errors** | Medium | Unit tests for all pricing scenarios (peak hours, weekend, tier discounts) |
 | **Dashboard performance** | Medium | Aggregate at DB level; use MongoDB aggregation pipeline |
 | **Expired sessions** | Medium | Cron job `check_expired_sessions` to auto-close sessions > 8 hours |

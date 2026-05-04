@@ -23,7 +23,7 @@ Accesslevel (40+ columns):
 
 ### Permission Flow
 ```
-Admin assigns permissions → Accesslevel row created (one per entity)
+Admin assigns permissions → Accesslevel row created (one per division)
 User logs in → kuro/user returns all Accesslevel rows → Frontend stores in Redux
 Page loads → useNavAccess(key) resolves sidebar key → backend field name → checks value > 0
 BG switch → bgSwitch POST returns only current BG's access levels → Redux updates
@@ -33,7 +33,7 @@ BG switch → bgSwitch POST returns only current BG's access levels → Redux up
 | Function | What it does | Problem |
 |---|---|---|
 | `business_accesslevel()` | Clones permissions from template JSON file to new user | Static `accesslevels.json` must be manually updated for every new permission |
-| `entity_accesslevel()` | Bulk-creates zero-permission rows for all employees when division is added | Creates N×M rows (employees × divisions) — bloats DB |
+| `division_accesslevel()` | Bulk-creates zero-permission rows for all employees when a division is added | Creates N×M rows (employees × divisions) — bloats DB |
 | `bgSwitch` POST | Returns access levels for switched BG | Only returns current BG's levels → frontend loses other BG permissions |
 | `useNavAccess()` | Frontend permission checker with KEY_ALIAS mapping | Fragile manual mapping between sidebar keys and backend field names |
 
@@ -46,7 +46,7 @@ Every new feature requires:
 - New column migration on Accesslevel model
 - Update to `accesslevels.json` template
 - Add entry to frontend `KEY_ALIAS` mapping
-- Update `entity_accesslevel()` hardcoded dict
+- Update `division_accesslevel()` hardcoded dict
 - Update serializers, forms, admin panels
 
 **Cost:** 5+ touchpoints per new permission. High chance of missing one.
@@ -204,7 +204,7 @@ id             BIGINT PK (surrogate)
 userid         FK → CustomUser.userid
 role_code      FK → roles.role_code
 bg_code        VARCHAR(10)       — NULL = global, value = scoped to this BG
-division       VARCHAR(200)      — NULL = all divisions, value = scoped to this division (was `entity`)
+division       VARCHAR(200)      — NULL = all divisions, value = scoped to this division (was `division`)
 assigned_by    FK → CustomUser
 assigned_at    TIMESTAMP
 ```
@@ -235,7 +235,7 @@ userid         FK → CustomUser.userid
 perm_code      FK → permissions.perm_code
 level          INTEGER           — 0=explicitly revoke, 1=view, 2=edit, 3=admin
 bg_code        VARCHAR(10)       — NULL = global override
-entity         VARCHAR(200)      — NULL = all entities
+division       VARCHAR(200)      — NULL = all divisions
 reason         TEXT NOT NULL     — Justification required (audit compliance)
 granted_by     FK → CustomUser
 granted_at     TIMESTAMP
@@ -263,7 +263,7 @@ expires_at     TIMESTAMP         — NULL = permanent; set for temporary grants
 
 1. **Roles are always additive across scopes.** Max-level wins.
 2. **`user_permissions` overrides are checked FIRST.** A level-0 override blocks access regardless of roles.
-3. **Entity-scoped roles ADD permissions, they don't restrict BG-wide ones.** To restrict: use `user_permissions` override with `level = 0`.
+3. **Division-scoped roles ADD permissions, they don't restrict BG-wide ones.** To restrict: use `user_permissions` override with `level = 0`.
 
 ### Algorithm
 ```python
@@ -335,7 +335,7 @@ def get_effective_role_perms(role_code):
 ```
 
 ### Why Max-Level, Not First-Match?
-A user can hold multiple roles (e.g. `store_manager` at BG level and `super_admin` scoped to entity "rebellion"). First-match returns an arbitrary result depending on query order. Max-level is deterministic and always grants the highest access the user is entitled to across all their roles.
+A user can hold multiple roles (e.g. `store_manager` at BG level and `super_admin` scoped to division "rebellion"). First-match returns an arbitrary result depending on query order. Max-level is deterministic and always grants the highest access the user is entitled to across all their roles.
 
 ---
 
@@ -383,7 +383,7 @@ def validate_role_assignment(userid, role_code, bg_code, division):
 #### 2. Admin UI Warning
 ```
 ⚠️ Assigning "store_manager" will grant invoices.outward (level 2)
-   This overrides the restriction from "cashier" (level 0) on same entity.
+   This overrides the restriction from "cashier" (level 0) on same division.
    [Proceed anyway]  [Cancel]
 ```
 
@@ -396,7 +396,7 @@ Wrong way (won't work):
 Right way (works):
   Keep store_manager on rebellion
   INSERT user_permissions:
-    userid=KCAD002, perm_code=invoices.outward, entity=rebellion, level=0,
+    userid=KCAD002, perm_code=invoices.outward, division=rebellion, level=0,
     reason="Restricted from invoice editing per branch policy"
 ```
 
@@ -522,7 +522,7 @@ As BGs and divisions grow, avoid creating one role per business unit variant (e.
 
 ## 11a. Cascade Code Naming Convention
 
-All tenant identifiers use **cascade codes** derived from the legal entity name:
+All tenant identifiers use **cascade codes** derived from the legal name:
 
 | Model | Code Format | Example |
 |---|---|---|
@@ -567,7 +567,7 @@ All tenant identifiers use **cascade codes** derived from the legal entity name:
 - ~~Prerequisite: Signed-off mismatch report showing <1% discrepancies~~
 - ~~Switch all backend permission checks to new resolution algorithm~~
 - ~~Deprecate Accesslevel model (keep as read-only audit table)~~
-- ~~Remove old endpoints (`business_accesslevel()` rewritten for Division model, `entity_accesslevel()` param renamed to `division`)
+- ~~Remove old endpoints (`business_accesslevel()` rewritten for Division model, `division_accesslevel()` param renamed to `division`)
 - ~~Enable Redis cache invalidation hooks on role/permission writes~~
 
 ### Phase 4: Cleanup — PENDING

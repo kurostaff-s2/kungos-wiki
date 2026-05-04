@@ -1,8 +1,9 @@
 # KungOS v2 — Database Source of Truth
 
 **Ground-truthed:** 2026-04-29 (verified against live databases)  
-**Sources:** PostgreSQL 16 introspection (`information_schema`), MongoDB 8 introspection (`KungOS_Mongo_One`), Django model scan (`rebellion/cafe/models.py`, `users/models.py`, etc.), kuro-gaming-dj-backend code scan  
-**Purpose:** Single authoritative reference for all database tables, collections, columns, constraints, indexes, and migration status  
+**Sources:** PostgreSQL 16 introspection (`information_schema`), MongoDB 8 introspection (`KungOS_Mongo_One`), Django model scan (`cafe/models.py`, `users/models.py`, etc.), kuro-gaming-dj-backend code scan  
+**Purpose:** Single authoritative reference for all database tables, collections, columns, constraints, indexes  
+**API & data design:** `~/llm-wiki/KungOS_Endpoint_Design.md` (canonical reference for routing, contracts, RBAC)  
 **Status:** ✅ Verified against live databases — no speculation
 
 ---
@@ -11,15 +12,15 @@
 
 | Aspect | Status |
 |---|---|
-| **PostgreSQL tables** | 34 KungOS tables (users:8, platform:2, cafe:14, tenant:4, entity:4, careers:1, view:1) — 9 Django framework tables excluded |
+| **PostgreSQL tables** | 34 KungOS tables (users:8, platform:2, cafe:14, tenant:4, careers:1, view:1) + **7 order tables** (`orders_core` + 6 detail tables, planned) |
 | **MongoDB collections** | 31 collections, 68,443 documents in `KungOS_Mongo_One` — 100% tenant-scoped |
-| **Cafe platform** | 14 `caf_platform_*` PostgreSQL tables (NOT MongoDB) — all implemented |
-| **Gaming integration** | 12/13 gaming collections MISSING from MongoDB; 5 gaming PG models NOT merged |
-| **Tenant fields** | ✅ All 31 collections have `(bgcode, entity, branch)` tenant fields — migration complete |
+| **Orders** | `orders_core` + 6 detail tables (PostgreSQL) — replaces 4 Mongo collections (`estimates`, `kgorders`, `tporders`, `serviceRequest`) |
+| **Cafe platform** | 14 `caf_platform_*` PostgreSQL tables — all implemented |
+| **Gaming integration** | 12/13 gaming collections MISSING from MongoDB; deferred to Phase 3b |
+| **Tenant fields** | ✅ All 31 collections have `(bgcode, division, branch)` tenant fields — migration complete |
 | **PostgreSQL RLS** | ❌ NOT implemented — tenant isolation via app-level filtering (deferred to Phase 4) |
-| **Tenant indexes** | 31/31 collections have `(bgcode, entity)` compound index (including `bgData` ✅, `entities` ✅) |
-| **Tenant entity model** | ✅ New `tenant` app: `brands`, `entities`, `entity_branches`, `bg_entity_branches` with composite FK enforcement |
-| **DB name** | `KungOS_Mongo_One` (NOT `kuropurchase` as spec says) |
+| **Tenant indexes** | 31/31 collections have `(bgcode, division)` compound index |
+| **DB name** | `KungOS_Mongo_One` |
 
 ---
 
@@ -40,6 +41,25 @@
 | `users_switchgroupmodel` | 4 | `id` | BG switching tokens |
 | `users_common_counters` | 3 | `id` | Legacy counter tracking |
 
+#### Orders Schema (7 tables) — **PLANNED** (Phase 8, PostgreSQL)
+
+Replaces 4 MongoDB collections: `estimates`, `kgorders`, `tporders`, `serviceRequest`. Core + detail tables pattern: dense core (zero nulls), type-specific detail tables (zero waste).
+
+| Table | Cols | PK | Notes |
+|---|---|---|---|
+| `orders_core` | 13 | `id` | Shared by all order types (estimates, in-store, tp, service, eshop) |
+| `estimate_detail` | 5 | `order_id` | FK → orders_core.id; version, validity, confirmed_by, confirmed_at, description |
+| `in_store_detail` | 9 | `order_id` | FK → orders_core.id; estimate_ref, order_date, dispatchby_date, amount_due, invoice_generated, invoice_no, shpadd, po_ref, builds_count |
+| `tp_order_detail` | 7 | `order_id` | FK → orders_core.id; TP-specific fields |
+| `service_detail` | 5 | `order_id` | FK → orders_core.id; sr_no, warranty_status, warranty_expiry, diagnosis, repair_cost |
+| `eshop_detail` | 22 | `order_id` | FK → orders_core.id; payment_option, pay_reference, upi_address, order_expiry, fees, tax, discount, shipping, 12 timeline fields |
+
+**`orders_core` columns:** `id`, `orderid` (UNIQUE), `order_type` (ENUM), `status` (ENUM), `total_amount`, `customer_id`, `division`, `bg_code`, `billadd` (JSONB), `products` (JSONB), `channel`, `created_at`, `updated_at`
+
+**Migration:** 15,925 docs from 4 Mongo collections → core + detail tables. See `~/llm-wiki/orders-migration-plan.md`.
+
+**Note:** Indent (`indentpos`, `indentproduct`) stays in MongoDB — procurement document, no customer/shipping/payment, flexible schema needed.
+
 #### Platform Schema (2 tables)
 
 | Table | Cols | PK | Notes |
@@ -51,8 +71,8 @@
 
 | Table | Cols | PK | Notes |
 |---|---|---|---|
-| `caf_platform_cafes` | 10 | `id` | Cafe registry |
-| `caf_platform_stations` | 12 | `id` | UNIQUE `(cafe_id, code)` |
+| `caf_platform_cafes` | 12 | `id` | Cafe registry |
+| `caf_platform_stations` | 14 | `id` | UNIQUE `(cafe_id, code)` |
 | `caf_platform_sessions` | 17 | `id` | 4 FKs: cafe_id, game_id, price_plan_id, station_id |
 | `caf_platform_session_leases` | 8 | `id` | Lease versioning |
 | `caf_platform_station_commands` | 9 | `id` | Station remote control |
@@ -75,16 +95,16 @@
 | `kungos_tenant_profile` | Tenant profile |
 | `kungos_tenant_templates` | Email/content templates |
 
-#### ~~Tenant Entity Schema (4 tables)~~ — **DELETED**, replaced by cascade-code models
+#### ~~Tenant Entity Schema (4 tables)~~ — **DELETED**, replaced by cascade-code models in `tenant_divisions`
 
 | Table | PK | FKs | Notes |
 |---|---|---|---|
 | ~~`brands`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — brand data folded into `tenant_divisions.brand_name/brand_code` |
-| ~~`entities`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — replaced by `tenant_divisions` |
+| ~~`divisions`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — replaced by `tenant_divisions` |
 | ~~`entity_branches`~~ | ~~`id`~~ | — | **DELETED** (migration 0007) — replaced by `tenant_branches` |
 | ~~`bg_entity_branches`~~ | ~~composite~~ | — | **DELETED** (migration 0007) — replaced by FK chain `branch → division → bg` |
 
-> **`tenant_scope_view`** — **DROPPED** (migration 0004 created it, dropped during entity→division migration). No longer needed — division/branch FKs provide scope resolution.
+> **`tenant_scope_view`** — **DROPPED** (migration 0004 created it, dropped during division field migration). No longer needed — division/branch FKs provide scope resolution.
 
 #### Tenant Schema (5 tables) — `tenant` app, cascade code PKs
 
@@ -149,9 +169,9 @@
 |---|---|---|
 | `id` | bigint | PRIMARY KEY |
 | `analytics` | **integer** | Only int field besides id |
-| `branches` | jsonb | Entity branches array |
+| `branches` | jsonb | Division branches array |
 | `bg_code` | varchar | Business group |
-| `division` | varchar | Division code (was `entity`). Stores div_code like `KURO0001_001` (was brand slug like `kurogaming`) |
+| `division` | varchar | Division code (renamed from legacy `division`). Stores div_code like `KURO0001_001` (was brand slug like `kurogaming`) |
 | `userid` | varchar | User reference |
 | `inward_invoices` | varchar | Permission field (string) |
 | `inward_creditnotes` | varchar | Permission field (string) |
@@ -212,7 +232,7 @@
 | `id` | bigint | NOT NULL | PRIMARY KEY |
 | `userid` | varchar | NOT NULL | Index: `usr_tenant_uid_bg` (composite with bg_code) |
 | `bg_code` | varchar | NOT NULL | Index: composite + standalone |
-| `division` | jsonb | NOT NULL | Division context (was `entity`) |
+| `division` | jsonb | NOT NULL | Division context (renamed from legacy `division`) |
 | `branches` | jsonb | NOT NULL | Branch array |
 | `token_key` | varchar | NULL | |
 | `scope` | varchar | NOT NULL | **NOT `scope_type`** — confirmed |
@@ -313,7 +333,25 @@
 
 **Composite indexes:** `(cafe_id, status)`, `(station_id, status)`
 
-#### `caf_platform_stations` (12 cols)
+#### `caf_platform_cafes` (12 cols)
+
+| Column | Type | Nullable | Notes |
+|---|---|---|---|
+| `id` | bigint | NOT NULL | PRIMARY KEY |
+| `name` | varchar | NOT NULL | UNIQUE |
+| `code` | varchar | NOT NULL | UNIQUE + Index (e.g. CAF001) |
+| `timezone` | varchar | NOT NULL | e.g. Asia/Kolkata |
+| `currency` | varchar | NOT NULL | e.g. INR |
+| `bg_code` | varchar | NOT NULL | Tenant: business group (FK → tenant_business_groups) |
+| `div_code` | varchar | NOT NULL | Tenant: division (FK → tenant_divisions) |
+| `branch_code` | varchar | NOT NULL | Tenant: branch (FK → tenant_branches) |
+| `status` | varchar | NOT NULL | open/closed/maintenance |
+| `created_at` | timestamptz | NOT NULL | |
+| `updated_at` | timestamptz | NOT NULL | |
+
+**Indexes:** `(bg_code)`, `(div_code)`, `(branch_code)`, `(code)`
+
+#### `caf_platform_stations` (14 cols)
 
 | Column | Type | Nullable | Notes |
 |---|---|---|---|
@@ -324,7 +362,9 @@
 | `device_fingerprint` | varchar | NOT NULL | |
 | `status` | varchar | NOT NULL | |
 | `last_seen_at` | timestamptz | NULL | |
-| `bg_code` | varchar | NOT NULL | |
+| `bg_code` | varchar | NOT NULL | Tenant: business group (denormalized from Cafe) |
+| `div_code` | varchar | NOT NULL | Tenant: division (denormalized from Cafe) |
+| `branch_code` | varchar | NOT NULL | Tenant: branch (denormalized from Cafe) |
 | `created_at` | timestamptz | NOT NULL | |
 | `updated_at` | timestamptz | NOT NULL | |
 | `cafe_id` | bigint | NOT NULL | FK + Index |
@@ -367,25 +407,25 @@
 
 ### 2.2 Collection Inventory
 
-#### Tenant-Scoped Collections (31 collections, 68,443 docs) — 100% bgcode/entity/branch ✅
+#### Tenant-Scoped Collections (31 collections, 68,443 docs) — 100% bgcode/division/branch ✅
 
-**All collections have been migrated.** The `restore_kuropurchase.py` management command populated `bgcode`, `entity`, and `branch` fields on every document during the kuropurchase → KungOS_Mongo_One migration.
+**All collections have been migrated.** The `restore_kuropurchase.py` management command populated `bgcode`, `division`, and `branch` fields on every document during the kuropurchase → KungOS_Mongo_One migration.
 
 | Collection | Docs | bgcode | division | branch_code | (bgcode,division) index | Notes |
 |---|---|---|---|---|---|---|
 | `purchaseorders` | 15,216 | ✅ | ✅ | ✅ | ✅ | ~99.96% kurogaming |
 | `inwardpayments` | 21,026 | ✅ | ✅ | ✅ | ✅ | ~81% rebellion |
-| `estimates` | 4,308 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
-| `misc` | 5,512 | ✅ | ✅ | ✅ | ✅ | Mixed entity |
+| `estimates` | 4,308 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming — **→ orders_core + estimate_detail (PG)** |
+| `misc` | 5,512 | ✅ | ✅ | ✅ | ✅ | Mixed division |
 | `products` | 82 | ✅ | ✅ | ✅ | ✅ | Retail products |
 | `accounts` | 7 | ✅ | ✅ | ✅ | ✅ | 100% kurogaming |
 | `players` | 117 | ✅ | ✅ | ✅ | ✅ | Esports players |
 | `tournaments` | 3 | ✅ | ✅ | ✅ | ✅ | Esports tournaments |
 | `reb_users` | 1,982 | ✅ | ✅ | ✅ | ✅ | Rebellion users |
-| `kgorders` | 9,162 | ✅ | ✅ | ✅ | ✅ | Mixed (8561 rebellion, 601 kurogaming) |
-| `tporders` | 229 | ✅ | ✅ | ✅ | ✅ | TP orders |
+| `kgorders` | 9,162 | ✅ | ✅ | ✅ | ✅ | In-store orders — **→ orders_core + in_store_detail (PG)** |
+| `tporders` | 229 | ✅ | ✅ | ✅ | ✅ | TP orders — **→ orders_core + tp_order_detail (PG)** |
 | `tpbuilds` | 123 | ✅ | ✅ | ✅ | ✅ | TP builds |
-| `serviceRequest` | 1,625 | ✅ | ✅ | ✅ | ✅ | Service requests |
+| `serviceRequest` | 1,625 | ✅ | ✅ | ✅ | ✅ | Service requests — **→ orders_core + service_detail (PG)** |
 | `outward` | 754 | ✅ | ✅ | ✅ | ✅ | Outward documents |
 | `outwardInvoices` | 1,165 | ✅ | ✅ | ✅ | ✅ | Outward invoices |
 | `outwardCreditNotes` | 150 | ✅ | ✅ | ✅ | ✅ | Outward credit notes |
@@ -406,11 +446,11 @@
 
 **Note:** `reb_users` (with underscore) — NOT `rebusers` (no underscore).
 
-**Note:** `entities` collection (2 docs) — legacy entity metadata for kurogaming and rebellion. Has `bgcode`, `division`, `branch_code` fields. Bill/shipping address data migrated to `tenant_division_addresses` table.
+**Note:** `divisions` collection (2 docs) — legacy entity metadata for kurogaming and rebellion. Has `bgcode`, `division`, `branch_code` fields. Bill/shipping address data migrated to `tenant_division_addresses` table.
 
 **Migration note:** All tenant fields were populated by `restore_kuropurchase.py` during the kuropurchase → KungOS_Mongo_One migration. The legacy dump in `/home/chief/Coding-Projects/db/` contains pre-migration data (without `bgcode`/`branch`).
 
-### 2.3 Division Distribution (was Entity Distribution)
+### 2.3 Division Distribution (was Division Distribution)
 
 **Total:** 68,443 docs across 4 divisions. MongoDB `division` field stores div_code cascade codes (not brand slugs). Old brand_slug values (`kurogaming`, `rebellion`) migrated to div_codes (`KURO0001_001`, `KURO0001_002`, `KURO0001_003`, `DUNE0003_001`).
 
@@ -422,14 +462,14 @@
 | `DUNE0003_001` | rebellion | 36,099 | 52.8% |
 | **Total** | — | **68,443** | **100%** |
 
-> **Note:** Division distribution differs from the old entity distribution because the migration split brand_slug `rebellion` into two divisions: `KURO0001_002` (KURO CADENCE LLP) and `DUNE0003_001` (DUNE LABS LLP).
+> **Note:** Division distribution differs from the old division distribution because the migration split brand_slug `rebellion` into two divisions: `KURO0001_002` (KURO CADENCE LLP) and `DUNE0003_001` (DUNE LABS LLP).
 
 **Per-collection breakdown (tenant-scoped collections):**
 
 | Collection | KURO0001_001 (kurogaming) | KURO0001_002 (rebellion) | Notes |
 |---|---|---|---|
 | `purchaseorders` | 15,210 (99.96%) | 6 (0.04%) | ~100% kurogaming |
-| `entities` | 1 (50.0%) | 1 (50.0%) | Entity metadata |
+| `divisions` | 1 (50.0%) | 1 (50.0%) | Division metadata |
 | `inwardpayments` | 3,899 (18.6%) | 17,127 (81.4%) | ~81% rebellion |
 | `estimates` | 4,308 (100%) | 0 | 100% kurogaming |
 | `accounts` | 7 (100%) | 0 | 100% kurogaming |
@@ -445,7 +485,7 @@ The original spec planned cafe data in MongoDB. All were moved to PostgreSQL for
 
 | Was Planned (MongoDB) | Now In (PostgreSQL) | Reason |
 |---|---|---|
-| `stations` | `caf_platform_stations` (12 cols) | FKs to cafes, sessions, station_commands/events |
+| `stations` | `caf_platform_stations` (14 cols) | FKs to cafes, sessions, station_commands/events |
 | `gamers` (enhanced) | `caf_platform_sessions` (17 cols) + `caf_platform_users` (8 cols) | Relational billing, wallet FKs, session state machine |
 | `game_library` | `caf_platform_games` (13 cols) | FK to cafes, cafe-specific game catalog |
 | `cafe_payments` | `caf_platform_wallet_transactions` (9 cols) | FK to wallets, transaction audit trail |
@@ -454,7 +494,7 @@ The original spec planned cafe data in MongoDB. All were moved to PostgreSQL for
 
 | Table | Cols | Purpose |
 |---|---|---|
-| `caf_platform_cafes` | 10 | Cafe registry (name, code, timezone, currency, bg_code, entity, status) |
+| `caf_platform_cafes` | 12 | Cafe registry (name, code, timezone, currency, bg_code, div_code, branch_code, status) |
 | `caf_platform_session_leases` | 8 | Lease versioning for station timer authority |
 | `caf_platform_station_commands` | 9 | Station remote control (lock, unlock, reboot) |
 | `caf_platform_station_events` | 8 | Station event log (heartbeat, game launch, errors) |
@@ -466,15 +506,7 @@ The original spec planned cafe data in MongoDB. All were moved to PostgreSQL for
 
 ### 3.3 MongoDB Collections — NOT Enhanced for Cafe Use
 
-The following MongoDB collections were **not enhanced** for cafe use (the planned enhancements were abandoned when data moved to PostgreSQL):
-
-| Collection | Was Planned Enhancement | Actual Status |
-|---|---|---|
-| `reb_users` | `station_role`, `customer_type`, `wallet_id`, `is_staff` | ❌ Not enhanced — staff lookup stays lightweight |
-| `kgorders` | `order_type: cafe` | ❌ Not enhanced — cafe orders use PG sessions |
-| `inwardpayments` | `session_id`, `payment_type` | ❌ Not enhanced — cafe payments in PG |
-| `stock_register` | `product_type: food` | ❌ Not enhanced — cafe food orders separate |
-| `gamers` | Full field expansion | ❌ Not enhanced — gamers → PG sessions |
+Cafe data moved to PostgreSQL. These MongoDB collections were never enhanced for cafe use.
 
 ---
 
@@ -482,7 +514,7 @@ The following MongoDB collections were **not enhanced** for cafe use (the planne
 
 ### 4.1 Missing Collections (12 of 13)
 
-The kuro-gaming-dj-backend codebase exists at `/home/chief/Coding-Projects/kuro-gaming-dj-backend` but has NOT been merged into kteam-dj-chief.
+The kuro-gaming-dj-backend codebase exists at `/home/chief/Coding-Projects/kuro-gaming-dj-backend` but has NOT been merged into kteam-dj-chief. Deferred to Phase 3b.
 
 | # | Collection | Gaming Code Reference | Status |
 |---|---|---|---|
@@ -511,12 +543,12 @@ The kuro-gaming-dj-backend defines these models but they are NOT in kteam-dj-chi
 | `Cart` | Shopping cart | ❌ NOT MERGED |
 | `Wishlist` | Wishlist | ❌ NOT MERGED |
 | `Addresslist` | Customer addresses | ❌ NOT MERGED |
-| `Orders` | E-commerce orders | ❌ NOT MERGED |
-| `OrderItems` | Order line items | ❌ NOT MERGED |
+| `Orders` | E-commerce orders | ❌ NOT MERGED — e-commerce orders → `orders_core` + `eshop_detail` (PG) |
+| `OrderItems` | Order line items | ❌ NOT MERGED — line items stored as JSONB in `orders_core.products` |
 
 ### 4.3 Root Cause
 
-- None of the 5 gaming apps (`accounts`, `products`, `orders`, `payment`, `games`) are in `INSTALLED_APPS`
+- Gaming apps not yet merged into `kungos_dj/domains/eshop/`
 - The separate `products` MongoDB database (which held the gaming data) no longer exists
 - Gaming views reference 13 collection names via variables but these collections don't exist in any database
 
@@ -526,15 +558,15 @@ The kuro-gaming-dj-backend defines these models but they are NOT in kteam-dj-chi
 
 ### 5.1 Status: ALL 31 Collections Migrated ✅
 
-All 31 collections have `(bgcode, division, branch_code)` fields on 100% of documents. Field rename: `entity` → `division` (value changed from brand slug to div_code), `branch` → `branch_code`.
+All 31 collections have `(bgcode, division, branch_code)` fields on 100% of documents. Field rename: `division` field renamed from legacy `division` (value changed from brand slug to div_code), `branch` → `branch_code`.
 
 **Migration completed via:** `python manage.py restore_kuropurchase --dump <file> --restore`
 
-**Compound index coverage:** 31/31 collections have `(bgcode, entity)` compound index — all complete ✅
+**Compound index coverage:** 31/31 collections have `(bgcode, division)` compound index — all complete ✅
 
 ### 5.2 Complete — All Compound Indices Added ✅
 
-All 31 collections now have `(bgcode, division)` compound indexes. Old `(bgcode, entity)` indexes dropped. No remaining actions.
+All 31 collections now have `(bgcode, division)` compound indexes. Old `(bgcode, division)` indexes dropped. No remaining actions.
 
 ---
 
@@ -555,7 +587,7 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 | Table | Constraint | Status |
 |---|---|---|
 | `users_customuser` | Boolean fields (is_active, is_staff, etc.) | ✅ Enforced by boolean type (no explicit CHECK needed) |
-| ~~`entities`~~ | ~~entity_type CHECK~~ | **DELETED** (migration 0007) — table dropped |
+| ~~`divisions`~~ | ~~division_type CHECK~~ | **DELETED** (migration 0007) — table dropped |
 
 ### 6.3 Legacy Tables Removed
 
@@ -592,9 +624,7 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 |---|---|---|
 | `backup_kuropurchase` | Pre-restore backup of all collections to JSON | `KungOS_Mongo_One` |
 | `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with division population | `KungOS_Mongo_One` |
-| `migrate_entity_to_division` | Rename `entity` → `division` (brand slug → div_code), `branch` → `branch_code`, rebuild indexes | `KungOS_Mongo_One` |
-
-**Note:** Command name says `kuropurchase` but targets `KungOS_Mongo_One`. The name is legacy from the spec.
+| `migrate_entity_to_division` | Rename `division` field renamed from legacy `division` (brand slug → div_code), `branch` → `branch_code`, rebuild indexes | `KungOS_Mongo_One` |
 
 ---
 
@@ -602,16 +632,16 @@ Tenant isolation in PostgreSQL relies entirely on **application-level filtering*
 
 | Document | Purpose |
 |---|---|
+| [`KungOS_Endpoint_Design.md`](./KungOS_Endpoint_Design.md) | **Canonical reference** — API routing, response contracts, RBAC, tenant context, migration strategy |
 | [`kungos_v2_db.md`](./kungos_v2_db.md) | **This file** — single source of truth for DB schema |
 | [`KungOS_v2.md`](./KungOS_v2.md) | Master modernization plan (architecture, phases, cutover) |
-| [`kungos-cafe-platform.md`](./kungos-cafe-platform.md) | Cafe platform design spec (14 PG tables, API endpoints, station platform) |
+| [`orders-migration-plan.md`](./orders-migration-plan.md) | Orders migration: Mongo → PG core + detail tables (11 validation passes) |
+| [`CAFE_PLATFORM.md`](./CAFE_PLATFORM.md) | Cafe platform design spec (14 PG tables, API endpoints, station platform) |
 | [`kungos_db_test_plan.md`](./kungos_db_test_plan.md) | Database testing plan (execution steps for validation) |
-| [`kungos_mongo_divergence.md`](./kungos_mongo_divergence.md) | Spec vs reality analysis (13 gaming collections missing, DB name discrepancy) |
-| `CAFE_PLATFORM.md` | DJ repo copy of cafe platform spec (identical to `kungos-cafe-platform.md`) |
 
 ---
 
 **Last verified:** 2026-05-01 against live PostgreSQL 16 and MongoDB 8 databases.
 **Audit fixes applied 2026-04-29:** brand_slug corrected (BG0001→kurogaming), entities CHECK constraint added, knox_authtoken dropped, collection count updated to 31, bgData index confirmed present.  
 **Next verification:** After gaming integration merge.  
-**Tenant field migration date:** 2026-04-23 (initial `bgcode`/`entity`/`branch` via `restore_kuropurchase.py`) → 2026-05-01 (entity→division rename via `migrate_entity_to_division.py`)
+**Tenant field migration date:** 2026-04-23 (initial `bgcode`/`division`/`branch` via `restore_kuropurchase.py`) → 2026-05-01 (division field rename via `migrate_entity_to_division.py`)

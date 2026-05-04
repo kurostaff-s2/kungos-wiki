@@ -20,26 +20,17 @@
 - [[kungos-migration-tools]] — Production migration tools: Django management commands for MongoDB dump restore, entity population, and tenant isolation (restore_kuropurchase, backup_kuropurchase, deploy_restore)
 
 ## Entities
-- [[kteam-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across kteam-dj-be + kteam-fe-chief, LLM integration assessment for chat bot/OCR/automations, 20-week remediation plan
-- [[kteam-system-architecture]] — Full system architecture: kteam-dj-be (Django/DRF/PostgreSQL/MongoDB/MeiliSearch) + kteam-fe-chief (React 19/Vite 8/Redux 5/Tailwind v4), 155+ API endpoints, 129+ pages, data flow, multi-tenant model, known issues, prioritized recommendations (P1-P4)
-- [[Qwen3.5-35B-A3B]] — Secondary fast model, also served via llama.cpp
-- [[DeepSeek-R1-Distill-Qwen-32B]] — Reasoning model with speculative decoding (Qwen2.5-1.5B draft), served on port 11435
-- [[RTX 3090]] — Hardware: 24GB VRAM, primary GPU for local inference
-- [[96GB DDR5 RAM]] — System memory
-- [[llama.cpp]] — Local LLM inference engine with CUDA 12.8 support
-- [[RAGFlow]] — Self-hosted RAG knowledge base (Elasticsearch, MinIO, Redis, MySQL, Qwen3-Embedding-0.6B)
-- [[SearXNG]] — Self-hosted metasearch engine
-- [[CUDA 12.8]] — GPU compute toolkit
+- [[kteam-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across kteam-dj-be + kteam-fe-chief
+- [[kteam-system-architecture]] — Full system architecture: kteam-dj-be + kteam-fe-chief, 155+ API endpoints, 129+ pages
+- [[local-ai-stack]] — Local LLM inference: endpoints, models, RAG, search
+- [[llm-setup-analysis]] — Hardware specs, performance benchmarks, optimization recommendations
 
 ## LLM Tools
-- [[Claude Code]] — Uses qwen3.6-35b-a3b via local proxy at 127.0.0.1:8001
-- [[OpenCode]] — Uses Anthropic-compatible local endpoint at 127.0.0.1:8001
-- [[Codex CLI]] — OpenAI-compatible with skills (imagegen, plugin-creator, skill-creator)
-- [[Cursor]] — Configured with skills (canvas, create-skill, create-rule, subagents)
-- [[OpenClaw]] — Gateway with Telegram bot, local model provider, 16K context, 4096 max tokens
+- **Pi** — Primary coding agent, uses Qwen3.6-27B via port 8001 (OpenAI API)
+- **Claude Code** — Uses local proxy at 127.0.0.1:8001
+- **OpenCode** — Uses local endpoint at 127.0.0.1:8001
 
 ## Infrastructure
-- [[Local AI Stack]] — Full setup: llama.cpp services, model downloads, systemd services, OpenClaw config
 - [[Knox Auth]] — Authentication system used in kteam-dj-be
 - [[PostgreSQL]] — Primary relational database
 - [[MongoDB]] — Document database, daily backups at 22:30

@@ -72,7 +72,7 @@ The program has two workstreams that run in parallel with explicit gating:
 
 The following will be integrated into the unified backend:
 
-- 5 new Django apps: `accounts` (cart, wishlist, addresses), `products` (MongoDB catalog), `orders` (e-commerce orders), `payment` (Cashfree + UPI), `games` (game catalog)
+- Domain modules under `kungos_dj/domains/`: `accounts/`, `orders/`, `eshop/`, `products/`, `vendors/`, `teams/`, `search/`, `shared/`
 - 12 MongoDB collections added to `kuropurchase`: `prods`, `builds`, `kgbuilds`, `custombuilds`, `components`, `accessories`, `monitors`, `networking`, `external`, `games`, `kurodata`, `lists`, `presets`
 - 25 new API endpoints covering product catalog, cart, wishlist, addresses, orders, payments, game catalog
 - Custom PC builder admin functionality (custombuilds + customprice)
@@ -116,9 +116,9 @@ A service owns a business action. Events notify other domains about it. This kee
 
 Data access lives in repositories. Business logic lives in services. HTTP lives in views. This layering is testable and makes cross-store operations explicit.
 
-### 8. Brand-as-Django-app, Domain-as-sub-package
+### 8. Domain-as-Django-app, Brand-as-sub-package
 
-Naming is semantically meaningful: `rebellion/cafe/` for cafe operations, `rebellion/esports/` for esports, `teams/finance/` for finance, `kurogaming/eshop/` for e-commerce. This avoids generic flat-app sprawl.
+Domains are Django apps under `kungos_dj/domains/`: `accounts/`, `orders/`, `eshop/`, `products/`, `vendors/`, `teams/`, `cafe/`, `esports/`. Brand-specific logic lives in sub-packages. This keeps domains reusable across brands and avoids generic flat-app sprawl.
 
 ---
 
@@ -168,68 +168,47 @@ Naming is semantically meaningful: `rebellion/cafe/` for cafe operations, `rebel
 kteam-dj-chief (unified backend)
 ├── backend/
 │   ├── settings.py          — Django settings, django-environ
-│   ├── urls.py              — URL routing
-│   ├── middleware.py        — CorrelationID, tenant context resolution
+│   ├── urls.py              — URL routing (domain-based)
 │   └── logging.py           — Structured JSON logging
-├── plat/                    — Cross-cutting platform primitives (renamed from `platform/` to avoid Python built-in collision)
+├── plat/                    — Cross-cutting platform primitives
 │   ├── shared/              — Pure utilities (no side effects)
-│   │   ├── ancode.py
-│   │   ├── getCounters.py
-│   │   ├── getStates.py
-│   │   └── exporttopdf.py
 │   ├── tenant/              — TenantContext, TenantConfig, TenantCollection
-│   ├── observability/       — CorrelationMiddleware, structured logging
+│   ├── observability/       — CorrelationMiddleware, TenantContextMiddleware, logging
 │   ├── events/              — Domain event bus (emit, register, handlers)
 │   ├── outbox/              — OutboxEvent model, processor, replay
 │   └── health/              — /health/live, /health/ready
-├── core/                    — Domain contracts (Protocols)
-│   ├── finance/protocols.py — IFinanceService
-│   ├── commerce/protocols.py — IOrderService, IWalletService
-│   ├── esports/protocols.py — IEsportsService
-│   ├── cafe/protocols.py   — ICafeSessionService
-│   └── identity/protocols.py — IIdentityService
-├── brands/                  — Brand-specific implementations
-│   ├── kurogaming/
-│   │   ├── cafe/            — Kuro Gaming cafe implementation
-│   │   ├── eshop/           — Kuro Gaming e-commerce
-│   │   └── finance/         — Kuro Gaming finance
-│   ├── rebellion/
-│   │   ├── cafe/            — Rebellion cafe operations
-│   │   ├── esports/         — Rebellion esports
-│   │   └── finance/         — Rebellion finance
-│   └── renderedge/          — RenderEdge (future brand)
-├── apps/                    — Django apps (API surfaces)
-│   ├── users/               — CustomUser, auth, Knox→JWT migration
-│   ├── teams/               — Back-office for ALL brands (renamed from kuroadmin)
-│   │   ├── finance/         — Invoices, payments, vouchers, financials
-│   │   ├── invoicing/       — Inward/outward invoices, credit/debit notes
-│   │   ├── inventory/       — Products, stock register, presets
-│   │   ├── employees/       — Employee management, attendance
-│   │   ├── analytics/       — Analytics, ITC GST
-│   │   └── kurostaff/       — Shared request handlers (merged from kurostaff/)
-│   ├── kurogaming/          — Kuro Gaming brand app (separate from teams)
-│   │   └── eshop/           — E-commerce: cart, wishlist, orders, payment
-│   ├── rebellion/           — Rebellion brand app
-│   │   ├── cafe/            — Cafe management (stations, sessions, wallets)
-│   │   └── esports/         — Esports (tournaments, players, teams)
-│   ├── accounts/            — Cart, Wishlist, Addresslist (from gaming)
-│   ├── products/            — Product catalog, builds, components (from gaming)
-│   ├── orders/              — Orders, OrderItems (from gaming)
-│   ├── payment/             — Cashfree, UPI, webhooks (from gaming)
-│   ├── games/               — Game catalog (from gaming)
-│   ├── careers/             — Career management
-│   └── kungos-admin/        — Sys Admin tenant bootstrap
-└── kurostaff/               — Shared utility library (legacy, merged into teams/)
+├── kungos_dj/               — Django app (renamed from `teams/`)
+│   └── domains/             — Domain-based modules
+│       ├── accounts/        — Finance: invoices, payments, ledgers, vouchers
+│       ├── orders/          — Orders: estimates, in-store, tp, service requests
+│       ├── eshop/           — E-commerce: online retail orders
+│       ├── products/        — Product catalog, inventory, stock
+│       ├── vendors/         — Vendor management
+│       ├── teams/           — Workforce: employees, attendance, payroll
+│       ├── search/          — MeiliSearch domain
+│       └── shared/          — Cross-domain utilities
+├── cafe/                    — Cafe platform (separate Django app, shared multi-tenant)
+│   ├── stations/            — POS station management
+│   ├── sessions/            — Gaming sessions (caf_platform_sessions)
+│   ├── wallet/              — Cafe wallet
+│   └── food-orders/         — Cafe food orders
+├── rebellion/               — Rebellion brand app
+│   └── esports/             — Esports (tournaments, players, teams)
+├── users/                   — Identity & auth (CustomUser, JWT, RBAC)
+├── careers/                 — Career management
+└── kungos-admin/            — Sys Admin tenant bootstrap
 ```
+
+**Note:** `kungos_dj/` replaces the old `teams/` monolith. Domain modules under `kungos_dj/domains/` are clean, testable, and reusable across brands.
 
 ### App structure rationale
 
 | Original | New | Reason |
 |---|---|---|
-| `kuroadmin/` | `teams/` | Serves all brands, not just Kuro Gaming. "Kuro" was a misnomer. |
-| `kurostaff/` | merged into `teams/kurostaff/` | Not a true Django app — it's a shared utility library (2,889 lines). Shared pure utilities stay in `plat/shared/`. Request handlers merge into `teams/kurostaff/`. |
-| Flat gaming apps | `kurogaming/eshop/` sub-package | Generic names (`accounts`, `products`, `orders`) had no brand ownership. `kurogaming/eshop/` preserves ownership. |
-| — | `rebellion/cafe/` sub-package | Cafe operations are a domain within the Rebellion brand. |
+| `kuroadmin/` | `kungos_dj/domains/` | Monolith → domain modules. Clean, testable, reusable. |
+| `kurostaff/` | merged into `kungos_dj/domains/` | Shared utilities → `plat/shared/`. Request handlers → domain modules. |
+| Flat gaming apps | `kungos_dj/domains/eshop/` | E-commerce is a domain, not a brand. Reusable across Kuro Gaming, RenderEdge, etc. |
+| — | `cafe/` (separate Django app) | Cafe platform: sessions, wallet, food-orders. Shared multi-tenant. |
 | — | `rebellion/esports/` sub-package | Esports is a domain within the Rebellion brand. |
 | — | `kungos-admin/` Django app | Sys Admin tenant bootstrap, separate from business back-office. |
 
@@ -237,8 +216,8 @@ kteam-dj-chief (unified backend)
 
 | Store | Responsibility |
 |---|---|
-| **PostgreSQL** | Identity (`CustomUser`), wallets, orders, durable workflow state, outbox events, tenant configuration, financial records |
-| **MongoDB** | High-volume operational collections (`products`, `inwardpayments`, `inwardinvoices`, `outward`, `stock_register`), catalog data, document-heavy workflows (`estimates`, `serviceRequest`, `players`, `tournaments`), cafe operations (`stations`, `sessions`, `game_library`) |
+| **PostgreSQL** | Identity (`CustomUser`), wallets, **all orders** (`orders_core` + detail tables), cafe sessions (`caf_platform_sessions`), durable workflow state, outbox events, tenant configuration, financial records |
+| **MongoDB** | High-volume operational collections (`products`, `inwardpayments`, `inwardinvoices`, `outward`, `stock_register`), catalog data, (`players`, `tournaments`), cafe operations (`stations`, `game_library`) |
 
 ### MongoDB tenancy target
 
@@ -276,7 +255,7 @@ These workstreams are designed during the core program but implemented after cor
 **Key design:**
 - Phone is the universal key across all three brands: Kuro Gaming (cafe), RenderEdge (retail), Rebellion (esports)
 - Shared wallet bridges cafe sessions, tournament prizes, and retail purchases
-- Separate data stores: esports (`players`, `tournaments`) vs cafe (`stations` (MongoDB), `cafe_wallets` (PostgreSQL), `gamers` (enhanced MongoDB), `game_library` (MongoDB))
+- Separate data stores: esports (`players`, `tournaments` in MongoDB) vs cafe (`caf_platform_sessions` in PostgreSQL, `stations`, `game_library` in MongoDB)
 - Walk-in mode (no login) + JWT mode (registered) for cafe check-in
 
 **Detailed plan:** See [[kungos-cafe-platform]]
@@ -328,7 +307,7 @@ A production-ready migration tool has been implemented and deployed to support d
 
 | Command | Purpose |
 |---|---|
-| `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with entity population |
+| `restore_kuropurchase` | Parse MongoDB 8.0+ concurrent dump, restore with division population |
 | `backup_kuropurchase` | Pre-restore backup of all collections to JSON |
 | `deploy_restore` | Production deployment orchestrator (backup → restore → verify) |
 
@@ -339,8 +318,8 @@ A production-ready migration tool has been implemented and deployed to support d
 - Handles duplicate `_id`s gracefully (52 duplicates skipped during initial restore)
 - S3 support: `--s3-key s3://bucket/path/dump`
 - Confirmation prompts for safety: `--force` bypasses confirmation
-- Verification mode: `--verify` checks entity population post-restore
-- Entity distribution reports: `--output report.json`
+- Verification mode: `--verify` checks division population post-restore
+- Division distribution reports: `--output report.json`
 - Custom MongoDB connection: `--host`, `--port`
 
 ### Usage
@@ -359,7 +338,7 @@ python manage.py deploy_restore --s3-key s3://bucket/path/dump --verify
 python manage.py restore_kuropurchase --dump /path/to/dump --dry-run
 ```
 
-### Division Distribution (from restore + entity→division migration)
+### Division Distribution (from restore + division field migration)
 
 | Division (div_code) | Brand | Documents | Percentage |
 |---|---|---|---|
@@ -498,7 +477,7 @@ Phase 0: Security remediation
     │       │                                          MongoDB consolidation (P0)
     │       │                                                  │
     │       │                                                  ▼
-    │       │                                          Per-BG routing removal (P1) + entity→division migration
+    │       │                                          Per-BG routing removal (P1) + division field migration
     │       │                                                  │
     │       │                                                  ├──► Gaming multi-tenant (3b)
     │       │                                                  │          │
@@ -649,7 +628,7 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 | 3 | Implement centralized tenant-aware permission abstraction (resolve scope once per request, apply without pandas) | 8 | |
 | 4 | Replace pandas-based permission filtering in 50+ locations with native ORM or query-layer logic | 16 | |
 | 5 | Add `bgcode` to MongoDB documents; prepare single-database tenancy migration | 3 | |
-| 6 | Create compound indexes: `(bgcode, entity)`, `(bgcode, entity, branch)`, `(bgcode, userid)`, plus domain-specific keys | 3 | |
+| 6 | Create compound indexes: `(bgcode, division)`, `(bgcode, division, branch)`, `(bgcode, userid)`, plus domain-specific keys | 3 | |
 | 7 | Remove per-request MongoClient creation; replace with shared client/singleton | 4 | |
 | 8 | Migrate 12 gaming MongoDB collections from `products` DB to `kuropurchase` with `bgcode` on every document | 16 | Use `restore_kuropurchase` tool |
 | 9 | Reconcile `CustomUser` schemas: keep kteam schema as canonical (4 extra fields), merge gaming users with defaults, unify manager signatures | 12 | |
@@ -683,12 +662,12 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 | 1 | Add baseline structured logging configuration (request/response) | 3 | |
 | 2 | Begin cleanup of cross-module imports creating tight coupling | 3 | |
 | 3 | Add `verify_tenant_isolation` management command | 3 | Runs sample cross-tenant checks |
-| 4 | Add automated tests: same user/wrong BG, correct BG/wrong entity, missing context fails closed, branch-limited users | 4 | |
+| 4 | Add automated tests: same user/wrong BG, correct BG/wrong division, missing context fails closed, branch-limited users | 4 | |
 
 ### Exit criteria
 
 - No pandas-based permission filtering remains in the main request path.
-- Tenant scope resolved centrally with BG, entity, and branch semantics.
+- Tenant scope resolved centrally with BG, division, and branch semantics.
 - MongoDB queries use query-level tenant filters instead of database-level routing.
 - `TenantCollection` wrapper in place; no raw collection access in application services.
 - PostgreSQL RLS enabled for tenant-scoped tables.
@@ -719,8 +698,8 @@ Approved departures from this plan are logged in [[kungos-log]]. Each exception 
 | 1 | Replace `!== null` patterns with `!= null` (catches both null and undefined) | ✅ | 314 patterns replaced across 71 files |
 | 2 | Fix unsafe access patterns with optional chaining and safe fallbacks | ✅ | 235+ `.filter(...)[0]` patterns replaced; created `src/lib/safeAccess.js` with 6 utilities |
 | 3 | Remove auth-token dependence on `localStorage`; make app cookie-ready | ✅ | Token managed in Redux store; no `localStorage` token usage found |
-| 4 | Normalize BG/entity/branch state into single source of truth | ✅ | `TenantContext.jsx` created; 18 component files migrated; non-React helpers added |
-| 5 | Build tenant selector UI (BG → Entity → Branch) | ✅ | `TenantSelector.jsx` with keyboard navigation, search filtering, visual hierarchy |
+| 4 | Normalize BG/Division/Branch state into single source of truth | ✅ | `TenantContext.jsx` created; 18 component files migrated; non-React helpers added |
+| 5 | Build tenant selector UI (BG → Division → Branch) | ✅ | `TenantSelector.jsx` with keyboard navigation, search filtering, visual hierarchy |
 
 ### P1 tasks (in progress — 35 pages migrated)
 
@@ -842,11 +821,11 @@ Pages not yet migrated from `useEffect`+`axios` to React Query. These are primar
 ## Phase 3b — Gaming Multi-Tenant Integration
 
 **Estimated effort:** 32 hours (range: 28–36h)  
-**Why added:** Gaming apps have zero multi-tenant support. All 5 gaming PostgreSQL models and 12 gaming MongoDB collections must be integrated with the existing BusinessGroup/entity/branch context. Runs after Phase 2 when gaming code is integrated, before Phase 4 frontend migration.
+**Why added:** Gaming apps have zero multi-tenant support. All 5 gaming PostgreSQL models and 12 gaming MongoDB collections must be integrated with the existing BusinessGroup/Division/Branch context. Runs after Phase 2 when gaming code is integrated, before Phase 4 frontend migration.
 
 ### Objectives
 
-- Add BusinessGroup/entity/branch context to all gaming features.
+- Add BusinessGroup/Division/Branch context to all gaming features.
 - Ensure complete tenant isolation for gaming data.
 
 ### P0 tasks
@@ -1011,7 +990,7 @@ Both optional paths should only be activated when:
 | `rid` | string | `a1b2c3d4` (request ID) |
 | `user_id` | string/uuid | `abc-123-def` |
 | `bg_code` | string | `BG0001` |
-| `entity` | string/null | `kurogaming` |
+| `division` | string/null | `kurogaming` |
 | `branch` | string/array | `branch-01` |
 | `service` | string | `rebellion.cafe.services` |
 | `action` | string | `session.end` |
@@ -1042,8 +1021,8 @@ class TenantCollection:
         if not ctx:
             raise TenantContextMissing("Tenant context required for this operation")
         base = {"bgcode": ctx.bg_code}
-        if ctx.entity:
-            base["entity"] = ctx.entity
+        if ctx.division:
+            base["division"] = ctx.division
         if ctx.branches:
             base["branch"] = {"$in": ctx.branches}
         base.update(filter or {})
@@ -1133,7 +1112,7 @@ class TenantCollection:
 
 ---
 
-## Adding a New Brand, Entity, or Business Type
+## Adding a New Brand, Division, or Business Type
 
 ### New brand
 
@@ -1147,12 +1126,12 @@ class TenantCollection:
 8. Run contract tests against the new brand services.
 9. Expose the brand in frontend tenant selection and config bootstrap.
 
-### New entity within an existing brand
+### New division within an existing brand
 
-1. Create entity metadata in tenant config or tenant directory tables.
+1. Create division metadata in tenant config or tenant directory tables.
 2. Assign branch scopes and permissions.
-3. Ensure Mongo documents and PostgreSQL rows receive correct entity values.
-4. Run entity-scope tests.
+3. Ensure Mongo documents and PostgreSQL rows receive correct division values.
+4. Run division-scope tests.
 5. Verify dashboards and exports are properly filtered.
 
 ### New business type
@@ -1205,7 +1184,7 @@ Any deviation must record: date, section being bypassed, alternative approach, r
 | Risk | Why it matters | Mitigation |
 |---|---|---|
 | Auth migration breaks login/session flow | Knox → JWT is one of the highest-risk changes | Frontend becomes cookie-ready first, migration strategy documented, rollback is git revert + DB restore |
-| Tenant routing remains inconsistent | Entity/branch context currently missing from active session state | Add `bg_code`, `entity`, `branches` to active tenant context; resolve centrally per request; `TenantCollection` raises on missing context |
+| Tenant routing remains inconsistent | Division/branch context currently missing from active session state | Add `bg_code`, `division`, `branches` to active tenant context; resolve centrally per request; `TenantCollection` raises on missing context |
 | MongoDB migration causes query regressions | Per-BG routing removal changes core data access behavior | Migrate documents with `bgcode`, create indexes first, then switch query paths |
 | Pandas removal breaks authorization logic | Pandas filtering exists in 50+ locations | Replace with central permission abstraction before broad cleanup |
 | Async infrastructure added without operational clarity | Redis/Celery deployment details were missing | Use local Docker Compose during modernization; finalize production runbook in Phase 4 |
@@ -1437,7 +1416,7 @@ All migrated pages follow this pattern:
 | 44 | **DNS TTL reduction:** DNS TTL lowered to 60s at T-24 hours to enable rapid failover | Infra | [ ] |
 | 45 | **Auth pre-verification:** Knox token invalidation confirmed — sample Knox tokens return 401 | Backend Lead | [ ] |
 | 46 | **Auth migration pre-verify:** JWT issuance tested with merged user base (kteam + gaming users) | Backend Lead | [ ] |
-| 47 | **BG-switch smoke test:** Tenant context switch verified per active tenant (BG → Entity → Branch) | Backend Lead | [ ] |
+| 47 | **BG-switch smoke test:** Tenant context switch verified per active tenant (BG → Division → Branch) | Backend Lead | [ ] |
 | 48 | **MeiliSearch index verification:** Search indexes rebuilt and verified post-restore | Backend Lead | [ ] |
 
 This is the one-page operational checklist for the final deployment. It aggregates the rollback procedure, auth migration data strategy, API dual-path support plan, and Redis/Celery production runbook into a single go-live sequence. Every item must be checked off by the modernization owner before the deployment window opens.
@@ -1518,7 +1497,8 @@ The Orders module currently has **17+ fragmented pages** scattered across the na
 
 ### Key findings
 
-- Both `tporders` and `kgorders` share the **same schema**: `orderid`, `order_date`, `dispatchby_date`, `order_status`, `totalprice`, `user`, `billadd`, `shpadd`, `products`, `builds`, `entity`, `channel`
+- All order types share **core fields** in `orders_core`: `orderid`, `order_type`, `status`, `total_amount`, `customer_id`, `division`, `bg_code`, `billadd`, `products`, `channel`, `created_at`, `updated_at`
+- Type-specific fields go in detail tables: `estimate_detail`, `in_store_detail`, `tp_order_detail`, `service_detail`, `eshop_detail`
 - Same status pipeline: `Created → Products Added → Authorized → Inventory Added → Shipped → Delivered → Cancelled`
 - An `orderconversion` endpoint already converts TP → KG orders
 - The only real distinction is the `channel` field and access control (`orders` vs `offline_orders`)
@@ -1538,8 +1518,8 @@ The Orders module currently has **17+ fragmented pages** scattered across the na
 │  New → Products → Auth → InProc → Ship'd → Done'   │
 │  CHANNELS (filtered views, not separate pages)      │
 │  ├─ TP Orders                                       │
-│  ├─ Offline Orders                                  │
-│  └─ Online Orders                                   │
+│  ├─ In-Store Orders                                 │
+│  └─ Eshop Orders                                    │
 │  MANAGEMENT                                         │
 │  ├─ Create Order                                    │
 │  └─ Invoices                                        │
@@ -1584,7 +1564,7 @@ The Orders module currently has **17+ fragmented pages** scattered across the na
 └─────────────────────────────────────────────────────┘
 ```
 
-**📦 HR** — Overview, Employees, Attendance, Salaries, Job Apps, Business Groups
+**📦 Teams** — Overview, Employees, Attendance, Salaries, Job Apps, Business Groups
 **📦 Tenant** — Brands, Entities, Assignments, **Roles** (RBAC), **User Access** (role assignment + direct perms)
 
 **📦 Users** — Users, User Detail, User Orders
@@ -1600,7 +1580,7 @@ The Orders module currently has **17+ fragmented pages** scattered across the na
 | Phase 5 | Order consolidation — merge Offline into unified OrdersList/OrderDetail |
 | Phase 6 | Products & Procurement reorganization |
 | Phase 7 | Legacy cleanup — remove old page files |
-| Phase 8 | Backend optional — merge tporders + kgorders collections |
+| Phase 8 | Backend — migrate orders to PostgreSQL core + detail tables (see orders-migration-plan.md) |
 
 ### Shared Components
 
@@ -1730,13 +1710,13 @@ As of 2026-04-27, **Phases 0, 1, 2, and 3 are fully implemented** in the codebas
 | Item | Status | Details |
 |---|---|---|
 | Pandas removed | ✅ | Zero pandas imports in active code. 8 files cleaned (450+ lines removed): financial.py, kurostaff/views.py, products.py, inward_invoices.py, outward_invoices.py, analytics.py, employees.py, estimates.py, service_requests.py. Only `.bak` files contain pandas. |
-| `get_collection()` | ✅ | Centralized MongoDB helper (645 lines in `utils.py`). Accepts `bg_code`, `entity`, `branch` params. Automatic tenant filtering. Replaced all `client[bg.db_name]` patterns. |
+| `get_collection()` | ✅ | Centralized MongoDB helper (645 lines in `utils.py`). Accepts `bg_code`, `division`, `branch` params. Automatic tenant filtering. Replaced all `client[bg.db_name]` patterns. |
 | `auth_utils.py` | ✅ | 418 lines, 14 centralized permission helpers. `resolve_access()`, `resolve_minimal()`, `get_accessible_entities()`, `check_access()`. Replaces pandas `access_df` patterns. |
-| MongoDB entity propagation | ✅ | 68,441 docs across 30 collections have `entity` field. S3 restore via management commands. |
+| MongoDB division propagation | ✅ | 68,441 docs across 30 collections have `division` field. S3 restore via management commands. |
 | MongoDB bgcode field | ✅ | 68,441 docs across 30 collections have `bgcode` field. 100% coverage. |
 | MongoDB branch field | ✅ | 68,441 docs across 30 collections have `branch` field. 100% coverage. Propagated from inwardpayments via orderid matching. |
-| Compound indexes | ✅ | All 30 collections have `{"bgcode":1,"entity":1}` compound indexes. |
-| UserTenantContext model | ✅ | PostgreSQL model in `users/models.py` (249 lines). Fields: `bg_code`, `entity` (JSON), `branches` (JSON), `scope`. Indexed on `userid+bg_code` and `bg_code+scope`. |
+| Compound indexes | ✅ | All 30 collections have `{"bgcode":1,"division":1}` compound indexes. |
+| UserTenantContext model | ✅ | PostgreSQL model in `users/models.py` (249 lines). Fields: `bg_code`, `division` (JSON), `branches` (JSON), `scope`. Indexed on `userid+bg_code` and `bg_code+scope`. |
 | URL routing | ✅ | All routes under `/api/v1/`. Legacy root paths removed. |
 | kuroadmin → teams/ | ✅ | Renamed. `INSTALLED_APPS` updated. All imports updated. URL paths (`/kuroadmin/`) preserved for backward compatibility. |
 | kurostaff → teams/kurostaff/ | ✅ | Merged as sub-package. `INSTALLED_APPS` updated. URL path (`/kurostaff/`) preserved. |
@@ -1745,7 +1725,7 @@ As of 2026-04-27, **Phases 0, 1, 2, and 3 are fully implemented** in the codebas
 | MongoDB DB rename | ✅ | Renamed from `kuropurchase` to `KungOS_Mongo_One`. |
 | djongo removed | ✅ | PostgreSQL is the sole relational database. |
 | Server-side pagination | ✅ | `PAGE_SIZE: 20` with `PageNumberPagination`. |
-| Management commands | ✅ | 9 commands in `kuroadmin/management/commands/`: backup/restore operations, entity propagation, full backup restore. |
+| Management commands | ✅ | 9 commands in `kuroadmin/management/commands/`: backup/restore operations, division propagation, full backup restore. |
 | `plat/tenant/` directory | ✅ | Created as `plat/tenant/` (renamed from `platform/` to avoid Python built-in collision). `TenantCollection` wrapper (MongoDB), `TenantConfig` model (PostgreSQL), RLS helpers, `verify_tenant_isolation` management command, `seed_tenant_config` command. |
 | `plat/tenant/verify.py` | ✅ | Implemented as `plat/tenant/verify.py` — `verify_tenant_isolation` management command. |
 | `core/` directory | ✅ | Created with 5 domain protocols: `IFinanceService`, `IOrderService`, `IWalletService`, `IEsportsService`, `ICafeSessionService`, `IIdentityService`. |
@@ -1779,7 +1759,7 @@ As of 2026-04-27, **Phases 0, 1, 2, and 3 are fully implemented** in the codebas
 | Knox removed | ✅ | No Knox imports, no Knox middleware, no Knox in INSTALLED_APPS. Gaming backend (`kuro-gaming-dj-backend`) still uses Knox — separate repo, deferred. |
 | Auth migration | ✅ | Users migrated to UnifiedUser model. Gaming users reconciled via `reconcile_user_models.py` management command. |
 | Cookie-based auth | ✅ | `CookieJWTAuthentication` class. Bearer header fallback. |
-| Tenant-aware JWT claims | ✅ | JWT carries `{userid, bg_code, entity, branches}`. |
+| Tenant-aware JWT claims | ✅ | JWT carries `{userid, bg_code, division, branches}`. |
 | DRF 3.15 | ✅ | JSON-only renderer. |
 | drf-spectacular | ✅ | Swagger + Redoc API docs. |
 | Outbox pattern | 🟡 | Not yet implemented. `OutboxEvent` model and `publish_in_txn()` designed but not created. |
@@ -1802,10 +1782,10 @@ As of 2026-04-27, **Phases 0, 1, 2, and 3 are fully implemented** in the codebas
 | rebellion/ sub-packages | ✅ esports/ (14 functions), cafe/legacy_views.py (17 functions) split from views.py (871 → 45 lines) |
 | Pandas imports in active code | 0 |
 | MongoDB documents with bgcode | 68,441 (100%) |
-| MongoDB documents with entity | 68,441 (100%) |
+| MongoDB documents with division | 68,441 (100%) |
 | MongoDB documents with branch | 68,441 (100%) |
 | MongoDB collections | 30 |
-| Compound indexes (bgcode+entity) | 30/30 |
+| Compound indexes (bgcode+division) | 30/30 |
 | React pages migrated | 56/71 (79%) |
 | Knox in kteam-dj-chief | 0 (removed) |
 | Knox in kuro-gaming-dj-backend | Present (separate repo, deferred) |
@@ -1922,7 +1902,7 @@ As of 2026-04-27, **Phases 0, 1, 2, and 3 are fully implemented** in the codebas
 | `src/lib/api.jsx` | `fetcher()`/`mutator()` with AbortController |
 | `src/lib/dayjs.js` | dayjs utility (tz, relativeTime, utc) |
 | `src/contexts/TenantContext.jsx` | Single source of truth for tenant state |
-| `src/components/layout/TenantSelector.jsx` | BG → Entity → Branch selector |
+| `src/components/layout/TenantSelector.jsx` | BG → Division → Branch selector |
 | `src/lib/safeAccess.js` | Safe access utilities |
 | `src/routes/main.jsx` | Route-level code splitting |
 
@@ -1970,7 +1950,7 @@ Every log entry must include these fields. Structured JSON format:
   "rid": "a1b2c3d4",
   "user_id": "abc-123-def",
   "bg_code": "BG0001",
-  "entity": "kurogaming",
+  "division": "kurogaming",
   "branch": "branch-01",
   "service": "rebellion.cafe.services",
   "action": "session.end",
@@ -2056,8 +2036,8 @@ class TenantCollection:
         if not ctx:
             raise TenantContextMissing("Tenant context required for this operation")
         base = {"bgcode": ctx.bg_code}
-        if ctx.entity:
-            base["entity"] = ctx.entity
+        if ctx.division:
+            base["division"] = ctx.division
         if ctx.branches:
             base["branch"] = {"$in": ctx.branches}
         base.update(filter or {})
@@ -2069,8 +2049,8 @@ class TenantCollection:
         if not ctx:
             raise TenantContextMissing("Tenant context required for this operation")
         base = {"bgcode": ctx.bg_code}
-        if ctx.entity:
-            base["entity"] = ctx.entity
+        if ctx.division:
+            base["division"] = ctx.division
         if ctx.branches:
             base["branch"] = {"$in": ctx.branches}
         base.update(filter or {})
@@ -2083,8 +2063,8 @@ class TenantCollection:
             raise TenantContextMissing("Tenant context required for this operation")
         document = dict(document)
         document.setdefault("bgcode", ctx.bg_code)
-        if ctx.entity:
-            document.setdefault("entity", ctx.entity)
+        if ctx.division:
+            document.setdefault("division", ctx.division)
         if ctx.branches:
             document.setdefault("branch", ctx.branches[0])
         return raw_collection(self.collection_name).insert_one(document, **kwargs)
@@ -2095,8 +2075,8 @@ class TenantCollection:
         if not ctx:
             raise TenantContextMissing("Tenant context required for this operation")
         base = {"bgcode": ctx.bg_code}
-        if ctx.entity:
-            base["entity"] = ctx.entity
+        if ctx.division:
+            base["division"] = ctx.division
         base.update(filter or {})
         return raw_collection(self.collection_name).update_one(base, update, **kwargs)
 ```
