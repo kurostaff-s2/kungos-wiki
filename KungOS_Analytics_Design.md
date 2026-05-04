@@ -376,7 +376,27 @@ def reporting_response(data, meta=None):
     })
 ```
 
-### 4.3 `backend/middleware.py` — CorrelationIdMiddleware
+### 4.3 Correlation ID + Structured Logging (already exists)
+
+These are already implemented in `plat/observability/`:
+
+| Component | Canonical Module | Purpose |
+|-----------|----------------|---------|
+| `CorrelationIDMiddleware` | `plat/observability/middleware.py` | Injects `X-Request-ID` on every request |
+| `TenantContextMiddleware` | `plat/observability/middleware.py` | Extracts tenant from JWT → ContextVar |
+| `StructuredFormatter` | `plat/observability/logging.py` | JSON log records with bg_code, request_id |
+| `setup_structured_logging()` | `plat/observability/logging.py` | Configures root logger |
+
+Already registered in `backend/settings.py` MIDDLEWARE:
+```python
+MIDDLEWARE = [
+    ...
+    'plat.observability.middleware.CorrelationIDMiddleware',
+    'plat.observability.middleware.TenantContextMiddleware',
+]
+```
+
+No new middleware needed. Reporting endpoints use `request.META.get('HTTP_X_REQUEST_ID')` for correlation ID.
 
 ```python
 """Correlation ID middleware for request tracing."""
@@ -1166,12 +1186,15 @@ GET /shared/health/reports
 
 ### Phase 0: Thin Layer (prerequisite)
 
-| Item | Canonical Module | Description |
-|------|----------------|-------------|
-| PeriodParser | `backend/periods.py` | Period/duration → date range parsing |
-| reporting_response | `backend/response_utils.py` | `{data, meta}` envelope (extends existing `error_response`) |
-| CorrelationIdMiddleware | `backend/middleware.py` | Request tracing |
-| ReportingViewSet | `backend/reporting_base.py` | Base mixin for reporting endpoints |
+| Item | Canonical Module | Status |
+|------|----------------|--------|
+| PeriodParser | `backend/periods.py` | ✅ Created |
+| reporting_response | `backend/response_utils.py` | ✅ Added |
+| ReportingViewSet | `backend/reporting_base.py` | ✅ Created |
+| CorrelationIDMiddleware | `plat/observability/middleware.py` | ✅ Exists (no new code) |
+| StructuredFormatter | `plat/observability/logging.py` | ✅ Exists (no new code) |
+| TenantConfig | `plat/tenant/config.py` | ✅ Exists (no new code) |
+| TenantCollection | `plat/tenant/collection.py` | ✅ Exists (no new code) |
 | **Imports from** | `backend/auth_utils.py` | `resolve_access()`, `has_read_access()`, `has_write_access()` |
 | **Imports from** | `backend/utils.py` | `get_collection()`, `find_all()`, `decode_result()` |
 | **Imports from** | `backend/response_utils.py` | `error_response()` |
