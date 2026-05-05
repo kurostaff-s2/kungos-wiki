@@ -1313,17 +1313,25 @@ curl -H "Authorization: Bearer <token>" \
 
 ### 10.1 Period String → Label Mapping
 
-| Input | Period Type | Label Format | Example |
-|-------|------------|-------------|---------|
-| `daily` | daily | `HH:MM` (4-hour blocks) | `14:00` |
-| `weekly` | weekly | `Day DD` | `Mon 15` |
-| `monthly` / `curr_month` | monthly | `Mon` (3-letter) | `Jan` |
-| `last_month` | monthly | `Mon` (3-letter) | `Dec` |
-| `quarterly` / `curr_quarter` | quarterly | `Q# YYYY` | `Q1 2024` |
-| `last_quarter` | quarterly | `Q# YYYY` | `Q4 2023` |
-| `yearly` / `curr_fy` | yearly | `FY YYYY-YYYY` | `FY 2024-2025` |
-| `last_fy` | yearly | `FY YYYY-YYYY` | `FY 2023-2024` |
-| `start_date` + `end_date` | custom | `DD Mon – DD Mon` | `01 Jan – 31 Mar` |
+| Input Alias | Resolves To | Period Type | Label Format | Example |
+|-------------|------------|-------------|-------------|---------|
+| `daily` | daily | daily | `HH:MM` (4-hour blocks) | `14:00` |
+| `weekly` | weekly | weekly | `Day DD` | `Mon 15` |
+| `monthly` | curr_month | monthly | `Mon` (3-letter) | `Jan` |
+| `curr_month` | curr_month | monthly | `Mon` (3-letter) | `May` |
+| `last_month` | last_month | monthly | `Mon` (3-letter) | `Apr` |
+| `quarterly` | curr_quarter | quarterly | `Q# YYYY` | `Q1 2024` |
+| `curr_quarter` | curr_quarter | quarterly | `Q# YYYY` | `Q2 2026` |
+| `last_quarter` | last_quarter | quarterly | `Q# YYYY` | `Q0 2026` |
+| `yearly` | curr_fy | yearly | `FY YYYY-YYYY` | `FY 2024-2025` |
+| `curr_fy` | curr_fy | yearly | `FY YYYY-YYYY` | `FY 2026-2027` |
+| `last_fy` | last_fy | yearly | `FY YYYY-YYYY` | `FY 2025-2026` |
+| `start_date` + `end_date` | custom | custom | `DD Mon – DD Mon` | `01 Jan – 31 Mar` |
+
+**All ViewSets must accept the full alias set** (`ALLOWED_PERIODS`) per §4.2.2.  
+Fallback: unknown period → `monthly`.
+
+### 10.2 Financial Year (India)
 
 ### 10.2 Financial Year (India)
 
@@ -1434,5 +1442,34 @@ All reporting endpoints import from these canonical modules:
 | `Branch` | `tenant/models.py` | Branch model (branch_code) |
 | `PeriodParser` | `backend/periods.py` | Period/duration parsing (new) |
 | `reporting_response(data, meta)` | `backend/response_utils.py` | Standardized report envelope (new) |
+
+### 11.6 Collection Naming Convention
+
+**All MongoDB collection references in code must use lowercase names.**  
+This aligns with the code-first principle (§11.1) and eliminates camelCase inconsistencies.
+
+| Canonical Name (Code) | MongoDB Collection | Data Type |
+|----------------------|-------------------|----------|
+| `inwardinvoices` | inwardinvoices | Vendor invoices (purchase) |
+| `outwardinvoices` | outwardinvoices | Customer invoices (sales) |
+| `paymentvouchers` | paymentvouchers | Payment records |
+| `inwardcreditnotes` | inwardcreditnotes | Credit notes (inward) |
+| `inwarddebitnotes` | inwarddebitnotes | Debit notes (inward) |
+| `outwardcreditnotes` | outwardcreditnotes | Credit notes (outward) |
+| `outwarddebitnotes` | outwarddebitnotes | Debit notes (outward) |
+| `inwardpayments` | inwardpayments | Inward payment records |
+| `purchaseorders` | purchaseorders | Purchase orders |
+| `tporders` | tporders | Third-party orders |
+| `estimates` | estimates | Sales estimates |
+| `products` | products | Product catalog |
+| `vendors` | vendors | Vendor master |
+| `accounts` | accounts | Account master |
+| `misc` | misc | Miscellaneous transactions |
+
+**Rationale:** MongoDB collections were renamed from camelCase → lowercase to match the design doc.  
+All Python code references must use lowercase. `get_collection()` resolves names directly — no alias layer.
+
+**Legacy collections (unchanged):** `outward`, `kgorders`, `asset_register`, `stock_register`, `presets`, `entities`, `teams`.  
+These follow existing naming patterns and are not part of the financial/invoice domain.
 | `ReportingViewSet` | `backend/reporting_base.py` | Base mixin (new) |
 | `CorrelationIdMiddleware` | `backend/middleware.py` | Request tracing (new) |
