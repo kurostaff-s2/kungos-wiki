@@ -11,7 +11,7 @@ status: active
 
 ## Summary
 
-Local LLM inference stack on a single workstation. llama.cpp (CUDA) serving Qwen3.6-27B-Q4 on RTX 3090. Two optimization opportunities: GPU power limit (350W stock cap throttling clocks) and CPU governor (powersave instead of performance).
+Local LLM inference stack on a single workstation. llama.cpp (CUDA) serving Qwen3.6-27B-Q4 on RTX 3090. One optimization opportunity: CPU governor (powersave instead of performance). GPU power limit is a hard ceiling (350 W max) — not actionable.
 
 ## Hardware Inventory
 
@@ -169,9 +169,11 @@ Context grows as the agent reads files and makes changes. Each turn pays full PP
 
 ## Issues & Recommendations
 
-### HIGH — GPU Power Limit Throttling
+### HIGH — GPU Power Limit Throttling (not actionable)
 
 **Problem:** GPU power limit is at the stock 350 W default. The card hits this cap during inference and throttles graphics clocks down to ~1485 MHz from a potential 2100 MHz. This is a **~30–40% throughput loss**.
+
+**Status:** ❌ **No-go** — hardware does not support raising the power limit beyond 350 W (max configured = 350 W). Cannot bump to 375–400 W. This throttling is permanent on this card.
 
 **Evidence:**
 - `SW Power Cap: Active` in clocks event reasons
@@ -179,17 +181,7 @@ Context grows as the agent reads files and makes changes. Each turn pays full PP
 - Temperature 75 °C vs target 83 °C — thermal headroom exists
 - Average power draw 330 W — consistently near limit
 
-**Fix:**
-```bash
-# One-time (until reboot/driver reload)
-nvidia-smi -pl 375        # Conservative bump
-nvidia-smi -pl 400        # Aggressive — card can handle it with current cooling
-
-# Persistent (add to /etc/modprobe.d/nvidia.conf or startup script)
-# Or set via nvidia-persistenced
-```
-
-**Expected impact:** Higher sustained boost clocks → more tokens/sec, faster batch processing.
+**Expected impact:** N/A — cannot be resolved without different hardware. Accept ~30-40% throughput loss as a hard ceiling on this card.
 
 ### MEDIUM — CPU Governor on `powersave`
 
@@ -338,14 +330,14 @@ erased invalidated context checkpoint (pos_min = ..., n_tokens = ..., size = 149
 
 ## Benchmark Reference Points
 
-| Metric | Current (estimated) | After GPU power fix (estimated) |
+| Metric | Current (estimated) | Theoretical (if power limit were raiseable) |
 |---|---|---|
 | GPU graphics clock | 1485 MHz | ~1800–2000 MHz sustained |
 | Power utilization | 330/350 W (94%) | 330/375+ W (88%+) |
 | Tokens/sec (generation) | ~25–35 tok/s | ~35–50 tok/s |
 | Batch processing | Baseline | ~20–30% faster |
 
-> These are estimates based on clock ratio (1485→~1900 MHz ≈ 28% increase). Actual throughput gain depends on memory bandwidth saturation and kernel-specific scaling.
+> ⚠️ **Theoretical column is aspirational only** — power limit cannot be raised on this card. Current numbers are the hard ceiling. Right-sized upgrade path: RTX 4090 (450W, 32 GB VRAM) or used 3090 Ti (same 350W but higher clocks).
 
 ## DFlash Speculative Decoding
 
@@ -637,6 +629,138 @@ The large interval (16,384) means each checkpoint segment is **8.1 GB** — bigg
 | Quick fix? | Increase checkpoints to 16×8192, reduce batch to 1024/512 |
 | Best fix? | buun + TCQ (turbo3_tcq) = stable at 128K+ with DFlash speed |
 
+## Reference: 7-step Council-Build-Council Pipeline
+
+> **Source:** [r/LocalLLM — "I Ralph-looped Opus overnight"](https://www.reddit.com/r/LocalLLM/comments/1t4cqro/) by u/yes_i_tried_google (May 2026)
+> **PDF:** [[cold backfilling context.pdf]]
+> **Status:** Unmerged PRs, proof-of-concept — not yet reproducible without cherry-picks
+
+Multi-model coding pipeline on a **single GPU** using llama.cpp slot persistence to eliminate cold-start prefill overhead during model swaps.
+
+### Hardware (reference build)
+
+| Component | Spec |
+|---|---|
+| CPU | Ryzen 9950X |
+| GPU | **Single RTX 3090 Ti** (24 GB) |
+| RAM | 96 GB DDR5 Samsung 9100 |
+| Storage | 2 TB Gen5 NVMe |
+
+### Pipeline Stages
+
+```
+Spec → Review → Plan → Build → Code Review → Security Review → UAT Review
+```
+
+All models serialize through one GPU slot. Parallel from the orchestrator's perspective; `llama-swap` executes sequentially.
+
+### Model Roster & Inferred Quantizations
+
+| Role | Model | Inferred Quant | Context | Notes |
+|---|---|---|---|---|
+| **Chair** (orchestrator) | Qwen3.6-27B | **q4_K_M** | 130–138K | GGUF in system RAM, ngl ~48 |
+| **Builder** | Qwen3-coder-30B | **q4_K_M** | ~50K | GGUF in system RAM, ctx forced 262K→196K |
+| **Reviewer** | Gemma-4-31B | **q4_K_M** | ~19K | Primary reviewer |
+| **Reviewer** | GPT-OSS-20B | **q4_K_M or q5_K_M** | ~20K | Could fit q5 in 24 GB |
+| **Reviewer** | Qwen3.6-27B | **q4_K_M** | ~20K | Same as Chair |
+| **Reviewer** | Nemotron-Cascade-2-30B | **q4_K_M** | ~20K | |
+| **Reviewer** | Qwen3.6-35B | **q4_K_M** | ~20K | Tightest fit at q4 |
+| **Tiny Council** | Ministral-8B | **q6_K** | — | Co-resident, no swap cost |
+| **Tiny Council** | Nemotron-Nano-4B | **q6_K** | — | Co-resident, no swap cost |
+| **Tiny Council** | Qwen3-4B | **q6_K** | — | Co-resident, no swap cost |
+
+**Quant inference rationale:**
+
+- **Large models → q4_K_M**: Build error references `q4/q4` (KV cache quant). 27–35B at q4 = 14–18 GB weights, leaving room for KV. q5 would exceed 24 GB for 30B+ models.
+- **Tiny Council → q6_K**: Three models co-resident in ~11 GB VRAM. q6_K totals ~10.9 GB (5.5 + 2.7 + 2.7). q5_K_M would be ~9.1 GB (too low), q8_0 ~16 GB (too high).
+- **GGUF in system RAM**: Chair + Builder weights kept in 96 GB DDR5 for fast load cycles.
+
+### Model Architecture & Role Breakdown
+
+| Role | Model | Arch | Training | What It Brings |
+|---|---|---|---|---|
+| **Chair** (orchestrator) | Qwen3.6-27B | Dense | Instruct | Routes tasks, manages pipeline flow, holds full context across stages |
+| **Builder** | Qwen3-Coder-30B-A3B | MoE | **Code-trained** | Writes actual code — only model with code-specific pretraining. 1M context variant handles large files |
+| **Reviewer** | Gemma-4-31B-it | Dense | Instruct | Google's voice — catches style issues, architecture concerns, different training lineage from Qwen |
+| **Reviewer** | GPT-OSS-20B | Dense | Instruct | OpenAI's voice — different tokenizer, different failure modes, catches what others miss |
+| **Reviewer** | Qwen3.6-27B | Dense | Instruct | Same as Chair — reviews with orchestrator's perspective, consistency check |
+| **Reviewer** | Nemotron-Cascade-2-30B-A3B | MoE | Instruct | NVIDIA's reasoning strength — strong at logic errors, edge cases, security-adjacent issues |
+| **Reviewer** | Qwen3.6-35B | Dense | Instruct | Largest model in the council — final authority on complex decisions, catches subtle bugs smaller models skip |
+| **Tiny Council** | Ministral-8B | Dense | Instruct | Structured output / tool-use specialist — fast 3-way critique, no swap cost |
+| **Tiny Council** | Nemotron-Nano-4B | Dense | Instruct | NVIDIA's lightweight reasoning — quick sanity checks, co-resident |
+| **Tiny Council** | Qwen3-4B | Dense | Instruct | Broad generalist — third perspective in parallel critique, co-resident |
+
+**Diversity strategy:**
+
+- **4 training lineages** — Qwen (Alibaba), Gemma (Google), GPT-OSS (OpenAI), Nemotron (NVIDIA)
+- **2 architectures** — Dense (consistent behavior) + MoE (specialized expert routing)
+- **1 code-specialist** — Qwen3-Coder is the only model pretrained on code corpora
+- **3 size tiers** — 4-8B (Tiny Council, instant), 20-27B (reviewers), 30-35B (Builder/Chair)
+
+**Why diversity matters:** Different models make different mistakes. Running code through 5 distinct training lineages catches more bugs than any single model, even a larger one. The Tiny Council (3 co-resident small models) gives instant parallel feedback without GPU swaps.
+
+### The Problem: Cold Prefill on Every Swap
+
+Without persistent KV cache, every model re-entry pays full prefill:
+
+| Model Role | Context | Prefill Time |
+|---|---|---|
+| Chair (Qwen3.6-27B) | 130K | **~165 s** |
+| Reviewers | ~20K | **~30 s** |
+| Coders | ~50K | **~60 s** |
+
+Full session (spec + 3 builders + review + security + UAT + 2 remediation): **~22 minutes of pure prefill waste**.
+
+### The Solution: Slot Persistence via Unmerged PRs
+
+Two PRs by **@European-tech** cherry-picked into a custom llama.cpp build:
+
+| PR | Title | What it does |
+|---|---|---|
+| [#20819](https://github.com/ggml-org/llama.cpp/pull/20819) | Persist context checkpoints across slot save/restore | Companion `<file>.checkpoints` (magic `0x4C4C4350` "LLCP"). Without this, hybrid/recurrent models (Qwen3) fall back to full reprocess on restore. |
+| [#20822](https://github.com/ggml-org/llama.cpp/pull/20822) | Auto-save/restore slot state in router mode | `--auto-save-slots` / `--auto-restore-slots`. Load-bearing piece — dropped T2 from 171s → 6.5s. |
+
+**Both PRs still open, not merged.** Blocked by llama.cpp's AI-generated content policy (bot flagged them despite author disclosure).
+
+### Python Supervisor (`slot-supervisor.py`)
+
+Custom wrapper around `llama-server`:
+
+1. **Hashes normalized message prefixes** (strips volatile `<TS>`, `<DATE>`, `<EPOCH>`, `<CLOCK>` injected by opencode)
+2. **Pokes `/slots/0?action=restore`** before forwarding each request
+3. **Hardlinks** `<prefix_hash>.bin` ↔ `<full_hash>.bin` so prefix-matching hits cache via either key
+4. Slot bins on Gen5 NVMe; Linux page cache acts as implicit RAM tier (~3 GB/s restore)
+
+### Results
+
+| Metric | Without Slots | With Slots |
+|---|---|---|
+| Chair restore (138K KV) | ~165 s prefill | **801 ms restore → 4.7 s to result** |
+| Reviewer restore (19K KV) | ~30 s prefill | **160–651 ms restore → 27–64 s (gen-dominated)** |
+| Full swap cycle (save + restore) | — | **~2 s** |
+| Full session overhead | **~22 min** | **~65 s** |
+| Tiny council 3-way critique | — | **19.4 s end-to-end** (no swap cost) |
+
+### Caveats
+
+- **Byte-compatible KV only**: Same model, same `--ctx-size`, same `-ctk/-ctv` quant, same arch flags. Change any → invalidate bins.
+- **First visit pays prefill**: Slot reuse pays off from 2nd visit onward.
+- **Worth it only if ctx-heavy AND swap-heavy**: Single-model setups get nothing.
+- **opencode system prompt instability**: `OPENCODE_EXPERIMENTAL_CACHE_STABILIZATION=1` required (PR #14743).
+- **Both PRs unmerged**: Requires cherry-pick or custom build.
+
+### Related GitHub PRs
+
+| PR | Author | State | Relevance |
+|---|---|---|---|
+| [#20819](https://github.com/ggml-org/llama.cpp/pull/20819) | European-tech | 🔴 Open | Checkpoint persistence — cherry-picked by OP |
+| [#20822](https://github.com/ggml-org/llama.cpp/pull/20822) | European-tech | 🔴 Open | Auto-save/restore — cherry-picked by OP |
+| [#20955](https://github.com/ggml-org/llama.cpp/pull/20955) | European-tech | ✅ Closed | Checkpoint recovery on truncation failure — supersedes parts of #20819/#20822. Comment by @llukas: "auto-save/auto-restore could be an option not unconditional behavior" |
+
+**Key insight from PRs:** The same problem the OP solved (full reprocess on slot restore for hybrid models) is exactly what these PRs target. PR #20955 was closed (likely merged into main or superseded). The maintainer comment suggests auto-save should be opt-in, not default — relevant if we ever implement this.
+
+**Why PRs are stuck:** llama.cpp's automated bot flags AI-assisted PRs. @European-tech disclosed AI usage but the bot still blocks them (new contributor + multiple open PRs policy).
+
 ## Change Log
 
 | Date | Change |
@@ -646,3 +770,6 @@ The large interval (16,384) means each checkpoint segment is **8.1 GB** — bigg
 | 2026-05-05 | Revised configs for conversational use: q8_0 @ 64K (port 8001), turbo4 hybrid @ 96K (port 8002), reduced checkpoints to 8, added turn latency tables, SWA invalidation analysis |
 | 2026-05-05 | Added DFlash speculative decoding section: paper research, z-lab models, buun-llama-cpp fork, build instructions, VRAM analysis, alternatives |
 | 2026-05-05 | Added stability analysis: live snapshot at 120K context, live vs estimated VRAM comparison, OOM risk assessment, checkpoint insufficiency analysis, immediate + rebuild recommendations |
+| 2026-05-06 | Added 7-step Council-Build-Council reference section: multi-model pipeline from r/LocalLLM, model roster with inferred quantizations, slot persistence via unmerged PRs #20819/#20822, GitHub PR research |
+| 2026-05-06 | Marked GPU power limit as no-go — hardware max is 350 W, cannot raise. Updated benchmark table to aspirational-only. |
+| 2026-05-06 | Added Model Architecture & Role Breakdown — arch type (dense/MoE), training type, and what each model contributes to the council pipeline. |

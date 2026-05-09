@@ -3,7 +3,7 @@ tags: [llm, local-inference, qwen, llama-cpp]
 created: 2026-04-20
 updated: 2026-05-02
 sources: [setup_local_ai.sh, llama.cpp/, models/]
-related: [[llm-setup-analysis]], [[qwen3.6-35b-a3b]], [[ADR-001-local-llm]], [[ADR-003-llama-cpp]]
+related: [[Local-Hardware]], [[qwen3.6-35b-a3b]], [[ADR-001-local-llm]], [[ADR-003-llama-cpp]]
 status: active
 ---
 
@@ -11,7 +11,7 @@ status: active
 
 ## Summary
 
-Local LLM inference on RTX 3090 via llama.cpp. See [[llm-setup-analysis]] for hardware specs, performance data, and optimization recommendations.
+Local LLM inference on RTX 3090 via llama.cpp. See [[Local-Hardware]] for hardware specs, performance data, and optimization recommendations.
 
 ## Endpoints
 
@@ -38,4 +38,4 @@ Local LLM inference on RTX 3090 via llama.cpp. See [[llm-setup-analysis]] for ha
 ## Setup
 
 - Install: `~/setup_local_ai.sh` (legacy — ports/models outdated)
-- Current server started manually (no systemd service — see [[llm-setup-analysis]])
+- Current server started manually (no systemd service — see [[Local-Hardware]])

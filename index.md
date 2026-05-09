@@ -23,7 +23,7 @@
 - [[kteam-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across kteam-dj-be + kteam-fe-chief
 - [[kteam-system-architecture]] — Full system architecture: kteam-dj-be + kteam-fe-chief, 155+ API endpoints, 129+ pages
 - [[local-ai-stack]] — Local LLM inference: endpoints, models, RAG, search
-- [[llm-setup-analysis]] — Hardware specs, performance benchmarks, optimization recommendations
+- [[Local-Hardware]] — Hardware specs, performance benchmarks, optimization recommendations
 
 ## LLM Tools
 - **Pi** — Primary coding agent, uses Qwen3.6-27B via port 8001 (OpenAI API)

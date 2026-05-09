@@ -2,6 +2,74 @@
 
 Single source of truth for access control architecture, migration plan, and implementation decisions.
 
+> ⚠️ **Dev/Test Context:** `KungOS_Mongo_One` is a **dev/test database**. Production data lives in dump files. All migration scripts assume a **fresh restore** from dumps — do NOT run against the live dev DB.
+
+---
+
+## 0. TODO — Tenant Field Code Rename (bg_code / div_code / branch_code)
+
+> **Goal:** All tenant identifiers use `_code`-suffixed fields everywhere. `division`, `branch`, `bgcode` (no underscore) are legacy names that must be renamed.
+
+### MongoDB Document Fields
+
+| Layer | Current Field | Target Field | Files | Status |
+|---|---|---|---|---|
+| `backend/utils.py` `get_collection()` | `bgcode`, `division`, `branch` | `bg_code`, `div_code`, `branch_code` | `backend/utils.py` L289-293, L445-450 | ☐ |
+| `backend/utils.py` `ensure_tenant_fields()` | `bgcode`, `division`, `branch` | `bg_code`, `div_code`, `branch_code` | `backend/utils.py` L445-450 | ☐ |
+| `backend/utils.py` projection dicts | `division: 1`, `branch: 1` | `div_code: 1`, `branch_code: 1` | `backend/utils.py` L485-543 | ☐ |
+| `backend/utils.py` `get_collection()` exclude list | `division` | `div_code` | `backend/utils.py` L65 | ☐ |
+| `backend/utils.py` access dict key | `division` | `div_code` | `backend/utils.py` L92 | ☐ |
+
+### PostgreSQL Columns
+
+| Layer | Current Column | Target Column | Files | Status |
+|---|---|---|---|---|
+| `UserRole.division` | `division` | `div_code` | `users/models.py` L383 | ☐ |
+| `UserPermission.division` | `division` | `div_code` | `users/models.py` (check) | ☐ |
+| Django migration | — | `AlterModelField` + data copy | `users/migrations/` | ☐ |
+
+### API Query Parameters
+
+| Layer | Current Param | Target Param | Files | Status |
+|---|---|---|---|---|
+| `teams/financial.py` ViewSets | `?division=`, `?branch=` | `?div_code=`, `?branch_code=` | `teams/financial.py` L77-78, L229-230, L595 | ☐ |
+| `teams/financial.py` filter dicts | `filters['division']` | `filters['div_code']` | `teams/financial.py` L84-86, L234 | ☐ |
+| `teams/financial.py` output checks | `output_list[0]['division']` | `output_list[0]['div_code']` | `teams/financial.py` L99, L126, L243 | ☐ |
+| `teams/financial.py` access checks | `check_division_write_access(..., podata['division'], ...)` | `check_division_write_access(..., podata['div_code'], ...)` | `teams/financial.py` L159, L320, L331, L360 | ☐ |
+| `teams/financial.py` PV filters | `pvdata['division']` | `pvdata['div_code']` | `teams/financial.py` L383, L414, L425, L449, L472, L483 | ☐ |
+| `teams/financial.py` projection | `"division": 1` | `"div_code": 1` | `teams/financial.py` L52, L464 | ☐ |
+
+### Other Files to Audit
+
+| File/Module | What to Check | Status |
+|---|---|---|
+| `teams/*.py` (all viewsets) | `?division=`, `?branch=`, `filters['division']`, `doc['division']` | ☐ |
+| `users/views.py` | `division` references in access resolution | ☐ |
+| `users/api/viewsets.py` | `division` in API responses, serializers | ☐ |
+| `users/serializers.py` | `division` field in serialized output | ☐ |
+| `users/otp_utils.py` | `division` references | ☐ |
+| `users/management/commands/` | `division` in management commands | ☐ |
+| Frontend `useNavAccess` hook | `division` in permission checks | ☐ |
+| Frontend API calls | `?division=` query params | ☐ |
+
+### Compound Indexes
+
+| Collection | Current Index | Target Index | Status |
+|---|---|---|---|
+| All tenant-scoped | `{bgcode: 1, division: 1}` | `{bg_code: 1, div_code: 1}` | ☐ |
+| All tenant-scoped | `{bgcode: 1, division: 1, branch: 1}` | `{bg_code: 1, div_code: 1, branch_code: 1}` | ☐ |
+| All tenant-scoped | `{bgcode: 1, userid: 1}` | `{bg_code: 1, userid: 1}` | ☐ |
+
+### Migration Order
+
+1. **Drop `entities` collection** — `db.entities.drop()` — legacy lookup table, replaced by `tenant_divisions`
+2. **MongoDB bulk rename** — `mongosh` script: `db[c].updateMany({}, [{ $set: { bg_code: "$bgcode", div_code: "$division", branch_code: "$branch" }}, { $unset: ["bgcode", "division", "branch"] }])`
+3. **Drop old indexes, create new** — `db[c].dropIndex(...)`, `db[c].createIndex(...)`
+4. **Backend code rename** — `get_collection()`, `ensure_tenant_fields()`, projection dicts, all viewsets
+5. **PostgreSQL column rename** — Django migration: add `div_code`, copy data, drop `division`
+6. **Frontend rename** — API params, hook queries, serializer fields
+7. **Verification** — Run Phase 11 checks against new field names
+
 ---
 
 ## 1. Current System — How It Works Today
@@ -11,7 +79,7 @@ Single source of truth for access control architecture, migration plan, and impl
 Accesslevel (40+ columns):
   userid       → FK to CustomUser
   bg_code      → Business Group scope
-  division     → Division scope (div_code like "KURO0001_002")
+  div_code     → Division scope (cascade code like "KURO0001_002")
   branches     → JSON array of allowed branches
   inward_invoices    INTEGER (0=none, 1=view, 2=edit, 3=admin)
   outward_invoices   INTEGER
@@ -65,7 +133,7 @@ User with access to 3 divisions = 3 Accesslevel rows, each with all 40 columns d
 ### 4. Mixed Storage Patterns
 - Permissions: Flat integer columns
 - Branches: JSON array
-- Division scope: Single varchar column (one division per row, stores div_code)
+- Division scope: Single varchar column (one div_code per row)
 - Business groups: Derived from bg_code column
 
 No consistent pattern. Hard to query "what does user X have access to?" across all dimensions.
@@ -98,7 +166,7 @@ If backend renames `inward_payments` → `incoming_payments`, frontend breaks si
                      │ userid    │
                      │ role_code │
                      │ bg_code   │ (nullable — NULL = global)
-                     │ division  │ (nullable — NULL = all divisions)
+                     │ div_code  │ (nullable — NULL = all divisions)
                      │ assigned_by│
                      │ assigned_at│
                      └────┬──────┘
@@ -204,19 +272,19 @@ id             BIGINT PK (surrogate)
 userid         FK → CustomUser.userid
 role_code      FK → roles.role_code
 bg_code        VARCHAR(10)       — NULL = global, value = scoped to this BG
-division       VARCHAR(200)      — NULL = all divisions, value = scoped to this division (was `division`)
+div_code       VARCHAR(200)      — NULL = all divisions, value = scoped to this division
 assigned_by    FK → CustomUser
 assigned_at    TIMESTAMP
 ```
 
-> **NULL Uniqueness:** Standard `UNIQUE(userid, role_code, bg_code, division)` does NOT prevent duplicates when `bg_code` or `division` is NULL (PostgreSQL/MySQL treat `NULL != NULL`). Use partial indexes:
+> **NULL Uniqueness:** Standard `UNIQUE(userid, role_code, bg_code, div_code)` does NOT prevent duplicates when `bg_code` or `div_code` is NULL (PostgreSQL/MySQL treat `NULL != NULL`). Use partial indexes:
 > ```sql
 > CREATE UNIQUE INDEX uq_user_roles_global ON user_roles (userid, role_code)
->   WHERE bg_code IS NULL AND division IS NULL;
+>   WHERE bg_code IS NULL AND div_code IS NULL;
 > CREATE UNIQUE INDEX uq_user_roles_bg ON user_roles (userid, role_code, bg_code)
->   WHERE bg_code IS NOT NULL AND division IS NULL;
-> CREATE UNIQUE INDEX uq_user_roles_division ON user_roles (userid, role_code, bg_code, division)
->   WHERE bg_code IS NOT NULL AND division IS NOT NULL;
+>   WHERE bg_code IS NOT NULL AND div_code IS NULL;
+> CREATE UNIQUE INDEX uq_user_roles_division ON user_roles (userid, role_code, bg_code, div_code)
+>   WHERE bg_code IS NOT NULL AND div_code IS NOT NULL;
 > ```
 
 ### 5.5 UserRoleBranch — Normalized Branch Scoping
@@ -235,7 +303,7 @@ userid         FK → CustomUser.userid
 perm_code      FK → permissions.perm_code
 level          INTEGER           — 0=explicitly revoke, 1=view, 2=edit, 3=admin
 bg_code        VARCHAR(10)       — NULL = global override
-division       VARCHAR(200)      — NULL = all divisions
+div_code       VARCHAR(200)      — NULL = all divisions
 reason         TEXT NOT NULL     — Justification required (audit compliance)
 granted_by     FK → CustomUser
 granted_at     TIMESTAMP
@@ -245,11 +313,11 @@ expires_at     TIMESTAMP         — NULL = permanent; set for temporary grants
 > **Partial indexes** (same NULL pattern as UserRole):
 > ```sql
 > CREATE UNIQUE INDEX uq_user_perms_global ON user_permissions (userid, perm_code)
->   WHERE bg_code IS NULL AND division IS NULL;
+>   WHERE bg_code IS NULL AND div_code IS NULL;
 > CREATE UNIQUE INDEX uq_user_perms_bg ON user_permissions (userid, perm_code, bg_code)
->   WHERE bg_code IS NOT NULL AND division IS NULL;
-> CREATE UNIQUE INDEX uq_user_perms_division ON user_permissions (userid, perm_code, bg_code, division)
->   WHERE bg_code IS NOT NULL AND division IS NOT NULL;
+>   WHERE bg_code IS NOT NULL AND div_code IS NULL;
+> CREATE UNIQUE INDEX uq_user_perms_division ON user_permissions (userid, perm_code, bg_code, div_code)
+>   WHERE bg_code IS NOT NULL AND div_code IS NOT NULL;
 > ```
 
 > Use `level = 0` to **explicitly revoke** a permission that a role would otherwise grant.
@@ -269,7 +337,7 @@ expires_at     TIMESTAMP         — NULL = permanent; set for temporary grants
 ```python
 from django.utils import timezone
 
-def resolve_permission(userid, perm_code, bg_code=None, division=None):
+def resolve_permission(userid, perm_code, bg_code=None, div_code=None):
     """
     Returns {"level": int, "source": str} for a user+permission+scope.
     Checks user overrides first, then aggregates max level across all matching roles.
@@ -277,7 +345,7 @@ def resolve_permission(userid, perm_code, bg_code=None, division=None):
 
     # --- Step 1: Check direct user_permissions override (checked FIRST) ---
     override = UserPermission.objects.filter(
-        userid=userid, perm_code=perm_code, bg_code=bg_code, division=division,
+        userid=userid, perm_code=perm_code, bg_code=bg_code, div_code=div_code,
     ).filter(
         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
     ).first()
@@ -288,9 +356,9 @@ def resolve_permission(userid, perm_code, bg_code=None, division=None):
 
     # --- Step 2: Collect all applicable role assignments (scope cascade) ---
     scopes = [
-        {"bg_code": bg_code, "division": division},   # Exact scope match
-        {"bg_code": bg_code, "division": None},      # BG-wide
-        {"bg_code": None,    "division": None},      # Global
+        {"bg_code": bg_code, "div_code": div_code},   # Exact scope match
+        {"bg_code": bg_code, "div_code": None},      # BG-wide
+        {"bg_code": None,    "div_code": None},      # Global
     ]
 
     max_level = 0
@@ -344,8 +412,7 @@ A user can hold multiple roles (e.g. `store_manager` at BG level and `super_admi
 ### Scenario: Two Division-Scoped Roles Conflict
 ```
 User: KCAD002
-Scope: bg_code=KURO0001, division=KURO0001_002
-
+Scope: bg_code=KURO0001, div_code=KURO0001_002
 Role 1: cashier        → invoices.outward = 0 (no access)
 Role 2: store_manager  → invoices.outward = 2 (edit)
 
@@ -367,9 +434,9 @@ INCOMPATIBLE_ROLES = {
     frozenset({'viewer', 'super_admin'}),
 }
 
-def validate_role_assignment(userid, role_code, bg_code, division):
+def validate_role_assignment(userid, role_code, bg_code, div_code):
     existing = UserRole.objects.filter(
-        userid=userid, bg_code=bg_code, division=division
+        userid=userid, bg_code=bg_code, div_code=div_code
     ).values_list('role_code', flat=True)
 
     for pair in INCOMPATIBLE_ROLES:
@@ -396,7 +463,7 @@ Wrong way (won't work):
 Right way (works):
   Keep store_manager on rebellion
   INSERT user_permissions:
-    userid=KCAD002, perm_code=invoices.outward, division=rebellion, level=0,
+    userid=KCAD002, perm_code=invoices.outward, div_code=KURO0001_002, level=0,
     reason="Restricted from invoice editing per branch policy"
 ```
 
@@ -418,22 +485,22 @@ Right way (works):
 The resolution algorithm is DB-heavy (multiple JOINs per check). At login time, pre-compute the full `_permissions` flat object and cache it in Redis. Invalidate on any role/permission change for that user.
 
 ```python
-CACHE_KEY = "user_perms:{userid}:{bg_code}"
+CACHE_KEY = "user_perms:{userid}:{bg_code}:{div_code}"
 CACHE_TTL  = 60 * 15  # 15 minutes
 
-def get_cached_permissions(userid, bg_code):
-    key = CACHE_KEY.format(userid=userid, bg_code=bg_code)
+def get_cached_permissions(userid, bg_code, div_code=None):
+    key = CACHE_KEY.format(userid=userid, bg_code=bg_code, div_code=div_code or "all")
     cached = redis_client.get(key)
     if cached:
         return json.loads(cached)
 
-    perms = build_permissions_object(userid, bg_code)  # runs full resolution
+    perms = build_permissions_object(userid, bg_code, div_code)  # runs full resolution
     redis_client.setex(key, CACHE_TTL, json.dumps(perms))
     return perms
 
 def invalidate_user_permissions(userid):
     """Call whenever user_roles or user_permissions change for a user."""
-    pattern = CACHE_KEY.format(userid=userid, bg_code="*")
+    pattern = CACHE_KEY.format(userid=userid, bg_code="*", div_code="*")
     for key in redis_client.scan_iter(pattern):
         redis_client.delete(key)
 ```
@@ -492,8 +559,8 @@ function hasLevel(permCode, minLevel) {
     "analytics.view":   {"level": 1, "source": "store_manager"}
   },
   "_roles": [
-    {"role_code": "store_manager", "bg_code": "KURO0001", "division": null},
-    {"role_code": "super_admin",   "bg_code": "KURO0001", "division": "KURO0001_002"}
+    {"role_code": "store_manager", "bg_code": "KURO0001", "div_code": null},
+    {"role_code": "super_admin",   "bg_code": "KURO0001", "div_code": "KURO0001_002"}
   ],
   "_overrides": [
     {
@@ -516,7 +583,7 @@ function hasLevel(permCode, minLevel) {
 
 ## 11. Role Explosion Risk
 
-As BGs and divisions grow, avoid creating one role per business unit variant (e.g. `store_manager_kuro`, `store_manager_rebellion`). Use **scoped role assignments** instead — the same `store_manager` role assigned with different `bg_code`/`division` values. Only create new roles when the **permission set itself** genuinely differs.
+As BGs and divisions grow, avoid creating one role per business unit variant (e.g. `store_manager_kuro`, `store_manager_rebellion`). Use **scoped role assignments** instead — the same `store_manager` role assigned with different `bg_code`/`div_code` values. Only create new roles when the **permission set itself** genuinely differs.
 
 > **Guideline:** No system roles exist. Admins create roles freely via `/tenant/roles` UI. Typical pattern: create a "Store Manager" role with permissions for orders, inventory, invoices, etc., then assign it to users at BG or division scope.
 
@@ -542,7 +609,66 @@ All tenant identifiers use **cascade codes** derived from the legal name:
 - `KURO0001_003` — RenderEdge
 
 **Division mapping (DUNE0003):**
-- `DUNE0003_001` — Rebellion
+- `DUNE0003_001` — Rebellion eSports
+
+**Branch mapping (DUNE0003_001):**
+- `DUNE0003_001_001` — Madhapur
+- `DUNE0003_001_002` — LB Nagar
+
+---
+
+## 11b. Tenant Field Naming Convention — Codes Only
+
+**Canonical rule:** All tenant identification uses `_code`-suffixed fields everywhere — MongoDB documents, PostgreSQL columns, Python parameters, API query params, JWT claims. The words `division`, `bg`, `business group`, `branch` without the `_code` suffix are **display labels only**.
+
+| Concept | Field Name (everywhere) | Example Value | Display Label (frontend only) |
+|---|---|---|---|
+| Business Group | `bg_code` | `KURO0001` | `Kuro Cadence LLP` |
+| Division | `div_code` | `KURO0001_001` | `Kuro Gaming` |
+| Branch | `branch_code` | `KURO0001_001_001` | `Madhapur` |
+
+**Everywhere means:**
+
+| Layer | Field Name | Example |
+|---|---|---|
+| MongoDB document | `{bg_code: "KURO0001", div_code: "KURO0001_001", branch_code: "KURO0001_001_001"}` | Filter: `{div_code: "KURO0001_001"}` |
+| PostgreSQL column | `UserRole.div_code`, `UserPermission.div_code` | `SELECT * FROM rbac_user_roles WHERE div_code = 'KURO0001_001'` |
+| Python parameter | `get_collection(name, bg_code=..., div_code=..., branch_code=...)` | No translation layer |
+| API query param | `?bg_code=KURO0001&div_code=KURO0001_001` | Response labels resolved by frontend |
+| JWT claim | `{"bg_code": "KURO0001", "div_code": "KURO0001_001"}` | — |
+| Compound index | `{bg_code: 1, div_code: 1}` | — |
+
+**No silent translation.** Python param `div_code` maps to MongoDB field `div_code` directly. No `get_collection()` layer that renames `div_code` → `division`.
+
+**Label resolution:** Frontend resolves codes → labels via `/tenant/divisions`, `/tenant/branches` lookup endpoints. Backend never sends display labels in tenant-scoped queries.
+
+---
+
+## 11c. Legacy `entity` Field — Deprecated
+
+**Decision:** The `entity` field (values: `kurogaming`, `rebellion`, `renderedge`) is **legacy** and has been **superseded by `div_code`**.
+
+**Why it existed:** Before the cascade code system, `entity` was the only way to distinguish business units within a BG. It used string labels (`kurogaming`, `rebellion`) that doubled as both identifier and display name.
+
+**Why it was replaced:**
+1. **Ambiguity:** `entity: "kurogaming"` — is this a code or a label? It's neither — it's a slug.
+2. **No hierarchy:** `entity` carries no BG context. `div_code: "KURO0001_001"` encodes the full cascade (BG → Division).
+3. **Multi-BG readiness:** With `entity`, a second BG (e.g., `DUNE0003`) had no way to express its own divisions. `div_code` scales naturally.
+4. **Codes vs. labels:** `entity` blurred the line between identifier and display name. `div_code` is unambiguously a code.
+
+**Migration mapping:**
+
+| Legacy `entity` value | `bg_code` | `div_code` | Rationale |
+|---|---|---|---|
+| `kurogaming` | `KURO0001` | `KURO0001_001` | Kuro Gaming division |
+| `rebellion` | `KURO0001` | `KURO0001_002` | Rebellion division |
+| `renderedge` | `KURO0001` | `KURO0001_003` | RenderEdge division |
+
+**Removal rule:** After migration verification (Phase 11 checks), the `entity` field is removed from all MongoDB documents. No new documents should carry `entity`.
+
+**Status:** Frontend migration complete (0 `entity` references in pages). Backend code uses `div_code` / `division` only. MongoDB documents still carry `entity` from legacy migration — pending removal after data migration report execution.
+
+**`entities` collection:** Removed entirely. The 2-document MongoDB `entities` lookup table is replaced by `tenant_divisions` PostgreSQL table + `/tenant/divisions/` API. No backup, no restore.
 
 ---
 
