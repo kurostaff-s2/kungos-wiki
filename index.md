@@ -8,6 +8,8 @@
 
 ## Architecture
 - [[kteam-system-architecture]] — Full system architecture: kteam-dj-be (Django/DRF/PostgreSQL/MongoDB/MeiliSearch) + kteam-fe-chief (React 19/Vite 8/Redux 5/Tailwind v4), 155+ API endpoints, 129+ pages, data flow, multi-tenant model, known issues, prioritized recommendations (P1-P4)
+- [[alignment_audit]] — Architectural constitution vs. integration & identity plans alignment audit
+- [[eshop_legacy_review]] — Detailed legacy codebase audit for Kuro Gaming e-commerce backend
 
 ## Plans
 - [[KungOS_v2]] — Authoritative modernization plan (Project Code: Kungos): Phases 0–3 complete ✅, Phase 4 (testing/CI/CD) pending. Replaces legacy `kungos.md`. See [[kungos-log]] for approved departures.
