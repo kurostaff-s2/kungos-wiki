@@ -45,6 +45,8 @@
 - [[ADR-003-llama-cpp]] — Use llama.cpp with CUDA for inference instead of vLLM/Ollama
 - [[ADR-004-llm-integration-assessment]] — Open-source LLM integration assessment for kteam (invoice OCR, chat bot, automations, architecture, model recommendations, roadmap)
 - [[ADR-005-debug-tools]] — Keep errorLogger, ErrorBadge, and Playwright test scripts as permanent debugging/audit tools (enabled/disabled as needed)
+- [[subagent_council_integration]] — Deploy isolated Subagent LLM Council & MemSearch on a single RTX 3090 GPU (Ryzen 7700, 96GB RAM) with sequential slot persistence
+
 
 ## Lessons
 - [[lucide-react-forwardref-typeof-check]] — `typeof` check for React components fails on `forwardRef` components (typeof === 'object'), causing render crashes in React 19

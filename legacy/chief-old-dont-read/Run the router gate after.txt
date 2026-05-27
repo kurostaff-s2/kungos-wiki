@@ -1,0 +1,9 @@
+Run the router-gate after each sub‑agent turn – do not skip it.                                                                                                                      
+ 2. Inspect the gate’s failed_steps in its response; any “tool‑use failure” means the agent ran out of tokens.                                                                          
+ 3. If you see a 0‑byte output, activate its debug skill - that contains info about the the exacts locations of the logs and errors codes - by types/ module so that it know where to look exactly and perform a preliminary but very thorough diagnostics and re‑run that unit.                                                                
+ 4. Consolidate the DDL – put the whole CREATE TABLE … block in one file (migrations/09_schema.sql) and reference it from the plan.  The gate will run the script; a missing column     
+    will be caught by the test suite.                                                                                                                                                   
+ 5. Add a tiny “done” line to every unit’s RED/GREEN output (e.g. ✅ unit‑1‑RED complete).  This guarantees a non‑empty diff.                                                           
+                                                                                                                                                                                        
+ Once those safeguards are in place, the plan you just reviewed will be executable without the risk of silent truncation.  The next sub‑agent (Nemotron) will be able to read the full  
+ markdown, run its RED/GREEN/REFACTOR steps, and the chair gate will either APPROVE (if all tests pass) or REJECT with a clear, actionable error – never a mysterious “0‑byte output”.
