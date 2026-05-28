@@ -13,6 +13,7 @@
 | 05 | [Pipeline API](05-pipeline-api.md) | REST endpoints, payloads, response formats, error codes |
 | 06 | [MicroModel Enricher](06-micro-model.md) | ONNX embeddings, failure classification, artifact enrichment, MCP methods |
 | 07 | [Diagnostics](07-diagnostics.md) | Troubleshooting, common issues, recovery procedures, log analysis |
+| 08 | [Arc Summarizer](08-arc-summarizer.md) | Memory consolidation on Arc A380, Granite-4.1-3B, Tier 1 injection, pipeline API |
 
 ## Usage Rules
 
@@ -77,6 +78,13 @@ Uses the **Indras-Mirror fork** of llama.cpp with fused TBQ4 flash attention ker
 - `POST /v1/council/recall` — Active recall (memsearch)
 - `POST /v1/council/summarize` — Session summarization
 
+### Arc Summarizer (Memory Consolidation)
+- Server: `127.0.0.1:18095` (llama-server SYCL on Arc A380)
+- Model: `granite-4.1-3b-Q4_K_M` (Granite-4.1-3B)
+- Roles: memory consolidation, session summarization, knowledge extraction
+- Health: `GET http://127.0.0.1:18095/v1/models`
+- systemd: `arc-summarizer.service` (user-level)
+
 ### File Locations
 - Supervisor: `~/Coding-Projects/7-council/super_council/`
 - Subsystem config: `~/Coding-Projects/7-council/super_council/config-subsystem.json` (default_alias, voice_pipeline, summarizer)
@@ -88,3 +96,6 @@ Uses the **Indras-Mirror fork** of llama.cpp with fused TBQ4 flash attention ker
 - Supervisor log: `/tmp/super-council.log`
 - MTP binary: `~/Coding-Projects/7-council/indras-mirror-fork/build/bin/llama-server`
 - Bench results: `~/Coding-Projects/7-council/bench-results/`
+- Arc summarizer module: `~/Coding-Projects/7-council/super_council/arc_summarizer/`
+- Arc summarizer service: `~/.config/systemd/user/arc-summarizer.service`
+- Semantic memory: `~/.council-memory/semantic-memory/`

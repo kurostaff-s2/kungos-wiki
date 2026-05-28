@@ -30,6 +30,12 @@
 |  |              MicroModelEnricher                             |  |
 |  |  artifact summaries | failure classification | events       |  |
 |  +------------------------------------------------------------+  |
+|                                                                  |
+|  +------------------------------------------------------------+  |
+|  |              Arc Summarizer                                 |  |
+|  |  consolidation | session summary | knowledge extraction     |  |
+|  |  → Granite-4.1-3B on Arc A380 (:18095)                     |  |
+|  +------------------------------------------------------------+  |
 +--------------------------------+---------------------------------+
                                  | proxy
                                  v
@@ -87,6 +93,10 @@ The pipeline provides:
 | `MicroModelEnricher` | `micro_model.py` | Async semantic enrichment (ONNX embeddings, TF-IDF keywords) |
 | `StateMachineLinter` | `state_linter.py` | 8-check linter for transition graph validation |
 | `TinyCouncilManager` | `super_council.py` | Fanout coordinator (parallel/sequential mode selection) |
+| `ArcSummarizer` | `arc_summarizer/__init__.py` | Unified facade for consolidation, summarization, extraction |
+| `ArcClient` | `arc_summarizer/client.py` | HTTP client with retry + fallback to main upstream |
+| `ArcPipeline` | `arc_summarizer/pipeline.py` | Full consolidation pipeline (gather→call→write→cache→inject) |
+| `ArcConfig` | `arc_summarizer/config.py` | Loads from `config-subsystem.json["consolidation"]` |
 
 ## Key Design Decisions
 
@@ -98,6 +108,7 @@ The pipeline provides:
 6. **Artifact boundaries:** MemoryLayer never cuts mid-artifact. Uses `ARTIFACT_BOUNDARY` markers.
 7. **DESC ordering:** Newest artifacts preserved when budget is tight (MODERATE-2 fix).
 8. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
+9. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
 
 ## Configuration
 
