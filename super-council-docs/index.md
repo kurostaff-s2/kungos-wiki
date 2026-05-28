@@ -14,6 +14,7 @@
 | 06 | [MicroModel Enricher](06-micro-model.md) | ONNX embeddings, failure classification, artifact enrichment, MCP methods |
 | 07 | [Diagnostics](07-diagnostics.md) | Troubleshooting, common issues, recovery procedures, log analysis |
 | 08 | [Arc Summarizer](08-arc-summarizer.md) | Memory consolidation on Arc A380, Granite-4.1-3B, Tier 1 injection, pipeline API |
+| 09 | [Memory Service](09-memory-service.md) | MemoryService architecture, FastMCP server, 18 tools, 7 resources, tool matrix |
 
 ## Usage Rules
 

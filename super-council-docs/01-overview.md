@@ -87,9 +87,15 @@ The pipeline provides:
 | `SlotSupervisor` | `super_council.py` | Proxy frontend, slot management, model swapping, delegation |
 | `PipelineState` | `super_council.py` | 6-phase state machine with retry/retreat/ceiling |
 | `ChairGateState` | `super_council.py` | 5-step TDD gate validation (RED→GREEN→REFACTOR) |
-| `RelationalStore` | `relational_store.py` | SQLite-backed store with WAL, FK enforcement, schema seeding |
-| `ContextRouter` | `context_router.py` | Structured queries: snapshots, events, similar runs, issues |
-| `MemoryLayer` | `memory_layer.py` | Token-budgeted context slices with artifact boundaries |
+| `MemoryService` | `memory_service/__init__.py` | Unified memory entry point (load → .store, .router, .layer, .review) |
+| `RelationalStore` | `memory_service/store.py` | SQLite-backed store with WAL, FK enforcement, schema seeding |
+| `ContextRouter` | `memory_service/router.py` | Structured queries: snapshots, events, similar runs, issues |
+| `MemoryLayer` | `memory_service/layer.py` | Token-budgeted context slices with artifact boundaries |
+| `ReviewService` | `memory_service/review.py` | Review lifecycle (start → log → verdict) via RelationalStore |
+| `MemIndex` | `memory_service/index.py` | Memsearch vector indexing (graceful degradation) |
+| `ProjectAwareMemSearch` | `memory_service/memsearch_wrapper.py` | MemSearch wrapper with project_id tagging + type filtering |
+| `FastMCP Server` | `memory_service/mcp_server.py` | MCP server: 18 tools + 7 resources (stdio + SSE transport) |
+| `MCPClient` | `mcp_client.py` | Sync MCP client for Pi agent (background event-loop thread) |
 | `MicroModelEnricher` | `micro_model.py` | Async semantic enrichment (ONNX embeddings, TF-IDF keywords) |
 | `StateMachineLinter` | `state_linter.py` | 8-check linter for transition graph validation |
 | `TinyCouncilManager` | `super_council.py` | Fanout coordinator (parallel/sequential mode selection) |
@@ -97,6 +103,8 @@ The pipeline provides:
 | `ArcClient` | `arc_summarizer/client.py` | HTTP client with retry + fallback to main upstream |
 | `ArcPipeline` | `arc_summarizer/pipeline.py` | Full consolidation pipeline (gather→call→write→cache→inject) |
 | `ArcConfig` | `arc_summarizer/config.py` | Loads from `config-subsystem.json["consolidation"]` |
+
+**Backward compat shims** (re-export from `memory_service/`): `relational_store.py`, `context_router.py`, `memory_layer.py`, `review_service.py`
 
 ## Key Design Decisions
 
@@ -107,6 +115,8 @@ The pipeline provides:
 5. **Single-slot GPU:** All models serialize through one GPU. Wall-clock = sum of tasks.
 6. **Artifact boundaries:** MemoryLayer never cuts mid-artifact. Uses `ARTIFACT_BOUNDARY` markers.
 7. **DESC ordering:** Newest artifacts preserved when budget is tight (MODERATE-2 fix).
+8. **MemoryService single source of truth:** Supervisor uses direct Python API (`MemoryService.load()`). No MCP subprocess spawning, no JSON-RPC serialization for in-process calls. External consumers use `memory_service --mcp-stdio` (FastMCP).
+9. **FastMCP for external MCP:** Full protocol compliance (tools with auto-schema, resources, stdio + SSE transport, proper error codes). `mcp>=1.0.0` declared dependency.
 8. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
 9. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
 
