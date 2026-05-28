@@ -32,13 +32,15 @@
 | Consumer | Access Method | Transport |
 |----------|-------------|-----------|
 | **Supervisor** (in-process) | `MemoryService.load()` → `.store`, `.router`, `.layer`, `.review` | Python API (zero overhead) |
-| **Pi agent** (external) | `python3 -m super_council.memory_service --mcp-stdio` | FastMCP stdio (JSON-RPC) |
+| **Pi agent** (stdio) | `python3 -m super_council.memory_service --mcp-stdio` | FastMCP stdio (JSON-RPC) |
+| **Pi extension** (SSE) | Persistent SSE connection to `:18096/sse` | FastMCP SSE (persistent, low-latency) |
+| **External clients** | `--mcp-sse` or `--mcp-streamable-http` | FastMCP SSE / streamable-http |
 
 ### Key Design Decisions
 
 1. **No MCP subprocess for supervisor** — Supervisor uses direct Python API. No JSON-RPC serialization, no subprocess spawning, no `_call_mcp_tool()` indirection.
 
-2. **FastMCP for external consumers** — Full MCP protocol compliance: tools with auto-schema, resources (`run://`, `review://` URIs), stdio + SSE transport, proper error codes.
+2. **FastMCP for external consumers** — Full MCP protocol compliance: tools with auto-schema, resources (`run://`, `review://` URIs), three transports (stdio, SSE, streamable-http), proper error codes. SSE enables persistent connections with zero reconnect overhead for subsequent calls.
 
 3. **Single source of truth** — One `RelationalStore` (writes), one `ContextRouter` (recall), one `MemoryLayer` (slices), one `ReviewService` (reviews). No duplicate data paths.
 
@@ -122,14 +124,40 @@ service.health_check()
 ### Transport
 
 ```bash
-# stdio (for Pi agent)
+# stdio (for Pi agent — subprocess per call)
 python3 -m super_council.memory_service --mcp-stdio
+
+# SSE (persistent HTTP connection — for extension/external clients)
+python3 -m super_council.memory_service --mcp-sse
+# Binds to config.mcp.host:config.mcp.port (default 127.0.0.1:18096)
+# Clients connect via /sse endpoint, receive session URL, POST to /messages/?session_id=xxx
+# Responses arrive via SSE event: message stream
+
+# Streamable HTTP (alternative HTTP transport)
+python3 -m super_council.memory_service --mcp-streamable-http
 
 # Health check
 python3 -m super_council.memory_service --health
 
 # One-shot recall
 python3 -m super_council.memory_service --recall "query" --max-tokens 512
+```
+
+### SSE Protocol Flow
+
+```
+Client                          Memory Service
+  │                                    │
+  │──── GET /sse ────────────────────>│
+  │<─── event: endpoint ─────────────│
+  │<─── data: /messages/?session_id=x │
+  │                                    │
+  │── POST /messages/?session_id=x ──>│  (initialize)
+  │<─── event: message ──────────────│  (init response)
+  │                                    │
+  │── POST /messages/?session_id=x ──>│  (tools/call)
+  │<─── event: message ──────────────│  (tool result)
+  │                                    │
 ```
 
 ### Tools (18 total)
@@ -219,17 +247,27 @@ client.disconnect()
 | Restart | `POST /v1/council/restart` | ✅ |
 | Supervisor restart | `POST /v1/council/supervisor-restart` | ✅ |
 
-### Via `memory_service --mcp-stdio` (Standalone)
+### Via `memory_service` (Standalone — 3 transports)
 
 | Tool | Available | Notes |
 |------|-----------|-------|
-| All 18 tools above | ✅ | Via FastMCP stdio |
+| All 18 tools above | ✅ | Via FastMCP stdio / SSE / streamable-http |
 | All 7 resources | ✅ | Via FastMCP resource protocol |
 | Model swapping | ❌ | Supervisor-only |
 | Chat completions | ❌ | Supervisor-only |
 | Delegation | ❌ | Supervisor-only |
 | Fanout | ❌ | Supervisor-only |
 | Pipeline advancement | ❌ | Supervisor-only |
+
+**Transport selection:**
+
+| Transport | Flag | Use Case |
+|-----------|------|----------|
+| stdio | `--mcp-stdio` | Pi agent subprocess (per-call spawn) |
+| SSE | `--mcp-sse` | Persistent connection (Pi extension, external clients) |
+| streamable-http | `--mcp-streamable-http` | Alternative HTTP transport |
+
+SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 
 **The `memory_service` is purely the memory/recall/review layer.** It does NOT handle model swapping, chat completions, delegation, or pipeline state machine advancement. Those require the supervisor's proxy architecture and upstream llama-server management.
 
@@ -248,9 +286,9 @@ client.disconnect()
       "collection": "memsearch_chunks"
     },
     "mcp": {
-      "transport": "stdio",
-      "host": "127.0.0.1",
-      "port": 18096
+      "transport": "stdio",   // or "sse", "streamable-http"
+      "host": "127.0.0.1",    // used by SSE/streamable-http transports
+      "port": 18096            // used by SSE/streamable-http transports
     },
     "consolidation_ttl_days": 14,
     "consolidation_probation_enabled": true,
@@ -264,6 +302,8 @@ client.disconnect()
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `COUNCIL_DB_PATH` | Override database path | `~/.council-memory/pipelines.db` |
+| `COUNCIL_MEMORY_HOST` | Memory service SSE host | `127.0.0.1` |
+| `COUNCIL_MEMORY_PORT` | Memory service SSE port | `18096` |
 
 ## Dependencies
 
