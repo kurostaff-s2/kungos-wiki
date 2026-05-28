@@ -34,10 +34,15 @@ recall_query = f"past solutions pitfalls for {task[:200]}"
 recalled = self._active_recall(recall_query, phase=phase)
 ```
 
-- Queries memsearch vector index for relevant past solutions
-- Phase-tagged filtering (RED/GREEN/REFACTOR)
+Routing: `SlotSupervisor._active_recall()` → `memory_service.indexer.search()` → MemIndex
+
+- MemIndex handles MemSearch lifecycle, config, async execution, graceful degradation
+- SlotSupervisor owns domain logic: shell-injection guard, phase filtering, formatting
 - Token budget enforced (default 512 tokens = ~2048 chars)
 - Shell metacharacter sanitization (rejects `$(`, `` ` ``, `eval(`, `;rm`, `&&rm`)
+
+**Dependency isolation:** `super_council.py` has no direct MemSearch import.
+All vector search routes through `memory_service.indexer` (single source of truth).
 
 ### Recall-Then-Validate
 

@@ -60,8 +60,19 @@ The pipeline provides:
 - State machine context management (SCOUT → PLAN → BUILD → REVIEW → ...)
 - RelationalStore persistence (SQLite, WAL mode, FK enforced)
 - Automatic retry/retreat logic (per-phase + global ceiling)
-- Artifact indexing into memsearch
+- Artifact indexing into memsearch (via `memory_service.indexer` only)
 - Structured event logging
+
+### Single Source of Truth Rule
+
+**All memory operations route through `memory_service/`** — the memory layer is
+architecturally independent and can run standalone via `--mcp-sse`.
+
+`super_council.py` has **zero direct MemSearch dependency**. All vector indexing
+and search go through `memory_service.indexer` (MemIndex). This enforces:
+- One config source (`config-subsystem.json`)
+- One Milvus connection owner (MCP server or in-process indexer)
+- Graceful degradation in one place (MemIndex)
 
 **Do NOT use direct delegation for reviews.** Use the pipeline's `AGENT_VALIDATE` phase which auto-dispatches to the appropriate reviewer alias.
 

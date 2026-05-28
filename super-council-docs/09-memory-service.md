@@ -14,18 +14,41 @@
 │  │ (writes)     │  │ (recall)     │  │ (slices)     │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
 │         │                 │                 │           │
-│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐  │
-│  │ Review       │  │ MemIndex     │  │ MemSearch    │  │
-│  │ Service      │  │ (vector)     │  │ Wrapper      │  │
-│  │ (reviews)    │  │ (optional)   │  │ (project)    │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  │
-│                                                         │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  FastMCP Server (mcp.server.FastMCP)             │   │
-│  │  18 tools + 7 resources + stdio/SSE transport    │   │
-│  └──────────────────────────────────────────────────┘   │
+│  ┌──────┴───────┐  ┌──────┴───────┐               │    │
+│  │ Review       │  │ MemIndex     │               │    │
+│  │ Service      │  │ (vector)     │               │    │
+│  │ (reviews)    │  │ └→ MemSearch │               │    │
+│  │              │  │   (owned)    │               │    │
+│  └──────────────┘  └──────────────┘               │    │
+│                                                    │    │
+│  ┌──────────────────────────────────────────────────┐ │
+│  │  FastMCP Server (mcp.server.FastMCP)             │ │
+│  │  18 tools + 7 resources + stdio/SSE transport    │ │
+│  └──────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Dependency Isolation
+
+**`super_council.py` has zero direct MemSearch dependency.** All vector indexing and search
+route through `memory_service.indexer` (single source of truth).
+
+```
+super_council.py
+  └── memory_service.indexer.*    (Python API)
+        └── MemIndex              (owns lifecycle, config, locking)
+              └── MemSearch       (external package, owned by memory service only)
+```
+
+Removed in 2026-05-28 refactor:
+- `CouncilMemory._auto_index_file()` → replaced by `MemIndex.index_file()`
+- `_active_recall()` MemSearch boilerplate → `memory_service.indexer.search()`
+- `_active_recall_structured()` MemSearch boilerplate → `memory_service.indexer.search()`
+- Health endpoint MemSearch stats → `memory_service.indexer.stats()`
+- Raw `from memsearch import MemSearch` import → eliminated
+
+Domain logic preserved in SlotSupervisor: shell-injection guard, phase filtering,
+token budget formatting, client-side type filtering.
 
 ### Two Access Patterns
 
@@ -108,6 +131,10 @@ service.health_check()
 - File type inference: `code`, `spec`, `doc`, `review`
 - Graceful degradation when memsearch unavailable
 - Fire-and-forget with `fcntl.flock()` (released on process death)
+- `search()` uses `run_async()` internally (MemSearch.search() is async)
+- `search()` uses `top_k=` parameter (MemSearch API, not `limit=`)
+- `stats()` returns collection metadata without requiring live MemSearch instance
+- Single Milvus connection owner — concurrent access via MCP server only
 
 ### ProjectAwareMemSearch (MemSearch Wrapper)
 
