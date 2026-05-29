@@ -208,7 +208,7 @@ Client                          Memory Service
 | `get_run_snapshot` | Full run snapshot | ContextRouter.get_run_snapshot() |
 | `summarize_run_issues` | Issue summary with severity | ContextRouter.summarize_run_issues() |
 | `get_review_findings` | Recent review findings | ContextRouter.get_review_findings() |
-| `council-index` | Index file into memsearch | MemIndex.index_file() |
+| `memsearch_index_file` | Index file into memsearch | MemIndex.index_file() |
 | `review.start` | Start new review run | ReviewService.start_review() |
 | `review.log` | Log review finding | ReviewService.log_finding() |
 | `review.verdict` | Finalize review verdict | ReviewService.record_verdict() |

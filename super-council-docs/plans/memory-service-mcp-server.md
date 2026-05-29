@@ -77,7 +77,7 @@ memory_service/
       "transport": "stdio",
       "tools": ["council-recall", "get_context_slice", "get_recent_events",
                 "get_run_snapshot", "summarize_run_issues", "get_review_findings",
-                "council-index"]
+                "memsearch_index_file"]
     }
   }
 }
@@ -176,7 +176,7 @@ memory_service/
 | `get_run_snapshot` | `ContextRouter.get_run_snapshot()` | mcp_server.py |
 | `summarize_run_issues` | `ContextRouter.summarize_issues()` | mcp_server.py |
 | `get_review_findings` | `ContextRouter.get_review_findings()` | mcp_server.py |
-| `council-index` | `MemIndex.index_file()` | mcp_server.py |
+| `memsearch_index_file` | `MemIndex.index_file()` | mcp_server.py |
 
 **MCP Server skeleton:**
 ```python
