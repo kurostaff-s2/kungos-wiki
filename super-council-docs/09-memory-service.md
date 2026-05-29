@@ -230,12 +230,13 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 
 | Signal | Pattern | Points |
 |--------|---------|--------|
-| **High-signal headers** | `## Key Decisions`, `## Topics Discussed`, `## Work Completed`, `## Session Summary`, `## Research Findings` | 3pts each |
-| **Medium-signal headers** | `## Open Items`, `## Follow-ups`, `## Decisions`, `## Recommendations`, `## Analysis`, `## Updates`, `## Changes`, `## Summary`, `## Findings`, `## Results`, `## Completed`, `## Next Steps`, `## Action Items` | 1pt each |
+| **High-signal headers** | `##` or `###` Key Decisions, Topics Discussed, Work Completed, Session Summary, Research Findings | 3pts each |
+| **Medium-signal headers** | `##` or `###` Open Items, Follow-ups, Decisions, Recommendations, Analysis, Updates, Changes, Summary, Findings, Results, Completed, Next Steps, Action Items | 1pt each |
 | **Multi-sections** | 3+ total sections (## or ###) | 2pts |
 | **Subsection tree** | 1+ ## parent + 3+ ### children | 2pts |
-| **Bullet density** | 5+ list items (`- `) | 1pt |
+| **List density** | 5+ list items (bullets `-`, `*`, `+` OR numbered `1.`, `2)`, etc.) | 1pt |
 | **Low code ratio** | <10% code block characters | 1pt |
+| **Subsections-only penalty** | 3+ ### with zero ## | -2pts (soft) |
 
 **Threshold:** 4 points → triggers `upsert_summary` MCP tool.
 
@@ -246,10 +247,9 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 | **Error log** | Text starts with `ERROR`, `WARN`, `Traceback`, or `File ".*`, line \d+` |
 | **Code-heavy** | Code blocks exceed 30% of total text |
 | **API docs** | 2+ API patterns matched: `` `name` (type, required) ``, `## Parameters`, `## Response Format`, `## Request Body`, `## Error Codes` |
-| **Subsections-only** | 3+ ### headers with zero ## headers |
 | **Too short** | Text < 200 characters |
 
-**Test results (7/7 passing):**
+**Test results (8/8 passing):**
 
 | Case | Expected | Got | Score |
 |------|----------|-----|-------|
@@ -260,6 +260,7 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 | Simple prose review | SKIP | SKIP | 1 |
 | Short message (< 200 chars) | VETO | VETO (too_short) | — |
 | API docs (param + ## Error Codes) | VETO | VETO (api_doc) | — |
+| Review with ### + numbered items | CATCH | CATCH | 6 |
 
 **Operation flow:**
 1. Score ≥ 4 → triggers `upsert_summary` MCP tool
