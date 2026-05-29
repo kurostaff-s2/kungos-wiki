@@ -49,9 +49,9 @@ self._init_arc_summarizer()  # loads ArcSummarizer with self.relational_store
 
 **Important:** `consolidation_cache` is written **only** by the Arc A380 pipeline (`ArcPipeline.run_consolidation()`). It stores structured YAML output from Granite-4.1-3B with provenance prefix `consol-*`.
 
-**Session summaries from the Pi extension hook** (`message_end` auto-detection) and the `memory.upsert_summary` tool write to the **separate** `session_summaries` table (provenance prefix `sess-*`). This separation ensures:
+**Session diary entries from the Pi extension hook** (`message_end` auto-detection) and the `memory.upsert_summary` tool write to the **separate** `session_diary` table (provenance prefix `sess-*`). This separation ensures:
 - `consolidation_cache` = Arc A380 pipeline only (model-generated, probation/activation lifecycle)
-- `session_summaries` = mechanical upsert only (pattern-detected, no model, 14-day TTL)
+- `session_diary` = mechanical upsert only (pattern-detected, no model, 14-day TTL, parses both `##` and `###` headers)
 
 See `03-relational-layer.md` for full table separation details.
 

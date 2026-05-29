@@ -130,7 +130,7 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 9. **FastMCP for external MCP:** Full protocol compliance (tools with auto-schema, resources, stdio + SSE transport, proper error codes). `mcp>=1.0.0` declared dependency.
 10. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
 11. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
-12. **Session memory separation:** `consolidation_cache` (Arc A380 pipeline, `consol-*` prefix) is strictly separate from `session_summaries` (mechanical upsert, `sess-*` prefix). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. Provenance traceability: `consol-*` = Arc, `sess-*` = mechanical, `test-*` = tests.
+12. **Session memory separation:** `consolidation_cache` (Arc A380 pipeline, `consol-*` prefix) is strictly separate from `session_diary` (mechanical upsert, `sess-*` prefix). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. All recall routes through ContextRouter (canonical recall path). Provenance traceability: `consol-*` = Arc, `sess-*` = mechanical, `test-*` = tests.
 
 ## Configuration
 

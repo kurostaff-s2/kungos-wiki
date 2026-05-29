@@ -99,34 +99,60 @@ service.health_check()
 ### RelationalStore (Canonical Write Path)
 
 - SQLite with WAL mode, FK enforcement, manual checkpoint
-- Schema from migrations `01_schema.sql` → `04_session_summaries.sql` (applied in order)
+- Schema from migrations `01_schema.sql` → `05_rename_to_session_diary.sql` (applied in order)
 - All writes go through public methods (no raw SQL)
 - Seeded tables: `workflow_definitions`, `phase_names`, `outcome_types`, `event_types`, `severity_levels`
 
-#### Two Write Channels for Session Memory
+#### Three Write Channels for Session Memory
 
 | Channel | Table | Method | Provenance |
 |---------|-------|--------|------------|
 | **Arc A380 pipeline** | `consolidation_cache` | `upsert_consolidation_cache()` | `consol-*` — Granite-4.1-3B output |
-| **Mechanical upsert** | `session_summaries` | `upsert_session_summary()` | `sess-*` — pattern-detected or manual |
+| **Mechanical upsert** | `session_diary` | `upsert_session_diary()` | `sess-*` — auto-detected or manual |
+| **Todo reconciliation** | `session_diary` (read) | `reconcile_open_items()` | deduped open items across entries |
 
-**`upsert_session_summary(summary_text, source_path, alias)`** — The mechanical upsert. Parses Markdown sections from the summary text (`## Key Decisions`, `## Topics Discussed`, `## Work Completed`, `## Open Items`, `## Models Used`) and stores structured fields. Generates `sess-{timestamp}-{alias_hash}` ID. Sets 14-day TTL. Writes to `session_summaries` (NOT `consolidation_cache`).
+**`upsert_session_diary(summary_text, source_path, alias)`** — The mechanical upsert. Parses Markdown sections from the summary text (`##` or `###` Key Decisions, Topics Discussed, Work Completed, Open Items, Models Used) and stores structured fields. Matches both `##` and `###` headers via `#{1,3}` regex. Generates `sess-{timestamp}-{alias_hash}` ID. Sets 14-day TTL. Writes to `session_diary` (NOT `consolidation_cache`).
 
-**`upsert_consolidation_cache(...)`** — Arc-only. Writes raw YAML output from Granite-4.1-3B consolidation pipeline. Supports probation/activation lifecycle. Generates `consol-*` IDs.
+**`reconcile_open_items(days_back=14)`** — Deduplicates open items across all diary entries. Groups by normalized text (lowercase, stripped bullet/number prefixes), counts occurrences, tracks first/last seen dates. Returns `{items: [{text, count, first_seen, last_seen}], total_raw, total_unique}`.
+
+**`upsert_consolidation_cache(...)`** — Arc-only. Writes raw YAML output from Granite-4.1-3B consolidation pipeline. Supports probation/activation lifecycle. Generates `consol-*` IDs. **Not fed by session_diary** — consolidation_cache remains Arc-only for provenance traceability.
 
 ### ContextRouter (Canonical Recall Path)
 
-- Structured queries over RelationalStore
+- Structured queries over RelationalStore — **all recall routes through ContextRouter**
 - Run snapshots, recent events, artifacts, similar runs
 - Issue summaries, review findings
+- Session diary queries (text search across decisions, open_items, work_completed, raw_text)
 - Startup context (Tier 1 knowledge card)
+
+**Methods:**
+
+| Method | Source | Purpose |
+|--------|--------|---------|
+| `get_run_snapshot(run_id)` | workflow_runs + state_executions + artifacts | Full run state |
+| `get_recent_events(run_id, limit)` | event_log | Last N events |
+| `get_artifacts(run_id, phase, key)` | artifacts | Filtered artifacts |
+| `summarize_run_issues(run_id)` | state_executions + event_log | Failure correlation |
+| `find_similar_runs(query, project_id)` | pipelines + workflow_runs | Text-match on tasks |
+| `get_review_findings(project_id, limit)` | event_log + workflow_runs | Review findings/verdicts |
+| `query_session_diary(query, limit, days_back)` | session_diary | Auto-upserted summaries |
+| `get_startup_context(max_tokens)` | consolidation_cache | Tier 1 knowledge card |
 
 ### MemoryLayer (Artifact Management)
 
 - Token-budgeted context slices with artifact boundaries
-- Unified three-channel recall: text + structural + execution
+- Unified four-channel recall (all routed through ContextRouter):
+
+| Channel | Source | When Included |
+|---------|--------|---------------|
+| **Text Memory** | memsearch + ContextRouter.get_artifacts() + get_review_findings() | Always |
+| **Structural Graph** | RelationalStore.get_workflow_definitions() | Only when query contains `phase/workflow/pipeline/transition/state/gate/tdd` |
+| **Execution History** | ContextRouter.find_similar_runs() | Only runs from last 3 days |
+| **Session Diary** | ContextRouter.query_session_diary() | When query matches diary entries; skips entries with no structured fields |
+
 - Artifact ingestion, eviction, context slicing
 - **Never cuts mid-artifact** — uses `ARTIFACT_BOUNDARY` markers
+- Fallback: direct DB queries when ContextRouter unavailable
 
 ### ReviewService (Review Lifecycle)
 
@@ -198,16 +224,18 @@ Client                          Memory Service
   │                                    │
 ```
 
-### Tools (19 total)
+### Tools (21 total)
 
 | Tool | Description | Delegates To |
 |------|-------------|-------------|
-| `council-recall` | Three-channel unified recall | MemoryLayer.unified_recall() |
+| `council-recall` | Four-channel unified recall | MemoryLayer.unified_recall() |
 | `get_context_slice` | Token-budgeted context slice | MemoryLayer.get_context_slice() |
 | `get_recent_events` | Recent execution events | ContextRouter.get_recent_events() |
 | `get_run_snapshot` | Full run snapshot | ContextRouter.get_run_snapshot() |
 | `summarize_run_issues` | Issue summary with severity | ContextRouter.summarize_run_issues() |
 | `get_review_findings` | Recent review findings | ContextRouter.get_review_findings() |
+| `query_session_diary` | Query auto-upserted session diary | ContextRouter.query_session_diary() |
+| `reconcile_open_items` | Deduplicate todos across diary entries | RelationalStore.reconcile_open_items() |
 | `memsearch_index_file` | Index file into memsearch | MemIndex.index_file() |
 | `review.start` | Start new review run | ReviewService.start_review() |
 | `review.log` | Log review finding | ReviewService.log_finding() |
@@ -220,7 +248,7 @@ Client                          Memory Service
 | `get_run_artifacts` | Artifacts for a run | ContextRouter.get_artifacts() |
 | `get_review_verdict` | Verdict for a run | ContextRouter.get_run_snapshot() → artifacts |
 | `lint_current_workflow` | Lint workflow transitions | StateMachineLinter.lint() (graceful degradation) |
-| `upsert_summary` | Mechanical session summary upsert + operation logging | RelationalStore.upsert_session_summary() |
+| `upsert_summary` | Mechanical session diary upsert + operation logging | RelationalStore.upsert_session_diary() |
 
 #### Auto-Detection Hook (Pi Extension `message_end`)
 
@@ -264,13 +292,16 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 
 **Operation flow:**
 1. Score ≥ 4 → triggers `upsert_summary` MCP tool
-2. Writes to `session_summaries` table with `source: "auto-detected-assistant-message"`
+2. Writes to `session_diary` table with `source: "auto-detected-assistant-message"`
 3. Generates `sess-{timestamp}-{alias_hash}` ID
-4. **No model involvement** — purely regex matching + DB insert
-5. **~15ms latency** via persistent SSE connection (no reconnect overhead)
-6. Graceful degradation on failure (catches errors, logs to console)
+4. Parses `##` and `###` headers into structured fields (decisions, open_items, work_completed, session_context)
+5. **No model involvement** — purely regex matching + DB insert
+6. **~15ms latency** via persistent SSE connection (no reconnect overhead)
+7. Graceful degradation on failure (catches errors, logs to console)
 
 This implements the "write → manage → read" memory loop: summaries are captured automatically during conversation, without the agent needing to explicitly call `memory.upsert_summary()`.
+
+**Session Diary in Recall:** Auto-upserted diary entries are surfaced via `ContextRouter.query_session_diary()` in the unified recall pipeline. Entries with no structured fields (all NULL decisions/open_items/work_completed) are skipped. Text search across all structured fields.
 
 **Optional tools** (registered only if enricher available):
 - `summarize_artifact` — MicroModelEnricher.summarize_artifact()
