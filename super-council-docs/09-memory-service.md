@@ -23,7 +23,7 @@
 │                                                    │    │
 │  ┌──────────────────────────────────────────────────┐ │
 │  │  FastMCP Server (mcp.server.FastMCP)             │ │
-│  │  18 tools + 7 resources + stdio/SSE transport    │ │
+│  │  22 tools + 7 resources + stdio/SSE transport    │ │
 │  └──────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -141,6 +141,9 @@ service.health_check()
 ### MemoryLayer (Artifact Management)
 
 - Token-budgeted context slices with artifact boundaries
+- **Two recall methods:**
+  - `unified_recall()` — Four-channel recall (text + structural + execution + diary)
+  - `unified_log_recall()` — Multi-channel log recall (8 channels + service health + MCP status)
 - Unified four-channel recall (all routed through ContextRouter):
 
 | Channel | Source | When Included |
@@ -224,11 +227,12 @@ Client                          Memory Service
   │                                    │
 ```
 
-### Tools (21 total)
+### Tools (22 total)
 
 | Tool | Description | Delegates To |
 |------|-------------|-------------|
 | `council-recall` | Four-channel unified recall | MemoryLayer.unified_recall() |
+| `unified_log_recall` | Multi-channel log recall + service health | MemoryLayer.unified_log_recall() |
 | `get_context_slice` | Token-budgeted context slice | MemoryLayer.get_context_slice() |
 | `get_recent_events` | Recent execution events | ContextRouter.get_recent_events() |
 | `get_run_snapshot` | Full run snapshot | ContextRouter.get_run_snapshot() |
@@ -249,6 +253,79 @@ Client                          Memory Service
 | `get_review_verdict` | Verdict for a run | ContextRouter.get_run_snapshot() → artifacts |
 | `lint_current_workflow` | Lint workflow transitions | StateMachineLinter.lint() (graceful degradation) |
 | `upsert_summary` | Mechanical session diary upsert + operation logging | RelationalStore.upsert_session_diary() |
+
+#### `unified_log_recall` — Multi-Channel Log Recall
+
+Added 2026-05-30. Queries across all log sources with token budgeting and service health reporting.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | (required) | Search query text |
+| `max_tokens` | int | 4096 | Token budget for fused context |
+| `days_back` | int | 7 | Only entries from last N days |
+| `channels` | string | null | Comma-separated channel names (null = all) |
+| `severity` | string | null | Filter events by severity level |
+
+**Channels queried:**
+
+| Channel | Source | Parser |
+|---------|--------|-------|
+| `system_events` | event_log table | SQL LIKE match |
+| `session_diary` | session_diary table | ContextRouter.query_session_diary() |
+| `consolidation` | consolidation_cache table | RelationalStore.query_consolidation_cache() |
+| `daily_logs` | `~/.council-memory/daily/*.md` | DailyLogParser (markdown tables) |
+| `chat_summaries` | `~/.council-memory/chat-summaries/*.md` | ChatSummaryQuery (sectioned markdown) |
+| `workflow_state` | workflow_runs table | SQL LIKE match |
+| `failures` | state_executions (outcome=failure) | SQL query |
+| `supervisor_log` | `/tmp/super-council.log` | SupervisorLogTailer (tail + search) |
+
+**Response format:**
+
+```json
+{
+  "query": "memory",
+  "service_health": {
+    "services": {
+      "supervisor": {"status": "running", "port": 8090},
+      "memory_service": {"status": "running", "port": 18096},
+      "arc_summarizer": {"status": "running", "port": 18095},
+      "memsearch": {"status": "available"},
+      "web_search": {"status": "available"}
+    },
+    "last_check": "2026-05-30T...",
+    "check_duration_ms": 1234.5
+  },
+  "mcp_server": {
+    "host": "127.0.0.1",
+    "port": 18096,
+    "transport": "stdio",
+    "status": "running",
+    "sse_endpoint": "http://127.0.0.1:18096/sse",
+    "messages_endpoint": "http://127.0.0.1:18096/messages/",
+    "session_info": "session_id is assigned per SSE connection..."
+  },
+  "channels": {
+    "system_events": {"matches": 9, "context": "..."},
+    "session_diary": {"matches": 10, "context": "..."},
+    ...
+  },
+  "fused_context": "## Service Health\nsupervisor: running, ...\n\n## system_events (9 matches)\n...",
+  "token_budget": 4096,
+  "context_length": 6741
+}
+```
+
+**Log Parsers** (`memory_service/log_parsers.py`):
+
+| Class | Purpose | Format |
+|-------|---------|--------|
+| `DailyLogParser` | Parse daily council logs | Markdown tables: `\| Time \| Event \| Model \| Detail \| Status \| Duration \|` |
+| `ChatSummaryQuery` | Parse chat session summaries | Sectioned markdown: Topics Discussed, Key Decisions, Work Completed, Open Items |
+| `SupervisorLogTailer` | Tail supervisor log | Plain text with timestamps, tail N lines, keyword search |
+
+**Graceful degradation:** Each channel catches exceptions independently. Failed channels return `{"matches": 0, "context": "", "error": "..."}` without affecting other channels. Service health always included regardless of channel selection.
 
 #### Auto-Detection Hook (Pi Extension `message_end`)
 
@@ -371,7 +448,7 @@ client.disconnect()
 
 | Tool | Available | Notes |
 |------|-----------|-------|
-| All 18 tools above | ✅ | Via FastMCP stdio / SSE / streamable-http |
+| All 22 tools above | ✅ | Via FastMCP stdio / SSE / streamable-http |
 | All 7 resources | ✅ | Via FastMCP resource protocol |
 | Model swapping | ❌ | Supervisor-only |
 | Chat completions | ❌ | Supervisor-only |
@@ -446,6 +523,7 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 | MemIndex | `super_council/memory_service/index.py` |
 | ProjectAwareMemSearch | `super_council/memory_service/memsearch_wrapper.py` |
 | FastMCP Server | `super_council/memory_service/mcp_server.py` |
+| Log Parsers | `super_council/memory_service/log_parsers.py` |
 | CLI entry point | `super_council/memory_service/__main__.py` |
 | MCP Client | `super_council/mcp_client.py` |
 | Config | `super_council/memory_service/config.py` |
