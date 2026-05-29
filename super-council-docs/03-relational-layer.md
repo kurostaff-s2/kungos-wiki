@@ -19,6 +19,13 @@ artifact_summaries    -- Generated summaries, tags, keywords (FK → artifacts)
 failure_classifications -- Error classification (type, confidence) (FK → state_executions)
 event_window_summaries -- Event window narratives
 
+-- Memory consolidation tables
+consolidation_cache   -- Arc A380 pipeline ONLY (Granite-4.1-3B consolidation output)
+                      -- Provenance prefix: consol-*
+session_summaries     -- Mechanical upsert ONLY (Pi extension hook + manual tool)
+                      -- Provenance prefix: sess-*
+                      -- Migration 04: created from split of consolidation_cache
+
 -- Reference tables
 workflow_definitions  -- Pipeline phase/transition definitions
 phase_names           -- Phase registry with display_order
@@ -26,6 +33,22 @@ outcome_types         -- Enum: success, failure, retreat, global_ceiling
 event_types           -- Enum: transition, error, warning, info
 severity_levels       -- Enum: critical, error, warning, info
 ```
+
+### Table Separation: consolidation_cache vs session_summaries
+
+**Design principle: Provenance traceability.** Every entry carries a prefix that reveals its origin:
+
+| Prefix | Table | Source | Mechanism |
+|--------|-------|--------|-----------|
+| `consol-*` | `consolidation_cache` | Arc A380 (Granite-4.1-3B) | `_run_startup_consolidation()` pipeline |
+| `sess-*` | `session_summaries` | Mechanical (no model) | Pi extension `message_end` hook or `memory.upsert_summary` tool |
+| `test-*` | `session_summaries` | Test fixtures | Unit/integration tests |
+
+**consolidation_cache** — Arc A380 pipeline only. Written by `ArcPipeline.run_consolidation()` after Granite-4.1-3B produces YAML output. Supports Tier 1 knowledge card injection, probation/activation lifecycle, and memsearch indexing.
+
+**session_summaries** — Mechanical hook only. Written by `RelationalStore.upsert_session_summary()` which parses Markdown sections (`## Key Decisions`, `## Topics Discussed`, `## Work Completed`, etc.) and stores structured fields. No model involvement — purely pattern detection + DB insert. Implements Karpathy's "ingest immediately" pattern.
+
+**Migration path (04_session_summaries.sql):** Existing `session-*` entries were migrated from `consolidation_cache` into `session_summaries`, then removed from `consolidation_cache`. New mechanical upserts write directly to `session_summaries`.
 
 ### WAL Mode + FK Enforcement
 

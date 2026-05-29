@@ -99,9 +99,20 @@ service.health_check()
 ### RelationalStore (Canonical Write Path)
 
 - SQLite with WAL mode, FK enforcement, manual checkpoint
-- Schema from `migrations/01_schema.sql` (single source of truth)
+- Schema from migrations `01_schema.sql` → `04_session_summaries.sql` (applied in order)
 - All writes go through public methods (no raw SQL)
 - Seeded tables: `workflow_definitions`, `phase_names`, `outcome_types`, `event_types`, `severity_levels`
+
+#### Two Write Channels for Session Memory
+
+| Channel | Table | Method | Provenance |
+|---------|-------|--------|------------|
+| **Arc A380 pipeline** | `consolidation_cache` | `upsert_consolidation_cache()` | `consol-*` — Granite-4.1-3B output |
+| **Mechanical upsert** | `session_summaries` | `upsert_session_summary()` | `sess-*` — pattern-detected or manual |
+
+**`upsert_session_summary(summary_text, source_path, alias)`** — The mechanical upsert. Parses Markdown sections from the summary text (`## Key Decisions`, `## Topics Discussed`, `## Work Completed`, `## Open Items`, `## Models Used`) and stores structured fields. Generates `sess-{timestamp}-{alias_hash}` ID. Sets 14-day TTL. Writes to `session_summaries` (NOT `consolidation_cache`).
+
+**`upsert_consolidation_cache(...)`** — Arc-only. Writes raw YAML output from Granite-4.1-3B consolidation pipeline. Supports probation/activation lifecycle. Generates `consol-*` IDs.
 
 ### ContextRouter (Canonical Recall Path)
 
@@ -187,7 +198,7 @@ Client                          Memory Service
   │                                    │
 ```
 
-### Tools (18 total)
+### Tools (19 total)
 
 | Tool | Description | Delegates To |
 |------|-------------|-------------|
@@ -209,6 +220,56 @@ Client                          Memory Service
 | `get_run_artifacts` | Artifacts for a run | ContextRouter.get_artifacts() |
 | `get_review_verdict` | Verdict for a run | ContextRouter.get_run_snapshot() → artifacts |
 | `lint_current_workflow` | Lint workflow transitions | StateMachineLinter.lint() (graceful degradation) |
+| `upsert_summary` | Mechanical session summary upsert + operation logging | RelationalStore.upsert_session_summary() |
+
+#### Auto-Detection Hook (Pi Extension `message_end`)
+
+The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that fires after every assistant message. It performs **purely mechanical** pattern detection via a multi-signal scorer (replaced the 10-header binary check in 2026-05-30):
+
+**Scoring channels:**
+
+| Signal | Pattern | Points |
+|--------|---------|--------|
+| **High-signal headers** | `## Key Decisions`, `## Topics Discussed`, `## Work Completed`, `## Session Summary`, `## Research Findings` | 3pts each |
+| **Medium-signal headers** | `## Open Items`, `## Follow-ups`, `## Decisions`, `## Recommendations`, `## Analysis`, `## Updates`, `## Changes`, `## Summary`, `## Findings`, `## Results`, `## Completed`, `## Next Steps`, `## Action Items` | 1pt each |
+| **Multi-sections** | 3+ total sections (## or ###) | 2pts |
+| **Subsection tree** | 1+ ## parent + 3+ ### children | 2pts |
+| **Bullet density** | 5+ list items (`- `) | 1pt |
+| **Low code ratio** | <10% code block characters | 1pt |
+
+**Threshold:** 4 points → triggers `upsert_summary` MCP tool.
+
+**Anti-noise vetoes** (immediate SKIP, no scoring):
+
+| Veto | Detection |
+|------|-----------|
+| **Error log** | Text starts with `ERROR`, `WARN`, `Traceback`, or `File ".*`, line \d+` |
+| **Code-heavy** | Code blocks exceed 30% of total text |
+| **API docs** | 2+ API patterns matched: `` `name` (type, required) ``, `## Parameters`, `## Response Format`, `## Request Body`, `## Error Codes` |
+| **Subsections-only** | 3+ ### headers with zero ## headers |
+| **Too short** | Text < 200 characters |
+
+**Test results (7/7 passing):**
+
+| Case | Expected | Got | Score |
+|------|----------|-----|-------|
+| Updates Applied (1 ## + 4 ### + 11 bullets) | CATCH | CATCH | 7 |
+| Error log | VETO | VETO (error_log) | — |
+| Code-heavy (3 code blocks) | VETO | VETO (code_heavy) | — |
+| Research summary (3 high + 2 medium headers) | CATCH | CATCH | 15 |
+| Simple prose review | SKIP | SKIP | 1 |
+| Short message (< 200 chars) | VETO | VETO (too_short) | — |
+| API docs (param + ## Error Codes) | VETO | VETO (api_doc) | — |
+
+**Operation flow:**
+1. Score ≥ 4 → triggers `upsert_summary` MCP tool
+2. Writes to `session_summaries` table with `source: "auto-detected-assistant-message"`
+3. Generates `sess-{timestamp}-{alias_hash}` ID
+4. **No model involvement** — purely regex matching + DB insert
+5. **~15ms latency** via persistent SSE connection (no reconnect overhead)
+6. Graceful degradation on failure (catches errors, logs to console)
+
+This implements the "write → manage → read" memory loop: summaries are captured automatically during conversation, without the agent needing to explicitly call `memory.upsert_summary()`.
 
 **Optional tools** (registered only if enricher available):
 - `summarize_artifact` — MicroModelEnricher.summarize_artifact()

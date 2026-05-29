@@ -128,8 +128,9 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 7. **DESC ordering:** Newest artifacts preserved when budget is tight (MODERATE-2 fix).
 8. **MemoryService single source of truth:** Supervisor uses direct Python API (`MemoryService.load()`). No MCP subprocess spawning, no JSON-RPC serialization for in-process calls. External consumers use `memory_service --mcp-stdio` (FastMCP).
 9. **FastMCP for external MCP:** Full protocol compliance (tools with auto-schema, resources, stdio + SSE transport, proper error codes). `mcp>=1.0.0` declared dependency.
-8. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
-9. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
+10. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
+11. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
+12. **Session memory separation:** `consolidation_cache` (Arc A380 pipeline, `consol-*` prefix) is strictly separate from `session_summaries` (mechanical upsert, `sess-*` prefix). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. Provenance traceability: `consol-*` = Arc, `sess-*` = mechanical, `test-*` = tests.
 
 ## Configuration
 
