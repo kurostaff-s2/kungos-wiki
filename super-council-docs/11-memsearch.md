@@ -1,6 +1,54 @@
 # MemSearch — Vector Indexing & Semantic Recall
 
-> MemSearch wraps Milvus-lite for hybrid vector + BM25 search. All indexing routes through `MemIndex` — zero direct MemSearch dependency in `super_council.py`.
+> MemSearch (by Zilliz/Milvus creators) is cross-platform semantic memory for AI coding agents. We use it as a vector recall layer via `MemIndex` — zero direct MemSearch dependency in `super_council.py`.
+
+**Upstream:** [github.com/zilliztech/memsearch](https://github.com/zilliztech/memsearch) — plugins for Claude Code, Codex CLI, OpenClaw, OpenCode + Python API for custom agents.
+
+## Design Philosophy (Upstream)
+
+**Markdown is the source of truth.** Milvus is a "shadow index" — derived, rebuildable, always in sync with `.md` files.
+
+```
+Markdown files (source of truth)
+  │
+  ▼
+memsearch watch (live file watcher)
+  │ detects file change
+  ▼
+re-chunk → SHA-256 hash each chunk
+  │
+  ├─ hash unchanged? → skip (no embed, no upsert)
+  └─ hash new/changed? → embed → upsert to Milvus
+```
+
+**Intended recall is 3-layer progressive:**
+1. **L1 search** — `memsearch search "query"` → ranked chunks
+2. **L2 expand** — `memsearch expand <chunk_hash>` → full `.md` section
+3. **L3 transcript** — `parse-transcript <session.jsonl>` → raw dialogue
+
+**Intended maintenance:** `memsearch compact` — LLM-powered chunk summarization, compresses old chunks into daily summaries.
+
+### What MemSearch Is Good At
+
+| Feature | How It Works |
+|---------|-------------|
+| **Hybrid search** | Dense vector (COSINE) + BM25 sparse + RRF reranking |
+| **Smart dedup** | SHA-256 content hashing — unchanged chunks skip embedding entirely |
+| **Live sync** | `memsearch watch` — file watcher auto-indexes on change |
+| **Progressive recall** | 3 layers: search → expand (full section) → transcript (raw dialogue) |
+| **Cross-agent memory** | Same Milvus index shared across Claude Code, Codex, OpenClaw, OpenCode |
+| **Compact** | LLM-powered chunk summarization — compresses old chunks into daily summaries |
+
+### What We Use vs. What We Don't
+
+| Feature | Intended (Upstream) | Our Usage |
+|---------|---|---|
+| **Source** | Persistent `.md` files in `.memsearch/memory/` | `/tmp/trace-*` (deleted after index) + real files |
+| **Sync** | `memsearch watch` — live file watcher | Manual `index_file()` calls, no watcher |
+| **Dedup** | SHA-256 hash — skips unchanged chunks | No dedup — re-embeds every time |
+| **Recall** | 3-layer progressive (search → expand → transcript) | Single-layer search only (`top_k=5`) |
+| **Compact** | `memsearch compact` — LLM summarization | Not used |
+| **Expand** | `memsearch expand <hash>` — full section | Not used |
 
 ## Architecture
 
@@ -113,6 +161,40 @@ ms.store._client.upsert(collection_name=collection, data=records)
 - Eliminates file I/O overhead
 
 **Trade-off:** `chunk_markdown()` and `_embed_and_store()` are internal APIs (underscored). Could break on memsearch upgrade. Mitigation: pin memsearch version or wrap in try/except.
+
+### Persistent Source Files (Proper Fix — Per Upstream Design)
+
+The direct text upsert above is a workaround. The **proper fix** (per memsearch architecture) is:
+
+1. Write raw session memories to persistent `.md` files (`~/.council-memory/traces/trace-{id}.md`)
+2. Use `memsearch watch` on that directory
+3. Milvus becomes a true shadow index — always rebuildable from the `.md` files
+
+```
+raw_text → upsert_raw_session_memory() → DB (raw_session_memories)
+  → Write ~/.council-memory/traces/trace-{id}.md (persistent, 14-day TTL)
+  → memsearch watch detects file → chunks → SHA-256 hash → embed → upsert
+  → Source field: ~/.council-memory/traces/trace-{id}.md (valid, rebuildable)
+```
+
+**Benefits over direct upsert:**
+- True shadow index — `memsearch reset --yes` rebuilds from `.md` files
+- Live sync — `memsearch watch` auto-indexes on file change
+- SHA-256 dedup — unchanged files skip embedding
+- Progressive recall — L2 `expand` and L3 `transcript` work on real files
+- Compact — `memsearch compact` summarizes old chunks
+
+**Trade-off:** Disk space for `.md` files (same content already in DB, but gives memsearch its intended source-of-truth contract).
+
+## What We're Missing
+
+| Gap | Impact | Fix |
+|-----|--------|-----|
+| **Live watcher** | Manual `index_file()` calls needed everywhere | `memsearch watch ~/.council-memory/traces/` |
+| **SHA-256 dedup** | Re-embeds identical content every session | Use persistent `.md` files + watch |
+| **Progressive recall** | Only get chunk snippets, not full context | L2 `expand` + L3 `transcript` |
+| **Compact** | Old chunks accumulate forever | `memsearch compact` on schedule |
+| **Source of truth** | `/tmp/trace-*` deleted after index | Persistent `.md` files in `~/.council-memory/traces/` |
 
 ## Milvus Schema
 
@@ -261,3 +343,37 @@ ls -la ~/.council-memory/.memsearch.lock
 ```
 
 **Health endpoint:** `GET /health` → `"memsearch": {"status": "available"}` (via `memory_service.indexer.stats()`)
+
+## Upstream CLI Reference
+
+```bash
+# Setup
+memsearch config init                              # interactive setup wizard
+memsearch config set embedding.provider onnx       # switch embedding provider
+memsearch config set milvus.uri http://localhost:19530  # switch Milvus backend
+
+# Index & Search
+memsearch index ./memory/                          # index markdown files
+memsearch index ./memory/ --force                  # re-embed everything
+memsearch search "Redis caching"                   # hybrid search (BM25 + vector)
+memsearch search "auth flow" --top-k 10 --json     # JSON for scripting
+memsearch expand <chunk_hash>                      # show full section around a chunk
+
+# Live Sync & Maintenance
+memsearch watch ./memory/                          # live file watcher (auto-index on change)
+memsearch compact                                  # LLM-powered chunk summarization
+memsearch stats                                    # show indexed chunk count
+memsearch reset --yes                              # drop all indexed data and rebuild
+```
+
+**We use none of these directly** — all indexing goes through `MemIndex.index_file()` (Python API). The CLI is available for manual maintenance and debugging.
+
+## Usage Call Sites
+
+| Caller | What It Does | Frequency |
+|--------|-------------|-----------|
+| `_active_recall()` in `super_council.py:3828` | Pre-dispatch: "what past solutions exist for this phase?" → injects into subagent prompt | Every delegation |
+| `_active_recall_structured()` in `super_council.py:3888` | Same but returns JSON for programmatic consumers | Every delegation |
+| `recall.unified()` in `layer.py:1087` | Channel 1a: vector search across all indexed content | Every recall query |
+| `_run_startup_consolidation()` in `super_council.py:8430` | Indexes consolidation output file for future recall | Arc summarizer runs |
+| `upsert_raw_session_memory()` → `_try_index_raw_memory()` in `store.py:1057` | Indexes raw assistant messages (via temp file) | Every auto-detected message |
