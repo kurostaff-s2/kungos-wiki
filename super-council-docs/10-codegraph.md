@@ -287,7 +287,7 @@ This ensures the agent never gets stale index data after code edits, even with t
 | `codegraph_context` | ❌ | ✅ | TS-only (257 lines, task-based) |
 | `codegraph_explore` | ❌ | ✅ | TS-only (722 lines, multi-file) |
 
-**Total: 14 unique tools** (12 Python + 2 TS-only).
+**Total: 22 unique tools** (12 Python + 10 TS, 10 shared + 4 Python-only + 2 TS-only).
 
 ## File Locations
 
@@ -295,7 +295,8 @@ This ensures the agent never gets stale index data after code edits, even with t
 |------|---------|
 | `super_council/code_graph/__init__.py` | Package exports |
 | `super_council/code_graph/store.py` | CodeGraphStore API + FTS5 escaping |
-| `super_council/code_graph/sync.py` | Indexing + FTS rebuild + review_findings creation |
+| `super_council/code_graph/sync.py` | Indexing + schema auto-creation + views + FTS rebuild |
+| `super_council/code_graph/sync-all.py` | Multi-project sync orchestrator |
 | `super_council/code_graph/tools.py` | 12 MCP tool handlers + JOIN helpers |
 | `super_council/code_graph/watch.py` | Automated re-indexing watcher |
 | `super_council/vendor/codegraph/` | Vendored codegraph (colbymchenry) |
@@ -303,6 +304,7 @@ This ensures the agent never gets stale index data after code edits, even with t
 | `super_council/vendor/codegraph/src/db/queries.ts` | Option B: FTS5 table + content table override |
 | `~/.pi/agent/extensions/codegraph-mcp/index.ts` | Pi extension (10 TS tools via stdio) |
 | `~/.council-memory/pipelines.db` | SQLite database (shared Python + TS) |
+| `~/.council-memory/sync-all.json` | Multi-project config (9 project paths) |
 | `~/.council-memory/watch-state.json` | Watcher state |
 
 ## Implementation Notes
@@ -323,13 +325,68 @@ All tools return formatted Markdown strings (not JSON), truncated to 15,000 char
 
 If `CodeGraphStore` creation fails, all Python tools return `{"error": "CodeGraphStore unavailable"}`. If JOIN schemas differ, JOIN tools return empty results. The subsystem functions independently of memory layer state.
 
+### Schema Resilience
+
+The `sync.py` script is self-healing — it auto-creates all required tables and views on every sync. This means:
+- `pipelines.db` can be wiped and rebuilt from scratch without manual schema setup
+- Views (`nodes`, `edges`, `files`) are recreated every sync — no stale view issues
+- FTS5 triggers are fixed/recreated — no broken trigger issues
+- The `--rebuild-fts` flag works standalone (no Node.js needed) for FTS5 drift fixes
+
 ## Current Index
 
 | Metric | Value |
 |--------|-------|
-| Files indexed | 65 |
-| Nodes | 1,743 |
-| Edges | 3,382 |
-| FTS5 rows | 1,743 |
-| Languages | Python |
-| DB size | 3.75 MB |
+| Files indexed | 1,510 |
+| Nodes | 18,848 |
+| Edges | 41,806 |
+| FTS5 rows | 18,848 |
+| DB size | 11.16 MB |
+
+### Indexed Projects (9)
+
+| # | Project | Nodes | Language |
+|---|---------|-------|----------|
+| 1 | `super_council` | 1,746 | Python |
+| 2 | `kteam-fe-chief` | 2,947 | JavaScript |
+| 3 | `kurogg-nextjs` | 1,161 | JavaScript/JSX |
+| 4 | `rebellion-nextjs` | 73 | JavaScript/JSX |
+| 5 | `renderedge-nextjs` | 299 | JavaScript/JSX |
+| 6 | `kteam-dj-chief` | 3,597 | Python |
+| 7 | `kteam legacy` | 3,727 | JavaScript/JSX |
+| 8 | `pi-coding-agent/dist` | 5,157 | TypeScript |
+| 9 | `.pi/agent/extensions` | 143 | TypeScript |
+
+### Languages
+
+| Language | Nodes |
+|----------|-------|
+| JavaScript | 7,361 |
+| Python | 6,534 |
+| JSX | 2,752 |
+| TypeScript | 2,132 |
+| TSX | 67 |
+| XML | 2 |
+
+### Schema Auto-Creation
+
+`sync.py` now auto-creates the full schema on every sync (idempotent, survives DB wipes):
+- `_ensure_schema()` — creates `cg_nodes`, `cg_edges`, `cg_files`, `cg_nodes_fts`
+- `_ensure_views()` — creates `nodes`, `edges`, `files` views for TS server compatibility
+- `_ensure_fts_triggers()` — creates `cg_nodes_ai/ad/au` triggers
+
+### Multi-Project Sync
+
+`sync-all.py` orchestrates indexing across all 9 projects:
+```bash
+# Full sync (all projects)
+python3 super_council/code_graph/sync-all.py --force
+
+# Add a project
+python3 super_council/code_graph/sync-all.py --add /path/to/project
+
+# List configured projects
+python3 super_council/code_graph/sync-all.py --list
+```
+
+Config: `~/.council-memory/sync-all.json`

@@ -55,7 +55,7 @@ SCOUT → PLAN → BUILD → COHESIVENESS_REVIEW → AGENT_VALIDATE
 | `vice-ministral` | Ministral-3-8B | Vice-chair |
 
 ### MTP Models (indras-mirror-fork)
-Uses the **Indras-Mirror fork** of llama.cpp with fused TBQ4 flash attention kernels and native MTP speculative decoding. Binary: `indras-mirror-fork/build/bin/llama-server`.
+Uses the **Indras-Mirror fork** of llama.cpp with fused TBQ4 flash attention kernels and native MTP speculative decoding. Binary: `llama-forks/indras-mirror-fork/build/bin/llama-server`.
 
 | Model | Quant | MTP Config | TG Speed |
 |-------|-------|-----------|----------|
@@ -97,7 +97,8 @@ Uses the **Indras-Mirror fork** of llama.cpp with fused TBQ4 flash attention ker
 - Pipeline state: `~/.council-memory/pipelines/`
 - Phase state: `~/.council-memory/phase-state/`
 - Supervisor log: `/tmp/super-council.log`
-- MTP binary: `~/Coding-Projects/7-council/indras-mirror-fork/build/bin/llama-server`
+- MTP binary: `~/Coding-Projects/7-council/llama-forks/indras-mirror-fork/build/bin/llama-server`
+- Turboquant binary: `~/Coding-Projects/7-council/llama-forks/llama-cpp-turboquant/build/bin/llama-server`
 - Bench results: `~/Coding-Projects/7-council/bench-results/`
 - Arc summarizer module: `~/Coding-Projects/7-council/super_council/arc_summarizer/`
 - Arc summarizer service: `~/.config/systemd/user/arc-summarizer.service`

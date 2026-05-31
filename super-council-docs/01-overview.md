@@ -170,8 +170,8 @@ python3 -m super_council \
 
 | Binary | Purpose | Models |
 |--------|---------|--------|
-| `llama-cpp-turboquant/build/bin/llama-server` | Default upstream (turboquant fork) | qwen3.6-27b, gemma-4-26b, nemotron-cascade, gpt-oss-20b, qwen3.6-35b-a3b, granite-8b |
-| `indras-mirror-fork/build/bin/llama-server` | MTP speculative decoding (fused TBQ4 FA) | qwen3.6-27b-flash, qwen3.6-27b-uhn, qwen3.6-uhn-q5-builder |
+| `llama-forks/llama-cpp-turboquant/build/bin/llama-server` | Default upstream (turboquant fork) | qwen3.6-27b, gemma-4-26b, nemotron-cascade, gpt-oss-20b, qwen3.6-35b-a3b, granite-8b |
+| `llama-forks/indras-mirror-fork/build/bin/llama-server` | MTP speculative decoding (fused TBQ4 FA) | qwen3.6-27b-flash, qwen3.6-27b-uhn, qwen3.6-uhn-q5-builder |
 
 **Indras-Mirror fork features:**
 - Fused TBQ4 flash attention kernels (`GGML_CUDA_FA_ALL_QUANTS=ON`)
@@ -205,5 +205,6 @@ python3 -m super_council \
 | Pipeline state | `~/.council-memory/pipelines/` |
 | Supervisor log | `/tmp/super-council.log` |
 | Embedding model | `~/models/embedding/pplx-embed-v1-0.6b-int8/` |
-| MTP binary (indras-mirror-fork) | `~/Coding-Projects/7-council/indras-mirror-fork/build/bin/llama-server` |
+| MTP binary (indras-mirror-fork) | `~/Coding-Projects/7-council/llama-forks/indras-mirror-fork/build/bin/llama-server` |
+| Turboquant binary | `~/Coding-Projects/7-council/llama-forks/llama-cpp-turboquant/build/bin/llama-server` |
 | Bench results | `~/Coding-Projects/7-council/bench-results/` |
