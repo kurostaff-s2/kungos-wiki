@@ -15,6 +15,8 @@
 | 07 | [Diagnostics](07-diagnostics.md) | Troubleshooting, common issues, recovery procedures, log analysis |
 | 08 | [Arc Summarizer](08-arc-summarizer.md) | Memory consolidation on Arc A380, Granite-4.1-3B, Tier 1 injection, pipeline API |
 | 09 | [Memory Service](09-memory-service.md) | MemoryService architecture, FastMCP server, 22 tools, 7 resources, unified_log_recall, tool matrix |
+| 10 | [Code Graph](10-codegraph.md) | CodeGraphStore API, 12 MCP tools, FTS5 search, call graph traversal, cross-DB JOINs with memory layer |
+| 11 | [MemSearch](11-memsearch.md) | MemIndex vector indexing, Milvus-lite schema, hybrid search, raw session memory pipeline, direct text upsert |
 
 ## Usage Rules
 

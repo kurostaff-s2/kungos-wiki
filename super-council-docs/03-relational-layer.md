@@ -20,10 +20,14 @@ failure_classifications -- Error classification (type, confidence) (FK → state
 event_window_summaries -- Event window narratives
 
 -- Memory consolidation tables
+raw_session_memories  -- Raw auto-detected assistant messages (raw_text, no structure)
+                      -- Provenance prefix: trace-*
+                      -- Migration 07: split from session_diary
+                      -- Auto-indexed into memsearch on upsert
 consolidation_cache   -- Arc A380 pipeline ONLY (Granite-4.1-3B consolidation output)
                       -- Provenance prefix: consol-*
-session_diary         -- Mechanical upsert ONLY (Pi extension hook + manual tool)
-                      -- Provenance prefix: sess-*
+session_diary         -- Structured knowledge (Arc tier outputs + manual upserts)
+                      -- Provenance prefix: sess-* (manual), consol-* (Arc tier)
                       -- Migration 04: created from split of consolidation_cache
 
 -- Reference tables
@@ -34,21 +38,48 @@ event_types           -- Enum: transition, error, warning, info
 severity_levels       -- Enum: critical, error, warning, info
 ```
 
-### Table Separation: consolidation_cache vs session_diary
+### Table Separation: Three-Tier Memory Store
 
-**Design principle: Provenance traceability.** Every entry carries a prefix that reveals its origin:
+**Design principle: Provenance traceability + structure separation.** Every entry carries a prefix that reveals its origin and table:
 
-| Prefix | Table | Source | Mechanism |
+| Prefix | Table | Source | Structure |
 |--------|-------|--------|-----------|
-| `consol-*` | `consolidation_cache` | Arc A380 (Granite-4.1-3B) | `_run_startup_consolidation()` pipeline |
-| `sess-*` | `session_diary` | Mechanical (no model) | Pi extension `message_end` hook or `memory.upsert_summary` tool |
-| `test-*` | `session_diary` | Test fixtures | Unit/integration tests |
+| `trace-*` | `raw_session_memories` | Auto-detected (Pi extension) | raw_text only, no structure |
+| `consol-*` | `consolidation_cache` | Arc A380 (Granite-4.1-3B) | continuity_notes, preferences, decisions, unresolved |
+| `sess-*` | `session_diary` | Manual upsert / test | decisions, open_items, work_completed, session_context |
+| `consol-{tier}-*` | `session_diary` | Arc tier pipeline | structured fields + consolidation_tier |
+
+**raw_session_memories** — Raw auto-detected assistant messages. Written by `RelationalStore.upsert_raw_session_memory()` when the Pi extension's `message_end` hook detects a high-scoring message. Stores full raw_text (1-4KB typical). Auto-indexed into memsearch on upsert for vector recall. Feeds the Arc tier pipeline (`_gather_tier_input()` reads this table for the 'daily' tier).
 
 **consolidation_cache** — Arc A380 pipeline only. Written by `ArcPipeline.run_consolidation()` after Granite-4.1-3B produces YAML output. Supports Tier 1 knowledge card injection, probation/activation lifecycle, and memsearch indexing.
 
-**session_diary** — Mechanical hook only. Written by `RelationalStore.upsert_session_diary()` which parses Markdown sections (`##` or `###` Key Decisions, Topics Discussed, Work Completed, Open Items, etc.) and stores structured fields. Matches both `##` and `###` headers via `#{1,3}` regex. No model involvement — purely pattern detection + DB insert. Implements Karpathy's "ingest immediately" pattern.
+**session_diary** — Structured knowledge table. Two sources:
+1. **Arc tier pipeline** — `run_tiered_consolidation()` writes consolidated outputs with `consolidation_tier` set ('daily', 'short', 'weekly', 'bimonthly')
+2. **Manual upsert** — `RelationalStore.upsert_session_diary()` parses Markdown sections and stores structured fields
 
-**Migration path:** `04_session_summaries.sql` created the original table. `05_rename_to_session_diary.sql` renamed to `session_diary` for clear provenance (consolidation_cache = Arc-only, session_diary = mechanical). Existing `session-*` entries were migrated from `consolidation_cache` into `session_diary`, then removed from `consolidation_cache`. New mechanical upserts write directly to `session_diary`.
+**Migration path:** `04_session_summaries.sql` created the original table. `05_rename_to_session_diary.sql` renamed to `session_diary`. `07_split_raw_session_memories.sql` split auto-detected entries into `raw_session_memories` (raw_text only) and kept structured entries in `session_diary`.
+
+### Timestamps
+
+**Format:** `YYYY-MM-DDTHH:MM:SS.ffffff+05:30` (ISO 8601, IST, microseconds)
+
+**Source:** `RelationalStore._now_iso()` — `datetime.now(IST).strftime("%Y-%m-%dT%H:%M:%S.%f+05:30")`
+
+**Approach:** All timestamp columns are set explicitly by application code (NOT via SQLite DEFAULT). The trigger-based approach (`NEW.col = expr`) is not available — this SQLite build (Ubuntu Noble 3.45.1) lacks compile-time support for assignment syntax in trigger bodies.
+
+| Table | Column | Set By |
+|-------|--------|--------|
+| `pipelines` | `created_at`, `updated_at` | `upsert_pipeline()` |
+| `pipelines_archive` | `created_at`, `updated_at` | `archive_terminal_pipelines()` (copied from pipelines) |
+| `translations` | `created_at` | `register_translation()` |
+| `workflow_runs` | `started_at` | `ensure_workflow_run()` |
+| `state_executions` | `started_at` | `_record_transition()` |
+| `event_log` | `occurred_at` | `_record_transition()`, `log_event()` |
+| `artifacts` | `created_at` | `store_artifact()`, `ingest_artifact()` (MemoryLayer), `_record_transition()` (fallback) |
+| `artifact_summaries` | `created_at` | `store_artifact_summary()` |
+| `failure_classifications` | `created_at` | `store_failure_classification()` |
+
+**Schema DEFAULT values** remain as fallbacks (without fractional seconds). They fire only if application code omits the timestamp column — all active paths now pass values explicitly.
 
 ### WAL Mode + FK Enforcement
 
@@ -174,7 +205,7 @@ plan-artifact-content-here
 ingest_artifact(run_id, phase, key, content)
 ```
 
-- Inserts into `artifacts` table with ISO 8601 timestamp
+- Inserts into `artifacts` table with ISO 8601 timestamp (IST, microseconds: `%Y-%m-%dT%H:%M:%S.%f+05:30`)
 - FK constraint ensures `run_id` exists in `workflow_runs`
 
 ### Eviction

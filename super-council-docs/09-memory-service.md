@@ -4,39 +4,21 @@
 
 ## Architecture
 
-### Two-Service Architecture (since 2026-05-30)
+### Single-Service Architecture (since 2026-05-30)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Pi Extension (council-tools/index.ts)                      │
 │  - 12 LLM-callable tools + 9 commands                       │
 │  - Auto-upsert: message_end hook (score ≥ 4 → upsert)       │
-│  - Connects to mcp_service SSE on :18097                    │
+│  - Connects to memory_service SSE on :18097                 │
+│  - PendingQueue: file-based retry (~/.council-memory/       │
+│    extension-pending/) with exponential backoff             │
 └─────────────────────┬───────────────────────────────────────┘
                       │ SSE (MCP protocol)
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  mcp_service (port 18097) — SSE Transport + Retry           │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  MCPTransport (FastMCP SSE server)                  │    │
-│  │  - Discovers 22 tools from memory_service HTTP      │    │
-│  │  - Registers proxy handlers for each tool           │    │
-│  │  - Proxies tool calls to memory_service :18098      │    │
-│  └─────────────────────┬───────────────────────────────┘    │
-│                        │ on failure                         │
-│  ┌─────────────────────▼───────────────────────────────┐    │
-│  │  PersistentQueue (~/.council-memory/mcp-pending/)   │    │
-│  │  - Exponential backoff: 2s → 4s → 8s → ... → 5min  │    │
-│  │  - Max retries: 10 (survives hours of downtime)     │    │
-│  │  - Background drain loop retries pending calls      │    │
-│  │  - Idempotent: upsert_summary uses INSERT OR REPLACE│    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────┬───────────────────────────────────────┘
-                      │ HTTP (POST /v1/memory/tool/{name})
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  memory_service (port 18098 HTTP, 18096 SSE legacy)         │
+│  memory_service (SSE:18097, HTTP:18098)                     │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │ Relational   │  │ Context      │  │ Memory       │      │
@@ -97,7 +79,7 @@ token budget formatting, client-side type filtering.
 |----------|-------------|-----------|
 | **Supervisor** (in-process) | `MemoryService.load()` → `.store`, `.router`, `.layer`, `.review` | Python API (zero overhead) |
 | **Pi agent** (stdio) | `python3 -m super_council.memory_service --mcp-stdio` | FastMCP stdio (JSON-RPC) |
-| **Pi extension** (SSE) | Persistent SSE connection to `mcp_service :18097/sse` | FastMCP SSE → HTTP proxy → memory_service :18098 |
+| **Pi extension** (SSE) | Persistent SSE connection to `memory_service :18097/sse` | FastMCP SSE → HTTP proxy → memory_service :18098 |
 | **External clients** | `--mcp-sse` or `--mcp-streamable-http` | FastMCP SSE / streamable-http |
 
 ### Key Design Decisions
@@ -110,16 +92,16 @@ token budget formatting, client-side type filtering.
 
 4. **Graceful degradation** — `MemIndex` (memsearch) and optional `linter`/`enricher` degrade gracefully when unavailable.
 
-5. **Transport extracted to mcp_service** — SSE transport, retry queue, and backoff logic moved from memory_service into a standalone `mcp_service` package. memory_service becomes a stateless HTTP backend. mcp_service handles connection management, tool proxying, and failure recovery independently.
+5. **Transport extracted to memory_service** — SSE transport, retry queue, and backoff logic moved from memory_service into a standalone `memory_service` package. memory_service becomes a stateless HTTP backend. memory_service handles connection management, tool proxying, and failure recovery independently.
 
 ---
 
-## mcp_service (Standalone Transport Layer)
+## memory_service (Standalone Transport Layer)
 
 > SSE transport with retry queue and exponential backoff. Proxies tool calls to memory_service HTTP backend. Survives hours of downtime with persistent queue.
 
 **Added:** 2026-05-30
-**Location:** `super_council/mcp_service/`
+**Location:** `super_council/memory_service/`
 **Port:** 18097 (SSE)
 **Backend:** memory_service HTTP on 18098
 
@@ -135,8 +117,8 @@ The extraction decouples transport from business logic:
 
 | Concern | Before | After |
 |---------|--------|-------|
-| SSE transport | Inside memory_service | Standalone mcp_service |
-| Retry queue | Extension-side (PendingQueue) | mcp_service-side (PersistentQueue) |
+| SSE transport | Inside memory_service | Standalone memory_service |
+| Retry queue | Extension-side (PendingQueue) | memory_service-side (PersistentQueue) |
 | Fallback | Supervisor HTTP (:8090) | memory_service HTTP (:18098) |
 | Schema discovery | Hardcoded in extension | Auto-discovered from backend |
 | Process isolation | Single process | Two independent processes |
@@ -144,7 +126,7 @@ The extraction decouples transport from business logic:
 ### Architecture
 
 ```
-Extension (:18097) ──SSE──> mcp_service ──HTTP──> memory_service (:18098)
+Extension (:18097) ──SSE──> memory_service ──HTTP──> memory_service (:18098)
                                     │
                                     │ on failure
                                     ▼
@@ -249,36 +231,36 @@ class MCPConfig:
     retry: RetryConfig = field(default_factory=RetryConfig)
 ```
 
-Loaded from `config-subsystem.json["mcp_service"]` or environment variables.
+Loaded from `config-subsystem.json["memory_service"]` or environment variables.
 
 ### CLI
 
 ```bash
 # Start SSE server (normal operation)
-python3 -m super_council.mcp_service --sse
+python3 -m super_council.memory_service --sse
 
 # Health check (exits immediately)
-python3 -m super_council.mcp_service --health
+python3 -m super_council.memory_service --health
 
 # Run drain loop once (manual retry)
-python3 -m super_council.mcp_service --drain
+python3 -m super_council.memory_service --drain
 
 # Verbose mode
-python3 -m super_council.mcp_service --sse --verbose
+python3 -m super_council.memory_service --sse --verbose
 ```
 
 ### systemd Service
 
 ```ini
-# ~/.config/systemd/user/mcp-service.service
+# ~/.config/systemd/user/memory-service.service
 [Unit]
-Description=Council MCP Service — SSE transport with retry and backoff
+Description=Council Memory Service — SSE transport with retry and backoff
 After=memory-service.service
 Requires=memory-service.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -m super_council.mcp_service --sse
+ExecStart=/usr/bin/python3 -m super_council.memory_service --sse
 WorkingDirectory=/home/chief/Coding-Projects/7-council
 Environment=PYTHONPATH=/home/chief/Coding-Projects/7-council
 Environment=PYTHONUNBUFFERED=1
@@ -287,7 +269,7 @@ RestartSec=2
 MemoryMax=512M
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=mcp-service
+SyslogIdentifier=memory-service
 
 [Install]
 WantedBy=default.target
@@ -311,8 +293,8 @@ unified_log_recall(query="", channels="mcp_queue")
 | Scenario | Behavior |
 |----------|----------|
 | memory_service down | Calls queued, retry with backoff, survive hours |
-| mcp_service crashes | Queue persists on disk, drain loop resumes on restart |
-| Extension crashes | Queue persists, mcp_service continues draining |
+| memory_service crashes | Queue persists on disk, drain loop resumes on restart |
+| Extension crashes | Queue persists, memory_service continues draining |
 | Network partition | Same as memory_service down — queue + retry |
 | Queue full (disk) | New entries fail, logged to journal |
 | 10 retries exceeded | Entry purged, logged as stale |
@@ -417,55 +399,50 @@ service.health_check()
 
 ### MemIndex (Vector Indexing)
 
+**Full documentation:** [11-memsearch.md](11-memsearch.md) — MemSearch architecture, Milvus schema, indexing pipeline, direct text upsert.
+
 - Wraps memsearch for project-aware indexing
 - File type inference: `code`, `spec`, `doc`, `review`
 - Graceful degradation when memsearch unavailable
 - Fire-and-forget with `fcntl.flock()` (released on process death)
-- `search()` uses `run_async()` internally (MemSearch.search() is async)
-- `search()` uses `top_k=` parameter (MemSearch API, not `limit=`)
-- `stats()` returns collection metadata without requiring live MemSearch instance
-- Single Milvus connection owner — concurrent access via MCP server only
 
 ### ProjectAwareMemSearch (MemSearch Wrapper)
 
-**Location:** `memory_service/memsearch_wrapper.py` (extracted from `super_council.py`)
+**Full documentation:** [11-memsearch.md](11-memsearch.md)
 
 - Adds `project_id` tagging and filtering to memsearch
 - Client-side filtering (memsearch v0.4.x lacks server-side filter_expr)
-- Type dimension: `code`, `spec`, `doc`, `review`
-- Self-contained: only depends on `memsearch` package + stdlib
-- Re-exported from `super_council.py` for backward compatibility
 
 ## MCP Server (FastMCP)
 
 ### Transport
 
-#### mcp_service (SSE Transport — Primary for Extension)
+#### memory_service (SSE Transport — Primary for Extension)
 
 ```bash
 # SSE transport server (standalone, with retry queue)
-python3 -m super_council.mcp_service --sse
+python3 -m super_council.memory_service --sse
 # Binds to config.mcp.host:config.mcp.port (default 127.0.0.1:18097)
 # Proxies tool calls to memory_service HTTP on :18098
 # Queues failed calls for retry with exponential backoff
 
 # Health check
-python3 -m super_council.mcp_service --health
+python3 -m super_council.memory_service --health
 
 # Manual drain (retry pending calls once)
-python3 -m super_council.mcp_service --drain
+python3 -m super_council.memory_service --drain
 ```
 
 #### memory_service (HTTP Backend + Legacy SSE)
 
 ```bash
-# HTTP backend (used by mcp_service proxy)
+# HTTP backend (used by memory_service proxy)
 # Runs on :18098 alongside existing SSE on :18096
 # Exposes: POST /v1/memory/tool/{name}, GET /v1/memory/tools, GET /v1/memory/health
 
 # Legacy SSE (direct connection, no retry queue)
 python3 -m super_council.memory_service --mcp-sse
-# Binds to :18096 (deprecated — use mcp_service :18097 instead)
+# Binds to :18096 (deprecated — use memory_service :18097 instead)
 
 # stdio (for Pi agent — subprocess per call)
 python3 -m super_council.memory_service --mcp-stdio
@@ -480,10 +457,10 @@ python3 -m super_council.memory_service --health
 python3 -m super_council.memory_service --recall "query" --max-tokens 512
 ```
 
-### SSE Protocol Flow (via mcp_service)
+### SSE Protocol Flow (via memory_service)
 
 ```
-Extension                    mcp_service                  memory_service
+Extension                    memory_service                  memory_service
    │                              │                              │
    │──── GET /sse ───────────────>│                              │
    │<─── event: endpoint ─────────│                              │
@@ -584,7 +561,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
 | `chat_summaries` | `~/.council-memory/chat-summaries/*.md` | ChatSummaryQuery (sectioned markdown) |
 | `workflow_state` | workflow_runs table | SQL LIKE match |
 | `failures` | state_executions (outcome=failure) | SQL query |
-| `service_logs` | journalctl (mcp-service + memory-service) | SystemdLogTailer (journal query + errors) |
+| `service_logs` | journalctl (memory-service + memory-service) | SystemdLogTailer (journal query + errors) |
 | `mcp_queue` | `~/.council-memory/mcp-pending/` | PersistentQueue inspection |
 | `supervisor_log` | journalctl (fallback: `/tmp/super-council.log`) | SystemdLogTailer → SupervisorLogTailer |
 
@@ -599,9 +576,9 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
       "memory_service": {
         "status": "running", "port": 18098,
         "http_status": "healthy", "systemd": "active",
-        "details": "HTTP backend for mcp_service proxy"
+        "details": "HTTP backend for memory_service proxy"
       },
-      "mcp_service": {
+      "memory_service": {
         "status": "running", "port": 18097,
         "tcp_status": "listening", "systemd": "active",
         "details": "SSE transport with retry and backoff"
@@ -619,7 +596,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
     "check_duration_ms": 3252.4
   },
   "mcp_server": {
-    "mcp_service": {
+    "memory_service": {
       "host": "127.0.0.1", "port": 18097,
       "transport": "sse", "status": "running",
       "sse_endpoint": "http://127.0.0.1:18097/sse",
@@ -629,9 +606,9 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
       "host": "127.0.0.1", "port": 18098,
       "status": "running",
       "http_endpoint": "http://127.0.0.1:18098/v1/memory/health",
-      "details": "HTTP backend for mcp_service proxy"
+      "details": "HTTP backend for memory_service proxy"
     },
-    "architecture": "Extension → mcp_service (SSE:18097) → memory_service (HTTP:18098)"
+    "architecture": "Extension → memory_service (SSE:18097) → memory_service (HTTP:18098)"
   },
   "channels": {
     "system_events": {"matches": 9, "context": "..."},
@@ -639,7 +616,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
     "mcp_queue": {"matches": 1, "pending": 1, "context": "..."},
     ...
   },
-  "fused_context": "## Service Health\nmcp_service: running (18097), memory_service: running (18098)\n\n## service_logs (15 matches)\n...",
+  "fused_context": "## Service Health\nmemory_service: running (18097), memory_service: running (18098)\n\n## service_logs (15 matches)\n...",
   "token_budget": 4096,
   "context_length": 6741
 }
@@ -652,7 +629,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
 | `DailyLogParser` | Parse daily council logs | Markdown tables: `\| Time \| Event \| Model \| Detail \| Status \| Duration \|` |
 | `ChatSummaryQuery` | Parse chat session summaries | Sectioned markdown: Topics Discussed, Key Decisions, Work Completed, Open Items |
 | `SupervisorLogTailer` | Tail supervisor log (legacy) | Plain text with timestamps, tail N lines, keyword search |
-| `SystemdLogTailer` | Query systemd journal for mcp-service + memory-service | journalctl: tail, search, get_recent, get_errors |
+| `SystemdLogTailer` | Query systemd journal for memory-service + memory-service | journalctl: tail, search, get_recent, get_errors |
 
 **Graceful degradation:** Each channel catches exceptions independently. Failed channels return `{"matches": 0, "context": "", "error": "..."}` without affecting other channels. Service health always included regardless of channel selection.
 
@@ -799,7 +776,7 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 
 ## Configuration
 
-### config-subsystem.json (memory + mcp_service sections)
+### config-subsystem.json (memory + memory_service sections)
 
 ```json
 {
@@ -821,7 +798,7 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
     "consolidation_probation_enabled": true,
     "tier1_max_tokens": 512
   },
-  "mcp_service": {
+  "memory_service": {
     "host": "127.0.0.1",
     "port": 18097,
     "backend_url": "http://127.0.0.1:18098",
@@ -840,8 +817,8 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `COUNCIL_DB_PATH` | Override database path | `~/.council-memory/pipelines.db` |
-| `COUNCIL_MCP_HOST` | mcp_service SSE host | `127.0.0.1` |
-| `COUNCIL_MCP_PORT` | mcp_service SSE port | `18097` |
+| `COUNCIL_MCP_HOST` | memory_service SSE host | `127.0.0.1` |
+| `COUNCIL_MCP_PORT` | memory_service SSE port | `18097` |
 | `COUNCIL_MEMORY_HOST` | memory_service HTTP host | `127.0.0.1` |
 | `COUNCIL_MEMORY_PORT` | memory_service HTTP port | `18098` |
 
@@ -874,14 +851,14 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 | CLI entry point | `super_council/memory_service/__main__.py` |
 | Config | `super_council/memory_service/config.py` |
 
-### mcp_service (SSE Transport + Retry)
+### memory_service (SSE Transport + Retry)
 
 | Component | Path |
 |-----------|------|
-| MCPTransport | `super_council/mcp_service/transport.py` |
-| PersistentQueue | `super_council/mcp_service/retry.py` |
-| Config | `super_council/mcp_service/config.py` |
-| CLI entry point | `super_council/mcp_service/__main__.py` |
+| MCPTransport | `super_council/memory_service/transport.py` |
+| PersistentQueue | `super_council/memory_service/retry.py` |
+| Config | `super_council/memory_service/config.py` |
+| CLI entry point | `super_council/memory_service/__main__.py` |
 
 ### Extension (Pi Client)
 

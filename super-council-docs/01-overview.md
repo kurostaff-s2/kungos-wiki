@@ -74,6 +74,8 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 - One Milvus connection owner (MCP server or in-process indexer)
 - Graceful degradation in one place (MemIndex)
 
+**Full MemSearch documentation:** [11-memsearch.md](11-memsearch.md)
+
 **Do NOT use direct delegation for reviews.** Use the pipeline's `AGENT_VALIDATE` phase which auto-dispatches to the appropriate reviewer alias.
 
 ### Fanout is for Small Models Only
@@ -103,7 +105,7 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 | `ContextRouter` | `memory_service/router.py` | Structured queries: snapshots, events, similar runs, issues |
 | `MemoryLayer` | `memory_service/layer.py` | Token-budgeted context slices with artifact boundaries |
 | `ReviewService` | `memory_service/review.py` | Review lifecycle (start → log → verdict) via RelationalStore |
-| `MemIndex` | `memory_service/index.py` | Memsearch vector indexing (graceful degradation) |
+| `MemIndex` | `memory_service/index.py` | Memsearch vector indexing (graceful degradation) — [11-memsearch.md](11-memsearch.md) |
 | `ProjectAwareMemSearch` | `memory_service/memsearch_wrapper.py` | MemSearch wrapper with project_id tagging + type filtering |
 | `FastMCP Server` | `memory_service/mcp_server.py` | MCP server: 18 tools + 7 resources (stdio + SSE transport) |
 | `MCPClient` | `mcp_client.py` | Sync MCP client for Pi agent (background event-loop thread) |
