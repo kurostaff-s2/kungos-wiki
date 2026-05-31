@@ -280,8 +280,81 @@ MemSearch(
 ```
 
 - **Provider:** ONNX (CPU, no GPU required)
-- **Model:** `gpahal/bge-m3-onnx-int8` (int8 quantized, ~400MB)
+- **Model:** `gpahal/bge-m3-onnx-int8` (int8 quantized, ~600MB)
 - **Dimension:** 1024 (bge-m3)
+
+### Embedding Stack — Two Models, Same Dimension
+
+| Component | Model | Dimension | Format | Location |
+|-----------|-------|-----------|--------|----------|
+| **memsearch** (vector search) | `gpahal/bge-m3-onnx-int8` | 1024 | ONNX INT8, HuggingFace Hub | `~/.cache/huggingface/` |
+| **MicroModelEnricher** (failure classification) | `pplx-embed-v1-0.6b-int8` | 1024 | ONNX INT8, local | `~/models/embedding/` |
+
+Both are **INT8 quantized** — not fine-tunable as-is (quantization destroys gradient paths).
+
+## Fine-Tuning Options
+
+### A: Fine-Tune bge-m3 (memsearch) — Feasible, High Effort
+
+```
+bge-m3 (FP16, ~2GB) → fine-tune on our corpus → export ONNX INT8 → replace model
+```
+
+- **Training data:** Our own corpus (raw_session_memories, session_diary, review_findings, artifacts, docs)
+- **Approach:** Contrastive learning (`MultipleNegativesRankingLoss`) — positive pairs: same-domain text; negative pairs: random
+- **Tool:** `sentence-transformers` library
+- **Cost:** ~4-8 hours on GPU
+
+**Hardware caveat:** Arc A380 (SYCL) won't run standard PyTorch fine-tuning. Options:
+1. CPU fine-tuning (slow, ~24-48 hours)
+2. Cloud GPU (Colab/Kaggle free tier, ~2 hours)
+3. Cross-encode approach (lighter, ~1 hour on CPU)
+
+**Benefit:** Embeddings tuned to our domain (council workflows, code reviews, memory patterns).
+
+### B: Cross-Encoder Reranker — Low Effort, High Impact
+
+```
+memsearch search (bge-m3, fast) → cross-encoder rerank (fine-tuned, slow but accurate)
+```
+
+- **How it works:** bge-m3 retrieves top-20 candidates → cross-encoder scores them → return top-5
+- **Fine-tuning:** Cross-encoders are smaller (~300M params), easier to fine-tune on relevance judgments
+- **Tool:** `sentence-transformers` cross-encoder
+- **Benefit:** Dramatically better ranking without re-embedding the entire corpus
+
+### C: Swap to pplx-embed-v1 (Unified Model)
+
+```
+Use pplx-embed-v1-0.6b-int8 for BOTH memsearch AND MicroModelEnricher
+```
+
+- **How:** Change memsearch config to use local model instead of HuggingFace Hub
+- **Benefit:** One model, consistent embeddings, already on disk
+- **Trade-off:** pplx-embed-v1 is 700MB vs bge-m3 600MB, marginal quality difference
+
+### D: Metadata-Enhanced Retrieval — Zero Fine-Tuning, Immediate Impact
+
+```
+Instead of fine-tuning the model, enrich the metadata:
+- source: "raw_session_memories:trace-{id}" (already proposed)
+- type: "workflow" vs "documentation"
+- phase: "RED" / "GREEN" / "REFACTOR"
+- project_id: "council-memory"
+- recency: created_at timestamp
+```
+
+- **How:** Add metadata fields to Milvus chunks, use them for post-retrieval filtering
+- **Benefit:** Better recall without any model changes
+- **Effort:** ~30 lines (metadata enrichment in upsert path)
+
+### Recommendation: D → B → A (if needed)
+
+1. **D (metadata enrichment)** — Free, immediate quality gains. Enabled by dual-channel design (DB poller + file watcher).
+2. **B (cross-encoder reranker)** — If metadata filtering isn't enough, add a fine-tuned reranker for the top-K results.
+3. **A (full fine-tune)** — Only if B doesn't close the gap. Expensive, hardware-constrained, but highest ceiling.
+
+Measure recall quality after D is in place, then decide if B or A is warranted.
 
 ## Data Flow — Raw Session Memories
 
