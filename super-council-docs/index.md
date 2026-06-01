@@ -18,6 +18,14 @@
 | 10 | [Code Graph](10-codegraph.md) | CodeGraphStore API, 12 MCP tools, FTS5 search, call graph traversal, cross-DB JOINs with memory layer |
 | 11 | [MemSearch](11-memsearch.md) | MemIndex vector indexing, Milvus-lite schema, hybrid search, raw session memory pipeline, direct text upsert |
 
+## Plans & Analysis
+
+| Document | Purpose |
+|----------|--------|
+| [AppFlowy Self-Host Plan](appflowy-selfhost-plan.md) | Same-machine deployment, CouncilDatabase (PostgreSQL), full refactor, no backward compat, AppFlowy synthesis |
+| [AppFlowy Integration Analysis](appflowy-integration-analysis.md) | Feature inventory (35 council + 30 AppFlowy + 15 cross-system), gap analysis, options |
+| [Arc Summarizer TODO](todo-arc-summarizer.md) | Arc Summarizer implementation checklist |
+
 ## Usage Rules
 
 ### Pipeline is Primary Path
