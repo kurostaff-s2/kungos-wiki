@@ -1,9 +1,9 @@
-# AppFlowy Integration Architecture v2.1
+# AppFlowy Integration Architecture v2.3
 
-> **Date:** 2026-06-01  
+> **Date:** 2026-06-03  
 > **Scope:** Same-machine, single-user deployment. Council PostgreSQL + AppFlowy Cloud (Docker).  
 > **Policy:** No backward compatibility with SQLite. AppFlowy remains upgrade-safe: no fork, no undocumented table access, no direct SQL writes into AppFlowy-owned schemas.  
-> **Status:** Finalized execution document, revised after validation review.
+> **Status:** `fetch_row_detail()` fix applied and verified live. Inbound sync functional. All bisync issues resolved or documented.
 
 ---
 
@@ -19,7 +19,11 @@ It replaces earlier ambiguous language around “one source of truth,” “coun
 - AppFlowy integration uses documented REST APIs only.
 - Synchronization is intentionally minimal and pragmatic for single-user operation.
 
-This v2.1 revision incorporates the validated review corrections: explicit lifecycle separation for `status`, missing base columns on `memory_rollups`, outbox idempotency protection, knowledge-card field policy, binding lifecycle rules, persisted snapshot hash semantics, and placeholder-only secrets handling. [file:35]
+This v2.2 revision adds:
+- **§7.5 AppFlowy API Realities:** Documented actual API behavior (mandatory `pre_hash`, ignored `since` parameter, response structures, cell value formats) verified against self-hosted AppFlowy Cloud v0.14.17.
+- **§7.1/7.2 detailed sync flows:** Step-by-step outbound and inbound processing with response parsing, cell transformation, and error handling.
+- **§16 Debugging & Operational Notes:** Common failure modes, key diagnostic queries, and verification procedures.
+- Root cause documentation and fix for the inbound sync `fetch_row_detail()` bug (cells extracted from wrong response level). Fixed 2026-06-03.
 
 ---
 
@@ -50,7 +54,7 @@ This v2.1 revision incorporates the validated review corrections: explicit lifec
 │  │  Council Services   │    │  AppFlowy Stack (docker-compose) │ │
 │  │                     │    │                                  │ │
 │  │  CouncilCoreAPI     │◄──►│  appflowy_cloud  (Rust, :8000)  │ │
-│  │  ExecutionWorker    │    │  appflowy_web    (React, :3000) │ │
+│  │  ExecutionWorker    │    │  appflowy_web    (React, :8099) │ │
 │  │  ReviewWorker       │    │  appflowy_worker (Rust)         │ │
 │  │  MemoryWorker       │    │  gotrue           (auth)        │ │
 │  │  OutboxDispatcher   │    │  appflowy_search (Rust, :4002)  │ │
@@ -647,15 +651,30 @@ Successful response:
 
 ### 7.1 Outbound flow: Council → AppFlowy
 
-```text
+```
 1. Council Core writes canonical row + outbox event in one transaction.
 2. OutboxDispatcher selects pending events with FOR UPDATE SKIP LOCKED.
 3. Dispatcher resolves binding via council_sync.appflowy_bindings.
-4. If binding is missing and auto-projection is enabled, Dispatcher creates the AppFlowy row and stores the binding.
-5. Dispatcher calls documented AppFlowy REST endpoint.
-6. Dispatcher marks event sent or failed/dead_letter.
-7. Binding.last_synced_revision is updated after successful delivery.
+4. If binding is missing and auto-projection is enabled:
+   a. Build cells from entity payload.
+   b. Compute pre_hash = "{entity_type}:{council_id}".
+   c. PUT /api/workspace/{ws}/database/{db}/row with pre_hash + cells.
+   d. Extract row_id from response.data (string).
+   e. Store binding with appflowy_row_id = row_id.
+5. If binding exists:
+   a. Build cells from entity payload.
+   b. Compute pre_hash = "{entity_type}:{council_id}".
+   c. PUT /api/workspace/{ws}/database/{db}/row with pre_hash + cells.
+6. On success: set delivery_state = 'sent', update binding.last_synced_revision.
+7. On transient failure: increment attempts, back off (2s, 4s, 8s).
+8. After max retries (3): move to dead_letter.
 ```
+
+**Critical:** All outbound PUT requests must include `pre_hash`. The `row_id` field in the PUT body is legacy and ignored when `pre_hash` is present. Without `pre_hash`, AppFlowy returns `400 Json deserialize error: missing field 'pre_hash'`.
+
+**Cell building:** The `_build_cells()` method in `OutboxDispatcher` maps Council fields to AppFlowy column names per the field maps in §8. Column names are case-sensitive and must match AppFlowy exactly (e.g. `"Title"`, `"Due Date"`, `"Assigned To"`).
+
+**Response handling:** Successful PUT returns `{"data": "<row_id>", "code": 0, "message": "..."}`. The row ID is a plain string in `data`, NOT an object. Code must handle `response.get("data")` as a string.
 
 Transactional pattern:
 
@@ -680,22 +699,47 @@ COMMIT;
 
 ### 7.2 Inbound flow: AppFlowy → Council
 
-```text
-1. AppFlowyInboundSync polls AppFlowy documented row-updated endpoint.
-2. For each changed row, it fetches full row detail.
-3. It resolves the row binding.
-4. It canonicalizes the cells payload and computes a snapshot hash.
-5. It compares the snapshot hash to binding.last_seen_cells_hash.
-6. For each changed editable field:
-   a. allowlist check
-   b. mapping transform
-   c. expected_revision check
-   d. PATCH to Council Core API
-7. It records applied/rejected/skipped result.
-8. It updates binding.last_seen_cells_hash.
+```
+1. AppFlowyInboundSync polls GET /api/workspace/{ws}/database/{db}/row/updated.
+   NOTE: The `since` parameter is ignored by AppFlowy — ALL rows are returned
+   every cycle. Change detection relies entirely on snapshot hash comparison.
+2. For each returned row:
+   a. Fetch full row detail: GET /api/workspace/{ws}/database/{db}/row/detail?ids={row_id}
+   b. Extract cells from response["data"][0]["cells"] (NOT response["cells"])
+   c. Resolve binding by (appflowy_database_id, appflowy_row_id)
+   d. If no binding: skip row (logged as "no binding")
+   e. Canonicalize cells payload → compute SHA-256 snapshot hash
+   f. Compare hash to binding.last_seen_cells_hash:
+      - If last_hash is NULL (first run): proceed to step g
+      - If hash matches: skip row (no change)
+      - If hash differs: proceed to step g
+   g. Map AppFlowy column names → Council field names (case-insensitive match)
+   h. For each mapped field:
+      - If field not in FIELD_ALLOWLIST: reject + log ("forbidden_field")
+      - If field in allowlist: include in patch payload
+   i. If patch is non-empty:
+      - Fetch canonical entity from Council Core API (GET /v1/{resource}/{id})
+      - Extract current revision
+      - PATCH /v1/{resource}/{id} with expected_revision + patch
+      - Headers: X-Source-System: appflowy, X-Actor-Id: inbound-sync, Idempotency-Key: <uuid>
+      - On 200: record "applied" for each field, persist new hash
+      - On 409: record "rejected" (stale_revision)
+      - On other error: do NOT persist hash (retry next cycle)
+   j. If patch is empty (all fields read-only or unchanged): record "skipped"
+3. After all rows processed: cycle repeats after poll_interval (default 5s).
 ```
 
 **Important:** Inbound diffing must not rely only on process memory. `last_seen_cells_hash` in `appflowy_bindings` is the persisted restart-safe mechanism. [file:35]
+
+**Response parsing (fixed 2026-06-03):** `fetch_row_detail()` extracts `response["data"][0]` from the API response. The `cells` dict is nested inside `data[0]`, not at the top level. A previous bug where `response.get("cells", {})` was used instead returned `{}` — causing every cycle to compute the hash over an empty dict and skip all rows. Root cause: `fetch_row_detail()` returned the full API envelope instead of extracting `data[0]` like `fetch_row()` did. Fix: `rows = data.get("data", []); return rows[0] if rows else None`. Verified with live AppFlowy API.
+
+**Cell value transformation:** AppFlowy cell values are field-type dependent. The `_transform_cell_value()` method handles:
+- Multi-select → list (split comma-separated strings)
+- Select → enum string (extract `.name` from dict or lowercase string)
+- Date → ISO string (extract `.date` or `.datetime` from dict)
+- Default: pass-through
+
+**Field mapping:** Case-insensitive column matching. AppFlowy column `"Title"` maps to Council field `"title"`. The `COLUMN_TO_FIELD` dict in `inbound.py` defines the mapping per entity type. Columns prefixed with `_system_` are AppFlowy internals with no Council mapping.
 
 ### 7.3 Snapshot hash contract
 
@@ -713,14 +757,105 @@ This hash is used only for restart-safe change detection, not for conflict resol
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/workspace/{ws}/database/{db}/row` | `POST` | Create row |
-| `/api/workspace/{ws}/database/{db}/row` | `PUT` | Update or upsert row |
+| `/api/workspace/{ws}/database/{db}/row` | `POST` | Create row (random row ID) |
+| `/api/workspace/{ws}/database/{db}/row` | `PUT` | Upsert row (requires `pre_hash` for deterministic ID) |
 | `/api/workspace/{ws}/database/{db}/row/updated` | `GET` | Detect recently changed rows |
 | `/api/workspace/{ws}/database/{db}/row/detail` | `GET` | Fetch full row cells |
 | `/api/workspace/{ws}/database/{db}/fields` | `GET` | Fetch field definitions |
 | `/api/workspace/{ws}/database/{db}` | `GET` | Discover databases |
 
-### 7.5 Field-level write policy
+### 7.5 AppFlowy API Realities (verified against self-hosted v0.14.17)
+
+These are observed behaviors of the actual AppFlowy Cloud REST API that differ from naive expectations. All integration code must account for them.
+
+#### `pre_hash` is mandatory for PUT (upsert)
+
+AppFlowy requires `pre_hash` on every `PUT /api/workspace/{ws}/database/{db}/row` request. Without it, the server returns:
+
+```json
+{"code": 1, "message": "Json deserialize error: missing field `pre_hash` at line 1 column 131"}
+```
+
+`pre_hash` is a free-form string. The server computes `SHA-256(workspace_id + database_id + pre_hash)` to derive the row ID. Repeated PUTs with the same `pre_hash` always target the same row. Our convention: `pre_hash = "{entity_type}:{council_id}"` — e.g. `"work_item:91c285f0-..."`.
+
+**Implication:** `row_id` in the PUT body is legacy and ignored when `pre_hash` is present. All outbound delivery code must use `pre_hash`, not `row_id`. Rows created via `POST` (random ID) cannot be upserted later via `PUT` unless the row ID is known and `pre_hash` is omitted — but since `pre_hash` is mandatory on current AppFlowy versions, all row creation should use `PUT` with `pre_hash` from the start.
+
+**Related issues:** [AppFlowy #8665](https://github.com/AppFlowy-IO/appflowy/issues/8665) (PUT requires pre_hash), [AppFlowy-Cloud #1333](https://github.com/AppFlowy-IO/AppFlowy-Cloud/issues/1333) (FR: make pre_hash optional).
+
+#### `row/updated` ignores the `since` parameter
+
+`GET /api/workspace/{ws}/database/{db}/row/updated?since=...` returns **all rows that have ever been updated**, regardless of the `since` value. Verified with three different timestamps — identical results every time.
+
+**Implication:** The inbound sync cannot rely on `since` for incremental polling. It must fetch all rows every cycle and use the snapshot hash (`last_seen_cells_hash`) as the actual change-detection mechanism. The `since` parameter is a no-op.
+
+#### Response structure: `row/detail` wraps cells in `data[]`
+
+The `GET /api/workspace/{ws}/database/{db}/row/detail` endpoint returns:
+
+```json
+{
+  "data": [
+    {
+      "id": "<row_id>",
+      "cells": { "ColumnName": value, ... },
+      "has_doc": false,
+      "doc": null
+    }
+  ],
+  "code": 0,
+  "message": "Operation completed successfully."
+}
+```
+
+**Critical:** The `cells` dict is nested inside `data[0]`, NOT at the top level. Code that does `response.get("cells", {})` will always get `{}`. The correct extraction is `response["data"][0]["cells"]`.
+
+**Fixed 2026-06-03:** `fetch_row_detail()` in `appflowy_sync.py` now extracts `data[0]` from the response envelope, matching the pattern used by `fetch_row()`. Both methods return `{"id": "...", "cells": {...}, "has_doc": false}`.
+
+#### Response structure: `row/updated` wraps rows in `data[]`
+
+```json
+{
+  "data": [
+    { "row_id": "<uuid>", "updated_at": "<iso8601>" },
+    ...
+  ],
+  "code": 0,
+  "message": "Operation completed successfully."
+}
+```
+
+#### Response structure: `PUT row` (upsert)
+
+On success:
+
+```json
+{
+  "data": "<row_id>",
+  "code": 0,
+  "message": "Operation completed successfully."
+}
+```
+
+The `data` field is the row ID (string), not an object.
+
+#### Cell values are field-type dependent
+
+AppFlowy cell values depend on column type:
+
+| Column Type | Cell Value Format |
+|---|---|
+| Text / Title | Plain string |
+| Rich Text | `{"rich_text": [{"text": {"content": "..."}}]}` |
+| Select | Option name (string) or `null` |
+| Multi-Select | Array of option names or `[]` |
+| Date | ISO-8601 string or `null` |
+| Checkbox | Boolean |
+| URL | String or `null` |
+| Number | Number or `null` |
+
+When updating via PUT, the server attempts to convert the provided value to the field type. Passing a plain string to a Select field works if the option exists.
+
+### 7.6 Field-level write policy
 
 #### Work items
 
@@ -1022,5 +1157,74 @@ The integration is considered complete only when all conditions below are true:
 - Require idempotency support on patch mutations as well as create and command paths. [file:35]
 - Treat `status` as soft lifecycle only; treat entity-specific state as separate domain state. [file:35]
 - Do not use a generalized reconciliation service for single-user deployment.
+
+---
+
+## 16. Debugging & Operational Notes
+
+### 16.1 Verifying bidirectional sync
+
+**Outbound (Council → AppFlowy):**
+1. Create or update an entity via Council Core API.
+2. Check `council_sync.outbox_events` for a pending event.
+3. Wait for OutboxDispatcher cycle (default 5s).
+4. Verify event state is `sent` and `binding.last_synced_revision` is updated.
+5. Check AppFlowy row via `GET /api/workspace/{ws}/database/{db}/row/detail?ids={row_id}` — cells should match.
+
+**Inbound (AppFlowy → Council):**
+1. Edit a cell in AppFlowy (via API or UI).
+2. Wait for AppFlowyInboundSync cycle (default 5s).
+3. Check `council_sync.inbound_changes` for `applied` entries.
+4. Verify Council entity via `GET /v1/{resource}/{id}` — fields should match.
+5. Verify `binding.last_seen_cells_hash` is updated.
+
+### 16.2 Common failure modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Inbound: all rows `skipped`, `applied: 0` | ~~`fetch_row_detail()` returns wrong structure~~ **Fixed 2026-06-03** — verify `fetch_row_detail` returns row object, not API envelope | Check `fetch_row_detail()` returns `{"id": ..., "cells": {...}}` shape |
+| Inbound: `no binding` for all rows | Bindings not created; AppFlowy rows exist but not linked to Council | Run binding creation or auto-projection |
+| Outbound: `400 missing field 'pre_hash'` | PUT request missing `pre_hash` field | Ensure all PUT requests include `pre_hash = "{entity_type}:{council_id}"` |
+| Outbound: duplicate rows in AppFlowy | PUT without `pre_hash` creates new rows instead of updating | Use `pre_hash` for deterministic row IDs |
+| Inbound: `stale_revision` on every cycle | Council entity revision advanced externally between polls | Refetch entity, retry with new revision |
+| `last_seen_cells_hash` is NULL | First run or hash never persisted | Normal — first cycle will process and persist |
+| `poll_updated_rows` returns all rows | AppFlowy ignores `since` parameter | Expected — hash comparison handles deduplication |
+
+### 16.3 Key database queries for debugging
+
+```sql
+-- Check bindings
+SELECT entity_type, council_id, appflowy_row_id, state, last_seen_cells_hash
+FROM council_sync.appflowy_bindings
+ORDER BY entity_type, council_id;
+
+-- Check outbox queue
+SELECT entity_type, council_id, mutation_type, delivery_state, attempts, last_error
+FROM council_sync.outbox_events
+WHERE delivery_state != 'sent'
+ORDER BY available_at;
+
+-- Check inbound changes
+SELECT entity_type, council_id, field_name, state, rejection_reason
+FROM council_sync.inbound_changes
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Check sync conflicts
+SELECT * FROM council_sync.sync_conflicts ORDER BY created_at DESC;
+```
+
+### 16.4 Known AppFlowy API quirks
+
+1. **PUT requires `pre_hash`:** Every PUT to `/api/workspace/{ws}/database/{db}/row` must include `pre_hash`. This is enforced at the JSON deserialization level — missing it returns a 400 error.
+
+2. **`since` parameter is a no-op:** `GET /api/workspace/{ws}/database/{db}/row/updated?since=...` returns all rows regardless of the `since` value. The inbound sync must rely on snapshot hash comparison for actual change detection.
+
+3. **Response structures vary by endpoint:**
+   - `row/detail`: `{"data": [{"id": "...", "cells": {...}}]}`
+   - `row/updated`: `{"data": [{"row_id": "...", "updated_at": "..."}]}`
+   - `PUT row`: `{"data": "<row_id>", ...}` (string, not object)
+
+4. **Cell values depend on column type:** Text fields are plain strings, Select fields may be dicts with `.name`, Multi-select is an array, Date may be a dict with `.date` or `.datetime`.
 
 This is the final v2.1 execution contract.
