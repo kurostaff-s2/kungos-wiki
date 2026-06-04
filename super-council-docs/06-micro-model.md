@@ -1,6 +1,7 @@
 # MicroModel Enricher
 
 > Async semantic enrichment engine using pplx-embed-v1-0.6B ONNX INT8 model with heuristic fallback.
+> **Status:** Wired into memory-service MCP server (2026-06-04). Model loads at startup, `model_available=True`.
 
 ## Overview
 
@@ -19,6 +20,8 @@ The `MicroModelEnricher` provides non-blocking semantic enrichment for pipeline 
 
 ## Initialization
 
+### Standalone
+
 ```python
 from super_council.micro_model import MicroModelEnricher
 
@@ -34,6 +37,24 @@ if enricher._model_available:
 else:
     print("Heuristic fallback mode")
 ```
+
+### Via memory-service (canonical)
+
+The enricher is initialized automatically in `MemoryService._init_components()`:
+
+```python
+from super_council.memory_service import MemoryService
+
+service = MemoryService.load()
+enricher = service.enricher  # MicroModelEnricher instance
+
+if enricher and enricher._model_available:
+    # ONNX-based classification active
+    result = enricher.classify_failure(run_id, error)
+```
+
+MCP tools `summarize_artifact` and `classify_failure` are registered conditionally
+in `MemoryMCPHandler` when `enricher is not None`.
 
 ## Artifact Enrichment
 
@@ -214,4 +235,12 @@ event_window_summaries (
 - **Pipeline completion:** `_enqueue_artifact_enrichment()` called after each successful phase
 - **Phase failure:** `_enqueue_failure_enrichment()` called on phase failure
 - **Context handoff:** Enrichment data included in `ContextRouter.get_run_snapshot()`
-- **MCP tools:** `summarize_artifact`, `classify_failure` exposed via MCP server
+- **MCP tools:** `summarize_artifact`, `classify_failure` exposed via MCP server (SSE `:18097`, HTTP `:18098`)
+- **memory-service:** Initialized in `MemoryService._init_components()`, passed to `MemoryMCPHandler`
+
+### Model Loading Details
+
+- **Model path:** `~/models/embedding/pplx-embed-v1-0.6b-int8/model_quantized.onnx`
+- **Provider:** CPUExecutionProvider (no GPU required)
+- **Startup cost:** ~5-10s ONNX load (blocks memory-service startup; lazy loading TBD)
+- **Fallback:** Heuristic-only mode if model dir missing or ONNX load fails
