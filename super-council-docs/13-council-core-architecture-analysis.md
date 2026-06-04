@@ -233,3 +233,117 @@ Everything traces to one of these. If it doesn't, defer it.
 - [ ] ChromaDB imports removed from Odysseus code
 - [ ] CodeGraph tools accessible via MCP SSE
 - [ ] All existing tests pass (no regression)
+
+---
+
+## Current State of Execution (2026-06-04)
+
+> **Database topology:** `pipelines.db` = legacy backup (untouched). `council_core.db` = single canonical DB. `codegraph.db` = planned separate DB (not yet extracted).
+
+### council_core.db — Live Schema
+
+| Table | Rows | Serves | Status |
+|---|---|---|---|
+| `projects` | 2 | Flows 2,4,5 (scoping) | ✅ Created, seeded |
+| `sessions` | 2 | All flows (context anchor) | ✅ Migrated from Odysseus app.db |
+| `chat_messages` | 9 | Flow 1 (conversation history) | ✅ Migrated from Odysseus app.db |
+| `memories` | 0 | Flow 1 (semantic recall) | ✅ Schema created |
+| `notes` | 0 | Flow 2 (user content) | ✅ Schema created |
+| `documents` | 0 | Flow 2 (user content) | ✅ Schema created |
+| `work_items` | 3 | Flow 4 (task tracking) | ✅ Created, migrated from pipelines |
+| `research_reports` | 0 | Flow 3 (research storage) | ✅ Schema created |
+| `knowledge_cards` | 0 | Flow 3 → 1 bridge | ✅ Schema created |
+| `memory_entries` | 124 | Flows 1,5 (replaces session_diary) | ✅ Unified table: entry_type (diary/raw/summary/incident/decision), tier, FTS5 indexed |
+| `memory_rollups` | 2 | Flows 1,5 (replaces consolidation_cache) | ✅ Unified table: tier, window_start/end, summary |
+| `reviews` | 2 | Review lifecycle | ✅ Created |
+| `review_findings` | 11 | Review findings | ✅ Migrated from pipelines.db |
+| `workflow_runs` | 3 | Execution tracking | ✅ Created with project_id FK |
+| `prompt_templates` | 0 | Reusable prompts | ✅ Schema created |
+
+### FTS5 Indexes — Live
+
+| FTS5 Table | Source Table | Entries | Status |
+|---|---|---|---|
+| `memory_entries_fts` | memory_entries (title, body) | 124 | ✅ |
+| `knowledge_cards_fts` | knowledge_cards (topic, title, body) | 0 | ✅ |
+| `work_items_fts` | work_items (title, description) | 3 | ✅ |
+| `chat_messages_fts` | chat_messages (content) | 9 | ✅ |
+| `notes_fts` | notes (title, content) | 0 | ✅ |
+| `documents_fts` | documents (title, current_content) | 0 | ✅ |
+| `research_reports_fts` | research_reports (query, summary, findings) | 0 | ✅ |
+| `review_findings_fts` | review_findings (title, summary, evidence) | 11 | ✅ |
+
+### project_id Column Coverage
+
+| Table | Has project_id | Status |
+|---|---|---|
+| `work_items` | ✅ | FK → projects(id) |
+| `workflow_runs` | ✅ | FK → projects(id) |
+| `reviews` | ✅ | FK → projects(id) |
+| `research_reports` | ✅ | FK → projects(id) |
+| `memory_entries` | ❌ | **Missing — needs ALTER TABLE** |
+| `memory_rollups` | ❌ | **Missing — needs ALTER TABLE** |
+| `knowledge_cards` | ❌ | **Missing — needs ALTER TABLE** |
+
+### CouncilCoreStore — Wired Components
+
+| Component | Status |
+|---|---|
+| `CouncilCoreStore` class | ✅ `memory_service/council_core_store.py` |
+| `mem.council_core` property | ✅ Wired in `MemoryService.__init__` |
+| `get_or_create_project()` | ✅ Slug dedup, FK-safe |
+| `get_work_items()` | ✅ Filtered by project_id, kind, status |
+| `create_knowledge_card()` | ✅ With tags, confidence, source_run_id |
+| `search_knowledge_cards()` | ✅ Keyword search on title/body/topic |
+| `get_memory_entries()` | ✅ Filtered by entry_type, tier |
+| `get_memory_rollups()` | ✅ Filtered by tier |
+| `get_sessions()` / `get_chat_messages()` | ✅ |
+| `get_reviews()` / `get_review_findings()` | ✅ |
+| `get_workflow_runs()` | ✅ |
+| `health_check()` | ✅ Returns status + row counts |
+
+### Five Gaps — Current Status
+
+| Gap | Plan | Current | Delta |
+|---|---|---|---|
+| **1: Embedding Server** (P0) | Start pplx on `:18099` | ❌ Not running. server.py + model exist. No systemd service. | **Open** |
+| **2: FTS5 Indexes** (P0) | FTS5 on session_diary, artifacts, event_log | ✅ 8 FTS5 tables on council_core.db. Covers new schema (memory_entries replaces session_diary). Old pipelines.db tables (artifacts, event_log) NOT indexed — they stay in legacy DB. | **Closed for new schema** |
+| **3: Vector Re-index** (P1) | Index canonical knowledge into Milvus | ❌ Milvus still indexes chat summaries (351 entities). Not re-indexed for council_core.db. | **Open** |
+| **4: Project Scoping** (P1) | project_id on all knowledge tables | ⚠️ `projects` table exists. `project_id` on work_items, workflow_runs, reviews, research_reports. **Missing** on memory_entries, memory_rollups, knowledge_cards. | **Partial** |
+| **5: Log Recall Timeout** (P2) | Async rewrite of unified_log_recall | ❌ Still synchronous, >5s timeout. | **Open** |
+
+### What Was NOT Done (Intentionally Deferred)
+
+| Item | Reason |
+|---|---|
+| CodeGraph extraction to `codegraph.db` | Phase 0 not executed. cg_* tables still in pipelines.db. |
+| `project_id` on memory_entries, memory_rollups, knowledge_cards | Schema created without it. Needs ALTER TABLE migration. |
+| pplx embedding server | server.py exists but not started. Port in server.py is `:18097` (occupied by memory_service SSE), needs change to `:18099`. |
+| ChromaDB removal from Odysseus vendor | Still in `vendor/odysseus/src/chroma_client.py` and `rag_vector.py`. |
+| Odysseus wired to council_core.db | `.env.council` + `start-council.sh` created. But Odysseus SQLAlchemy models expect different column names (`rag` vs `has_rag`, `archived` vs `is_archived`). Direct swap blocked until column mapping resolved. |
+| UnifiedVectorStore (Phase 4) | Not implemented. MemIndex still uses bge-m3 ONNX. |
+| UnifiedSearchRouter (Phase 6) | Not implemented. No RRF fusion. |
+
+### Source DBs — Untouched
+
+| Database | Path | Tables | Status |
+|---|---|---|---|
+| `pipelines.db` | `~/.council-memory/pipelines.db` | 32 | ✅ Legacy backup, untouched |
+| `app.db` | `vendor/odysseus/data/app.db` | 24 | ✅ Legacy backup, untouched |
+
+### Verification Checklist — Updated
+
+| Check | Status |
+|---|---|
+| pplx server responds on `:18099/v1/models` | ❌ Not running |
+| council-recall uses pplx embeddings (not bge-m3) | ❌ Uses bge-m3 |
+| FTS5 indexes exist on canonical tables | ✅ 8 FTS5 tables on council_core.db |
+| `projects` table exists with UNIQUE slug | ✅ |
+| `project_id` column on work_items, workflow_runs, reviews | ✅ |
+| `project_id` column on memory_entries, memory_rollups, knowledge_cards | ❌ Missing |
+| project_id filter works server-side in Milvus | ❌ Client-side only |
+| unified_log_recall completes in <2s | ❌ Sync, >5s timeout |
+| ChromaDB imports removed from Odysseus code | ❌ Present |
+| CodeGraph tools accessible via MCP SSE | ✅ |
+| All existing tests pass (no regression) | ✅ |
+| **Score** | **5/12** |
