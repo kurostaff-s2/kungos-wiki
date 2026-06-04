@@ -41,13 +41,333 @@
 ## Execution Order (DAG)
 
 ```
-Phase 1 (Schema Design) ──┐
-                           ├──> Phase 2 (Migration SQL) ──> Phase 3 (CouncilCoreStore) ──> Phase 4 (Apply + Verify)
-Phase 1B (Column Audit) ──┘
+Phase 0 (Poison Prevention Layer) ──> Phase 1 (Schema Design) ──┐
+                                                                    ├──> Phase 2 (Migration SQL) ──> Phase 3 (CouncilCoreStore) ──> Phase 4 (Apply + Verify)
+Phase 1B (Column Audit) ───────────────────────────────────────────┘
 ```
 
+- **Phase 0:** MUST complete first. All subsequent phases depend on poison prevention being in place.
 - **Phase 1 + 1B:** Can run in parallel (design + audit)
 - **Phase 2:** Depends on Phase 1 completion
+
+---
+
+## Phase 0: Poison Prevention Layer — RelationalStore Principle Compliance
+
+**What:** Implement the RelationalStore hard guards that prevent poisonous DB writes. Currently **3/14 principles implemented** (WAL, FK, checkpoint). This phase adds the remaining 11.
+
+**Why:** CouncilCoreStore currently has zero runtime guards against poison writes. An agent hallucination can write garbage directly to the DB with no audit trail, no validation, no rollback. RelationalStore (pipelines.db) has 14 guards — CouncilCoreStore needs the same.
+
+**Gap Analysis (current state):**
+
+| Principle | RelationalStore | CouncilCoreStore | Risk |
+|---|---|---|---|
+| WAL mode | ✅ | ✅ | — |
+| FK enforcement | ✅ | ✅ | — |
+| Manual checkpoint | ✅ | ✅ | — |
+| Schema from migrations/ | ✅ | ❌ Wrong path (`migrations_council_core/`) | **HIGH** |
+| Atomic transitions (`BEGIN IMMEDIATE...COMMIT`) | ✅ | ❌ Autocommit per-INSERT | **HIGH** |
+| ROLLBACK on error | ✅ | ❌ No transaction wrapper | **HIGH** |
+| Audit trail (`audit_events`) | ✅ | ❌ No audit table | **HIGH** |
+| Write boundary enforcement | ✅ Logged per-request | ❌ No boundary check | **HIGH** |
+| OutputGate validation | ✅ Before storage | ❌ No gate | **HIGH** |
+| Bypass tracking | ✅ bypass + user + justification | ❌ No logging | **HIGH** |
+| MemoryLayer unified write path | ✅ Artifacts → MemoryLayer | ❌ Direct SQL | **HIGH** |
+| Injection blacklist | ✅ `upsert_injection_blacklist()` | ❌ No detection | **HIGH** |
+| Enum table seeding | ✅ `_seed_enum_tables()` | ❌ CHECK only | Medium |
+| Phase registry sync | ✅ `_sync_phase_registry()` | ❌ No registry | Medium |
+
+### Implementation Steps
+
+#### 0A. Audit Events Table (Migration SQL)
+
+Add to `migrations_council_core/01_core_tables.sql`:
+
+```sql
+-- Audit events table (mirrors RelationalStore.audit_events)
+-- Every write through CouncilCoreStore logs an audit event.
+-- write_boundary_enforced: was the write validated before storage?
+-- gate_valid: did OutputGate validation pass?
+-- bypass: was a guard bypassed? If so, bypass_user + bypass_justification required.
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    endpoint TEXT NOT NULL,           -- e.g., 'create_work_item', 'search_knowledge_cards'
+    method TEXT NOT NULL,             -- 'INSERT', 'UPDATE', 'DELETE', 'SELECT'
+    result_status INTEGER,            -- HTTP-style: 200=ok, 400=validation_fail, 500=error
+    write_boundary_enforced BOOLEAN NOT NULL DEFAULT 1,
+    gate_valid BOOLEAN NOT NULL DEFAULT 1,
+    bypass BOOLEAN NOT NULL DEFAULT 0,
+    bypass_user TEXT,
+    bypass_justification TEXT,
+    details TEXT,
+    table_name TEXT,                  -- which table was written
+    record_id TEXT,                   -- which record
+    action TEXT,                      -- 'create', 'update', 'delete'
+    actor TEXT,                       -- 'system', 'agent', 'user', 'migration'
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_endpoint ON audit_events(endpoint);
+CREATE INDEX IF NOT EXISTS idx_audit_events_table ON audit_events(table_name);
+CREATE INDEX IF NOT EXISTS idx_audit_events_bypass ON audit_events(bypass) WHERE bypass = 1;
+CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);
+```
+
+#### 0B. Injection Blacklist Table (Migration SQL)
+
+```sql
+-- Injection blacklist (mirrors RelationalStore.injection_blacklist)
+-- Tracks repeated injection patterns. When failure_count >= threshold,
+-- the pattern is blocked automatically (is_active=1).
+CREATE TABLE IF NOT EXISTS injection_blacklist (
+    blacklist_id TEXT PRIMARY KEY,
+    pattern_type TEXT NOT NULL,       -- 'prompt_injection', 'sql_injection', 'schema_violation'
+    pattern TEXT NOT NULL,            -- the detected pattern (hashed for privacy)
+    failure_count INTEGER NOT NULL DEFAULT 1,
+    threshold INTEGER NOT NULL DEFAULT 3,
+    first_failure_at TEXT NOT NULL,
+    last_failure_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_injection_blacklist_type ON injection_blacklist(pattern_type);
+CREATE INDEX IF NOT EXISTS idx_injection_blacklist_active ON injection_blacklist(is_active) WHERE is_active = 1;
+```
+
+#### 0C. CouncilCoreStore — Transaction Wrapper
+
+Replace direct `self.db.execute()` with transaction-aware writes:
+
+```python
+def _atomic_write(self, sql: str, params: tuple, table: str, action: str, endpoint: str) -> Dict[str, Any]:
+    """Execute a write inside BEGIN IMMEDIATE...COMMIT with ROLLBACK on error.
+
+    Logs audit event regardless of outcome.
+    Returns dict with success status and audit_id.
+    """
+    cursor = self.db.cursor()
+    audit_id = None
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(sql, params)
+        # Log audit event (inside same transaction)
+        audit_id = self._log_audit(
+            cursor=cursor,
+            endpoint=endpoint,
+            method=action.upper(),
+            table=table,
+            result_status=200,
+            write_boundary_enforced=True,
+            gate_valid=True,
+        )
+        cursor.execute("COMMIT")
+        return {"success": True, "audit_id": audit_id}
+    except Exception as e:
+        try:
+            cursor.execute("ROLLBACK")
+        except Exception:
+            pass
+        # Log failed audit (best-effort, outside transaction)
+        self._log_audit(
+            endpoint=endpoint,
+            method=action.upper(),
+            table=table,
+            result_status=500,
+            write_boundary_enforced=True,
+            gate_valid=False,
+            details=str(e),
+        )
+        raise
+```
+
+#### 0D. CouncilCoreStore — Audit Logging Method
+
+```python
+def _log_audit(
+    self,
+    *,
+    endpoint: str,
+    method: str,
+    table: str = None,
+    record_id: str = None,
+    action: str = None,
+    actor: str = "system",
+    result_status: int = 200,
+    write_boundary_enforced: bool = True,
+    gate_valid: bool = True,
+    bypass: bool = False,
+    bypass_user: str = None,
+    bypass_justification: str = None,
+    details: str = None,
+    cursor: sqlite3.Cursor = None,
+) -> str:
+    """Insert audit event. Returns audit_id."""
+    audit_id = str(uuid.uuid4())[:8]
+    now = _utcnow_iso()
+    exec_cursor = cursor or self.db.cursor()
+    exec_cursor.execute("""
+        INSERT INTO audit_events
+        (id, timestamp, endpoint, method, result_status,
+         write_boundary_enforced, gate_valid, bypass, bypass_user,
+         bypass_justification, details, table_name, record_id, action, actor)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        audit_id, now, endpoint, method, result_status,
+        write_boundary_enforced, gate_valid, bypass, bypass_user,
+        bypass_justification, details, table, record_id, action, actor,
+    ))
+    return audit_id
+```
+
+#### 0E. CouncilCoreStore — OutputGate Validation
+
+Add content validation before all `create_*` methods:
+
+```python
+def _validate_content(self, table: str, data: Dict[str, Any]) -> bool:
+    """Validate content before storage. Prevents poison writes.
+
+    Checks:
+    1. No NULL in NOT NULL columns
+    2. No values exceeding column type constraints
+    3. No injection patterns (check against blacklist)
+    4. Content length within reasonable bounds
+    5. JSON columns are valid JSON
+    """
+    # Check injection blacklist
+    for key, value in data.items():
+        if isinstance(value, str) and len(value) > 0:
+            if self._is_blacklisted(value):
+                self._upsert_injection_blacklist("content_injection", value)
+                return False
+    # Check JSON columns
+    json_columns = {'metadata', 'tags', 'sections', 'ai_metadata', 'headers'}
+    for key in json_columns:
+        if key in data and data[key] and isinstance(data[key], str):
+            try:
+                json.loads(data[key])
+            except json.JSONDecodeError:
+                return False
+    return True
+
+def _is_blacklisted(self, text: str) -> bool:
+    """Check if text matches an active injection blacklist pattern."""
+    row = self.db.execute("""
+        SELECT 1 FROM injection_blacklist
+        WHERE pattern = ? AND is_active = 1
+    """, (hashlib.sha256(text.encode()).hexdigest()[:16],)).fetchone()
+    return row is not None
+
+def _upsert_injection_blacklist(self, pattern_type: str, pattern: str, threshold: int = 3) -> None:
+    """Record or increment a blacklist failure."""
+    pattern_hash = hashlib.sha256(pattern.encode()).hexdigest()[:16]
+    blacklist_id = f"bl-{pattern_type}-{pattern_hash}"
+    now = _utcnow_iso()
+    existing = self.db.execute(
+        "SELECT failure_count, threshold, is_active FROM injection_blacklist "
+        "WHERE blacklist_id = ?", (blacklist_id,)).fetchone()
+    if existing:
+        new_count = existing[0] + 1
+        is_active = 1 if new_count >= existing[1] else existing[2]
+        self.db.execute(
+            "UPDATE injection_blacklist SET failure_count = ?, last_failure_at = ?, is_active = ? "
+            "WHERE blacklist_id = ?",
+            (new_count, now, is_active, blacklist_id),
+        )
+    else:
+        is_active = 1 if threshold <= 1 else 0
+        self.db.execute(
+            "INSERT INTO injection_blacklist "
+            "(blacklist_id, pattern_type, pattern, failure_count, threshold, "
+            " first_failure_at, last_failure_at, is_active) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
+            (blacklist_id, pattern_type, pattern_hash, threshold, now, now, is_active),
+        )
+```
+
+#### 0F. CouncilCoreStore — Migration Path Fix
+
+Make migration path configurable (not hardcoded):
+
+```python
+def __init__(self, db_path: str, migrations_dir: str = None):
+    # ...
+    self._migrations_dir = migrations_dir or os.path.join(
+        os.path.dirname(__file__), "..", "..", "migrations_council_core"
+    )
+    # Or better: align with RelationalStore pattern
+    # self._migrations_dir = os.path.join(os.path.dirname(__file__), "..", "..", "migrations")
+```
+
+#### 0G. MemoryLayer Wiring
+
+Add MemoryLayer reference to CouncilCoreStore (mirrors RelationalStore):
+
+```python
+def __init__(self, db_path: str, memory_layer: Optional["MemoryLayer"] = None):
+    # ...
+    self.memory_layer: Optional["MemoryLayer"] = memory_layer
+```
+
+Route knowledge_cards and memory_entries through MemoryLayer for vector indexing:
+
+```python
+def create_knowledge_card(self, topic, title, body, ...):
+    # ...
+    result = self._atomic_write(sql, params, "knowledge_cards", "create", "create_knowledge_card")
+    # Route through MemoryLayer for vector indexing
+    if self.memory_layer:
+        self.memory_layer.ingest_artifact(
+            run_id=source_run_id,
+            phase="knowledge",
+            key=f"card:{card_id}",
+            content=f"{topic}: {title} — {body[:2000]}",
+        )
+    return result
+```
+
+### Files to Create/Modify (Phase 0)
+
+| Action | File | Purpose |
+|--------|------|---------|
+| Modify | `migrations_council_core/01_core_tables.sql` | Add `audit_events` + `injection_blacklist` tables |
+| Modify | `memory_service/council_core_store.py` | Add `_atomic_write()`, `_log_audit()`, `_validate_content()`, `_is_blacklisted()`, `_upsert_injection_blacklist()` |
+| Modify | `memory_service/council_core_store.py` | Add `memory_layer` param to `__init__` |
+| Modify | `memory_service/council_core_store.py` | Wrap all `create_*` methods in `_atomic_write()` |
+| Modify | `memory_service/council_core_store.py` | Add `_validate_content()` call before all INSERTs |
+| Modify | `memory_service/config.py` | Add `council_core_migrations_dir` config |
+
+### Phase 0 Success Criteria
+
+- [ ] `audit_events` table exists in council_core.db
+- [ ] `injection_blacklist` table exists in council_core.db
+- [ ] All `create_*` methods use `_atomic_write()` (BEGIN IMMEDIATE...COMMIT)
+- [ ] ROLLBACK verified: inject error mid-transaction → no partial write
+- [ ] `_validate_content()` rejects invalid JSON in JSON columns
+- [ ] `_is_blacklisted()` blocks patterns with `is_active=1`
+- [ ] `_upsert_injection_blacklist()` increments failure_count, activates at threshold
+- [ ] Every write logs to `audit_events` (success and failure)
+- [ ] Bypass tracking works: `bypass=1` requires `bypass_user` + `bypass_justification`
+- [ ] MemoryLayer reference wired (even if None, the path exists)
+- [ ] Migration path is configurable (not hardcoded)
+- [ ] All existing tests pass (no regression)
+
+### Anti-Patterns to Avoid
+
+- ❌ Direct `self.db.execute(INSERT)` without transaction wrapper → ✅ Always `_atomic_write()`
+- ❌ No audit logging → ✅ Every write logs to `audit_events`
+- ❌ Silent failures (exception swallowed) → ✅ ROLLBACK + audit log + re-raise
+- ❌ No content validation → ✅ `_validate_content()` before every INSERT
+- ❌ Hardcoded migration path → ✅ Configurable via `__init__` param
+- ❌ MemoryLayer bypass → ✅ Route through MemoryLayer when available
+
+---
+
+## Phase 1: Schema Design — Unified Column Specification
+
+**What:** Define the final column specification for every table, merging Odysseus columns with Council governance columns.
+
+**Dependencies:** Phase 0 (poison prevention tables must be in migration SQL first).
 - **Phase 3:** Depends on Phase 2 (needs final schema)
 - **Phase 4:** Depends on Phase 3 (needs updated store)
 
@@ -460,11 +780,14 @@ ai_metadata TEXT DEFAULT '{}',  -- JSON: {classification: "...", content_hash: "
 
 | Action | File | Purpose |
 |--------|------|---------|
-| Modify | `migrations_council_core/01_core_tables.sql` | Unified schema with all Odysseus + Council columns |
+| Modify | `migrations_council_core/01_core_tables.sql` | Add `audit_events` + `injection_blacklist` + unified schema |
 | Modify | `migrations_council_core/02_fts5_indexes.sql` | FTS5 for new tables |
-| Modify | `memory_service/council_core_store.py` | CRUD for all new tables + updated column access |
+| Modify | `memory_service/council_core_store.py` | Phase 0: `_atomic_write()`, `_log_audit()`, `_validate_content()`, `_is_blacklisted()`, `_upsert_injection_blacklist()` |
+| Modify | `memory_service/council_core_store.py` | Phase 3: CRUD for all new tables + updated column access |
+| Modify | `memory_service/council_core_store.py` | Phase 3: Wrap all `create_*` in `_atomic_write()` |
+| Modify | `memory_service/council_core_store.py` | Phase 3: Add `memory_layer` param to `__init__` |
 | Create | `migrations_council_core/03_unify_odysseus_columns.sql` | ALTER TABLE + data migration from app.db |
-| Modify | `memory_service/config.py` | Add new table config if needed |
+| Modify | `memory_service/config.py` | Add `council_core_migrations_dir` + new table config |
 
 ---
 
@@ -474,6 +797,17 @@ ai_metadata TEXT DEFAULT '{}',  -- JSON: {classification: "...", content_hash: "
 - **Idempotent migrations:** Safe to re-run. Use `IF NOT EXISTS`, `ALTER TABLE IF NOT EXISTS` (or check-first pattern).
 - **FK enforcement:** `PRAGMA foreign_keys=ON` on all connections.
 - **WAL mode:** `PRAGMA journal_mode=WAL` on all connections.
+- **SQLite only:** No PostgreSQL types. TEXT for PKs, TEXT for timestamps, TEXT for JSON.
+- **Idempotent migrations:** Safe to re-run. Use `IF NOT EXISTS`, `ALTER TABLE IF NOT EXISTS` (or check-first pattern).
+- **FK enforcement:** `PRAGMA foreign_keys=ON` on all connections.
+- **WAL mode:** `PRAGMA journal_mode=WAL` on all connections.
+- **Atomic writes mandatory:** All multi-row writes use `BEGIN IMMEDIATE...COMMIT` with `ROLLBACK` on error. No autocommit for writes.
+- **Audit trail mandatory:** Every write logs to `audit_events` (success AND failure). No exceptions.
+- **Write boundary enforced:** Every `create_*` method validates content via `_validate_content()` before INSERT.
+- **Injection blacklist active:** `_is_blacklisted()` checks before every INSERT. Patterns with `is_active=1` are blocked.
+- **Bypass tracking:** If a guard is bypassed, `bypass=1` requires `bypass_user` + `bypass_justification`.
+- **MemoryLayer wired:** CouncilCoreStore accepts `memory_layer` param. Artifacts route through MemoryLayer when available.
+- **Migration path configurable:** Not hardcoded. Passable via `__init__` param.
 - **Governance columns mandatory:** Every table gets revision, created_at, updated_at, updated_by, updated_source, origin_source, status, is_deleted.
 - **ai_metadata unified:** Single JSON column replaces scattered ai_classification, ai_content_hash columns. Both old columns KEPT for backward compatibility but deprecated.
 - **Token budgeting unified:** total_input_tokens + total_output_tokens on sessions. Per-operation token tracking via metadata JSON on workflow_runs/task_runs.
@@ -485,6 +819,20 @@ ai_metadata TEXT DEFAULT '{}',  -- JSON: {classification: "...", content_hash: "
 
 ## Success Criteria
 
+### Poison Prevention (Phase 0 — GATE)
+- [ ] `audit_events` table exists in council_core.db
+- [ ] `injection_blacklist` table exists in council_core.db
+- [ ] All `create_*` methods use `_atomic_write()` (BEGIN IMMEDIATE...COMMIT)
+- [ ] ROLLBACK verified: inject error mid-transaction → no partial write
+- [ ] `_validate_content()` rejects invalid JSON in JSON columns
+- [ ] `_is_blacklisted()` blocks patterns with `is_active=1`
+- [ ] `_upsert_injection_blacklist()` increments failure_count, activates at threshold
+- [ ] Every write logs to `audit_events` (success AND failure)
+- [ ] Bypass tracking works: `bypass=1` requires `bypass_user` + `bypass_justification`
+- [ ] MemoryLayer reference wired (even if None, the path exists)
+- [ ] Migration path is configurable (not hardcoded)
+
+### Schema Unification (Phases 1-2)
 - [ ] `01_core_tables.sql` contains unified schema for all 20+ tables
 - [ ] Every table has governance columns (revision, updated_by, origin_source, is_deleted, etc.)
 - [ ] `ai_metadata` column on sessions, notes, documents, memories, gallery_images
@@ -494,6 +842,8 @@ ai_metadata TEXT DEFAULT '{}',  -- JSON: {classification: "...", content_hash: "
 - [ ] Extensibility tables present (integrations, mcp_servers, webhooks, user_tools, user_tool_data)
 - [ ] `project_id` FK on all user-data tables
 - [ ] FTS5 indexes on all content-bearing tables
+
+### Data Migration + Verification (Phase 4)
 - [ ] Migration applied to council_core.db without errors
 - [ ] Data migrated from app.db (sessions, chat_messages, notes, documents, memories)
 - [ ] `PRAGMA foreign_key_check` passes (no FK violations)
