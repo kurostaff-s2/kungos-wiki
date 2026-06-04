@@ -195,6 +195,41 @@ Dependencies
 
     The unified model is already stable and low-risk.
 
+Phase 8: Arc Summarizer in AppFlowy AI
+Deliverables
+
+    Arc Summarizer exposed as AppFlowy LAI (Local AI) plugin.
+
+    Consolidation pipeline triggerable from AppFlowy UI (session summaries, knowledge extraction).
+
+    Tier 1 knowledge card injection into AppFlowy system context.
+
+    Health monitoring for Arc server from AppFlowy AI status panel.
+
+Acceptance criteria
+
+    AppFlowy can invoke Arc consolidation without leaving the workspace.
+
+    Session summaries appear as structured entries in AppFlowy databases.
+
+    Knowledge extraction produces editable knowledge cards.
+
+    Arc server health is visible in AppFlowy (latency, model status, fallback state).
+
+Dependencies
+
+    All human-facing shared entities are already stable.
+
+    AppFlowy LAI plugin system supports custom OpenAI-compatible endpoints.
+
+Integration Architecture
+
+    AppFlowy LAI plugin → OpenAI-compatible API → Arc server (:18095) → Granite-4.1-3B
+
+    Uses existing ArcClient HTTP interface with retry + fallback logic.
+
+    No model swapping needed — Arc is dedicated to consolidation/summarization roles.
+
 Rollout order
 
     Unification lock.
@@ -210,6 +245,8 @@ Rollout order
     Memory and rollups.
 
     Read-model hardening.
+
+    Arc Summarizer in AppFlowy AI.
 
     Optional polish.
 

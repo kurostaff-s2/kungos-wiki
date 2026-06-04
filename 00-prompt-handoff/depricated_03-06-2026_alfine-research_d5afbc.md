@@ -10,7 +10,9 @@
 
 AppFlowy self-hosted gates AI features behind a paid commercial license. The license validation is closed-source (commercial fork), with no community-reported bypass. The `af_self_host_commercial_license` database table requires a valid signature from AppFlowy PTE LTD.
 
-**Recommendation:** Pivot to AFFiNE self-hosted + Arc via LiteLLM proxy. AFFiNE offers official self-host AI support, Ollama integration, and open-source licensing.
+**Recommendation:** Pivot to AFFiNE self-hosted + direct llama.cpp server integration. AFFiNE accepts OpenAI-compatible endpoints; the existing llama server (`:18095`, granite-4.1-3b) speaks that natively. No LiteLLM proxy needed.
+
+**Status:** 03-June-2026 — AFFiNE instance running on `:3010` has workspace route white screen (DocRendererController serves HTML with zero JS/CSS assets). Clean rebuild required before AI wiring.
 
 ---
 
@@ -86,11 +88,33 @@ SELECT * FROM af_ai_provider_connections;
 - AI features still maturing
 - Less documentation than AppFlowy
 
-**Self-Host Architecture:**
+**Self-Host Architecture (Corrected — No LiteLLM):**
 ```
-Internet → Traefik → AFFiNE:3010
-AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
+Internet → AFFiNE:3010
+AFFiNE Copilot → http://localhost:18095/v1/chat/completions
+Council API    → http://localhost:18095/v1/chat/completions  (future)
+Arc Summarizer → http://localhost:18095/v1/chat/completions  (existing)
+                          ↓
+              llama.cpp server (granite-4.1-3b, Arc A380 GPU)
 ```
+
+**Why no LiteLLM:** The llama.cpp server on `:18095` already exposes a full OpenAI-compatible API (`/v1/models`, `/v1/chat/completions`). AFFiNE's AI settings accept any OpenAI-compatible base URL via `config.json`. Adding LiteLLM is an unnecessary indirection layer.
+
+**Official config schema** ([docs.affine.pro/self-host-affine/administer/ai](https://docs.affine.pro/self-host-affine/administer/ai)):
+```json
+{
+  "$schema": "https://github.com/toeverything/affine/releases/latest/download/config.schema.json",
+  "copilot": {
+    "enabled": true,
+    "providers.openai": {
+      "apiKey": "",
+      "baseUrl": "http://localhost:18095"
+    }
+  }
+}
+```
+
+**Verified:** `curl http://localhost:18095/v1/chat/completions` returns OpenAI-compatible responses from granite-4.1-3b. No auth required.
 
 ### Deep Dive: Logseq
 
@@ -119,12 +143,12 @@ AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
 - **Effort:** Medium (if customizations needed)
 - **Viability:** High (open-source, active community)
 
-### Option C: Integrate AFFiNE + Arc (Recommended)
-- **Risk:** Low (standard integration)
-- **Effort:** Medium (LiteLLM proxy, configuration)
-- **Viability:** High (official support, no license issues)
+### Option C: Integrate AFFiNE + Direct Llama Server (Recommended)
+- **Risk:** Low (standard OpenAI-compatible integration)
+- **Effort:** Low (point AFFiNE AI settings at existing llama endpoint)
+- **Viability:** High (no proxy, no extra containers, single model server)
 
-**Recommendation: Option C** - Integrate AFFiNE self-hosted + Arc via LiteLLM proxy
+**Recommendation: Option C** - Integrate AFFiNE self-hosted + direct llama.cpp server (`:18095`)
 
 ---
 
@@ -173,24 +197,26 @@ AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
 
 ---
 
-### Phase 2: LiteLLM + Arc Integration
+### Phase 2: Direct Llama Server Wiring
 
-**What:** Configure LiteLLM proxy to route AFFiNE AI requests to Arc server.
-**Files:** LiteLLM configuration, docker-compose.yml
+**What:** Point AFFiNE AI settings at the existing llama.cpp server (`:18095`).
+**Files:** AFFiNE AI configuration (env vars or admin UI)
 **Steps:**
-1. Deploy LiteLLM container with Arc endpoint
-2. Configure AFFiNE AI to use LiteLLM proxy
-3. Test AI completion flow: AFFiNE → LiteLLM → Arc
-4. Verify model mapping (granite-4.1-3b)
-5. Test error handling and fallback
+1. Edit AFFiNE `config.json` (Admin console → AI section, or file at `~/.affine/config/config.json`)
+2. Set `copilot.providers.openai.baseUrl` to `http://localhost:18095`
+3. Set `copilot.providers.openai.apiKey` to `""` (empty, llama.cpp has no auth)
+4. Verify model list: `curl http://localhost:18095/v1/models` → should show `granite-4.1-3b`
+4. Test AI completion flow: AFFiNE → llama server → granite-4.1-3b
+5. Verify responses render correctly in AFFiNE Copilot
+6. Test error handling (server down, model not found)
 
 **Tests:**
-- [ ] LiteLLM proxy starts and responds
-- [ ] AFFiNE AI requests route to Arc
-- [ ] Model responses return correctly
-- [ ] Error handling works (timeout, fallback)
+- [ ] AFFiNE AI requests hit llama server directly
+- [ ] granite-4.1-3b responses return correctly
+- [ ] Copilot UI shows streaming/completed responses
+- [ ] Error handling works (server down, timeout)
 
-**Dependencies:** Phase 1 complete
+**Dependencies:** Phase 1 complete (AFFiNE UI must render first)
 
 ---
 
@@ -242,9 +268,9 @@ AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
 |--------|------|---------|
 | Create | `/home/chief/llm-wiki/00-prompt-handoff/03-06-2026_appflowy-ai-alternatives-research_d5afbc.md` | This research report |
 | Create | `/home/chief/llm-wiki/super-council-docs/13-affine-migration-plan.md` | Migration plan (Phase 1 output) |
-| Create | `/home/chief/Coding-Projects/7-council/super_council/vendor/affine-selfhosted/docker-compose.yml` | AFFiNE deployment |
-| Create | `/home/chief/Coding-Projects/7-council/super_council/vendor/affine-selfhosted/litellm/config.yaml` | LiteLLM proxy config |
+| Create | `/home/chief/llm-wiki/super-council-docs/13-affine-migration-plan.md` | Migration plan (Phase 1 output) |
 | Modify | `/home/chief/llm-wiki/super-council-docs/12-appflowy-integration.md` | Update with findings |
+| Modify | This document | Updated architecture (no LiteLLM, direct llama) |
 
 ---
 
@@ -260,8 +286,10 @@ AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
 
 ## Success Criteria
 
+- [ ] AFFiNE clean rebuild complete (workspace routes serve JS/CSS)
 - [ ] AFFiNE self-hosted AI capabilities verified
-- [ ] LiteLLM + Arc integration tested
+- [ ] Direct llama server (`:18095`) integration tested
+- [ ] Council API routing through llama server planned
 - [ ] Migration plan documented with data mapping
 - [ ] Community validation complete
 - [ ] Legal/compliance risks assessed
@@ -283,10 +311,12 @@ AFFiNE Copilot → Caddy:80/v1 → LiteLLM:4000 → Ollama:11434
 
 ## Next Steps
 
-1. **Immediate:** Execute Phase 1 (AFFiNE deep dive)
-2. **Parallel:** Execute Phase 4 (community validation)
-3. **Sequential:** Phase 2 (LiteLLM + Arc) after Phase 1
-4. **Sequential:** Phase 3 (data migration) after Phase 1
-5. **Final:** Generate execution-ready migration prompt
+1. **Immediate:** Clean rebuild AFFiNE instance (fix workspace white screen)
+2. **Immediate:** Execute Phase 1 (AFFiNE deep dive + baseline verify)
+3. **Parallel:** Execute Phase 4 (community validation)
+4. **Sequential:** Phase 2 (direct llama server wiring) after Phase 1
+5. **Sequential:** Phase 3 (data migration) after Phase 1
+6. **Future:** Council API routing through llama server
+7. **Final:** Generate execution-ready migration prompt
 
 **Estimated timeline:** 1-2 weeks for full migration planning and testing.
