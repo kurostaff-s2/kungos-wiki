@@ -100,16 +100,21 @@
 ## Execution Order (DAG)
 
 ```
-Phase A1: Drop zombie tables         Phase A2: Fix entry_type semantics
-  ↓                                      ↓
+Phase A1: Drop zombie tables          Phase A2: Fix entry_type semantics
+  ↓                                       ↓
 Phase A1.5: RelationalStore Guards    Phase A3: Enforce source_run_id
-  ↓                                      ↓
-Phase A4: Tests + verification        Phase A5: Production wiring
+  ↓                                       ↓
+Phase A1.6: Verified Contextual Res.  Phase A5: Production wiring
+  ↓                                       ↑
+Phase A4: Tests + verification ──────────┘
 ```
 
-Phases A1 and A2 are independent — can run in parallel.
-Phase A1.5 depends on A1 (tables must be clean before adding constraints).
-Phase A3 depends on A1.5 (guards must be in place before backfill).
+- A1 and A2 are independent — can run in parallel
+- A1.5 depends on A1 (tables must be clean before adding constraints)
+- A1.6 depends on A1.5 (G1–G5 must be in place before adding contextual resolver)
+- A3 depends on A1.5 (guards must be in place before backfill)
+- A4 depends on A1.5 + A1.6 (tests cover all guards)
+- A5 depends on all phases (production wiring after all guards verified)
 
 ---
 
@@ -304,6 +309,364 @@ def ensure_workflow_run(self, run_id: str, work_item_id: str, project_id: str, .
 
 ---
 
+## Phase A1.6: Verified Contextual Resolver (G6–G11)
+
+**What:** Replace naive project validation with a **verified contextual resolver** that ensures semantic ownership, not just referential legitimacy. The server stamps the final `project_id` on write — caller claims are inputs to validation, not trusted ownership.
+
+**Core insight:** G1/G3 validate that a project *exists*, not that it's the *right* project. A valid active project can still be the wrong project for the work. This phase closes that gap.
+
+**Resolution priority (authoritative, not heuristic):**
+```
+authoritative binding > explicit slug claim (verified) > path heuristic (advisory only) > fail_closed
+```
+
+**Never silently default to "council"** for ambiguous project work — that converts uncertainty into silent misassignment.
+
+**Files:**
+- Modify: `memory_service/store.py` — add `resolve_project_from_context()`, `workspace_bindings` table
+- Modify: `memory_service/mcp_server.py` — structured error responses
+- Create: `migrations_council_core/04c_workspace_bindings.sql` — binding table
+- Create: `memory_service/errors.py` — typed exceptions + structured error payloads
+
+### Authoritative Anchors
+
+| Anchor | Strength | Source |
+|---|---|---|
+| `work_item_id` | **Authoritative** | Already bound to project via FK |
+| `run_id` | **Authoritative** | Already bound to work_item/project via FK |
+| `workspace_bindings` table | **Authoritative** | Persisted root-path-to-project mapping |
+| `external_key` | **Authoritative** | Already validated during sync |
+| File path (raw) | **Advisory only** | Useful hint, not binding without table entry |
+| Caller-supplied `project_id` | **Claim to verify** | Must match resolved project |
+
+### Guard 6: Resolution Anchor Required for Writes
+
+**Problem:** No write may rely solely on arbitrary `project_id` unless the endpoint is explicitly system-scoped.
+
+**Implementation:**
+```python
+# store.py
+class ResolutionResult:
+    """Result of project resolution. Server uses this, not caller's claim."""
+    def __init__(
+        self,
+        project_id: str,
+        slug: str,
+        basis: str,  # "work_item_id", "run_id", "workspace_binding", "explicit_slug", "system_scope"
+        confidence: str,  # "authoritative", "verified", "heuristic", "ambiguous"
+        candidates: list = None,
+    ):
+        self.project_id = project_id
+        self.slug = slug
+        self.basis = basis
+        self.confidence = confidence
+        self.candidates = candidates or []
+
+    @property
+    def is_writable(self) -> bool:
+        """Can we write with this resolution?"""
+        return self.confidence in ("authoritative", "verified")
+
+    @property
+    def is_system_scope(self) -> bool:
+        """Is this a system-scoped operation (allowed to default to council)?"""
+        return self.basis == "system_scope"
+```
+
+### Guard 7: Anchor Agreement
+
+**Problem:** Multiple supplied anchors must resolve to the same project.
+
+**Implementation:**
+```python
+def resolve_project_from_context(
+    self,
+    work_item_id: str = None,
+    run_id: str = None,
+    file_path: str = None,
+    explicit_project_id: str = None,
+    explicit_slug: str = None,
+    is_system_operation: bool = False,
+) -> ResolutionResult:
+    """Resolve project from context. Server stamps final project_id."""
+    resolved: List[Tuple[str, str, str]] = []  # (project_id, basis, confidence)
+
+    # 1. Authoritative: work_item_id → project
+    if work_item_id:
+        row = self.db.execute(
+            "SELECT project_id FROM work_items WHERE id = ? AND is_deleted = 0",
+            (work_item_id,),
+        ).fetchone()
+        if row:
+            resolved.append((row[0], "work_item_id", "authoritative"))
+
+    # 2. Authoritative: run_id → workflow_runs → project
+    if run_id:
+        row = self.db.execute(
+            "SELECT project_id FROM workflow_runs WHERE id = ? AND is_deleted = 0",
+            (run_id,),
+        ).fetchone()
+        if row:
+            resolved.append((row[0], "run_id", "authoritative"))
+
+    # 3. Authoritative: workspace binding
+    if file_path:
+        # Walk up directory tree to find binding
+        path = Path(file_path).resolve()
+        for part in [path] + list(path.parents):
+            row = self.db.execute(
+                "SELECT project_id FROM workspace_bindings WHERE path = ?",
+                (str(part),),
+            ).fetchone()
+            if row:
+                resolved.append((row[0], "workspace_binding", "authoritative"))
+                break
+
+    # 4. Verified: explicit slug claim
+    if explicit_slug:
+        row = self.db.execute(
+            "SELECT id FROM projects WHERE slug = ? AND is_deleted = 0 AND status = 'active'",
+            (explicit_slug,),
+        ).fetchone()
+        if row:
+            resolved.append((row[0], "explicit_slug", "verified"))
+
+    # 5. Claim to verify: explicit project_id
+    if explicit_project_id:
+        # Only accept if it agrees with authoritative anchors
+        if resolved and all(r[0] == explicit_project_id for r in resolved):
+            resolved.append((explicit_project_id, "explicit_claim_verified", "verified"))
+        elif not resolved:
+            # No anchors to verify against — treat as claim
+            row = self.db.execute(
+                "SELECT id FROM projects WHERE id = ? AND is_deleted = 0 AND status = 'active'",
+                (explicit_project_id,),
+            ).fetchone()
+            if row:
+                resolved.append((explicit_project_id, "explicit_claim_unverified", "heuristic"))
+
+    # 6. System scope exception
+    if is_system_operation and not resolved:
+        row = self.db.execute(
+            "SELECT id FROM projects WHERE slug = 'council' AND is_deleted = 0",
+        ).fetchone()
+        if row:
+            resolved.append((row[0], "system_scope", "verified"))
+
+    # Resolve: check agreement
+    if not resolved:
+        return ResolutionResult(
+            project_id=None, slug=None, basis="none",
+            confidence="ambiguous", candidates=[]
+        )
+
+    # All anchors must agree
+    unique_ids = set(r[0] for r in resolved)
+    if len(unique_ids) > 1:
+        # Conflict — fail closed
+        return ResolutionResult(
+            project_id=None, slug=None, basis="conflict",
+            confidence="ambiguous",
+            candidates=[{"id": uid, "basis": [r[1] for r in resolved if r[0] == uid]} for uid in unique_ids]
+        )
+
+    # Highest confidence wins
+    best = max(resolved, key=lambda r: {"authoritative": 3, "verified": 2, "heuristic": 1}.get(r[2], 0))
+    project = self.db.execute(
+        "SELECT slug FROM projects WHERE id = ?", (best[0],),
+    ).fetchone()
+
+    return ResolutionResult(
+        project_id=best[0],
+        slug=project[0] if project else "unknown",
+        basis=best[1],
+        confidence=best[2],
+        candidates=[{"id": r[0], "basis": r[1]} for r in resolved],
+    )
+```
+
+### Guard 8: Claim Verification
+
+**Problem:** If caller supplies `project_id` or `slug`, it must match the resolved project.
+
+**Implementation:**
+```python
+# In all write methods:
+def upsert_memory_entry(self, ..., project_id: str = None, run_id: str = None, ...) -> str:
+    # Resolve from context
+    resolution = self.resolve_project_from_context(
+        run_id=run_id,
+        explicit_project_id=project_id,
+    )
+
+    if not resolution.is_writable and not resolution.is_system_scope:
+        raise ProjectResolutionError(
+            code="PROJECT_RESOLUTION_AMBIGUOUS",
+            message="Cannot determine project. Multiple candidates or no anchors.",
+            provided={"project_id": project_id, "run_id": run_id},
+            resolved=None,
+            candidates=resolution.candidates,
+            suggested_action="Provide work_item_id or run_id for authoritative resolution.",
+        )
+
+    # Verify claim matches resolution
+    if project_id and project_id != resolution.project_id:
+        raise ProjectResolutionError(
+            code="PROJECT_RESOLUTION_MISMATCH",
+            message=f"Provided project_id '{project_id}' does not match resolved project.",
+            provided={"project_id": project_id},
+            resolved={"project_id": resolution.project_id, "slug": resolution.slug, "basis": resolution.basis},
+            suggested_action=f"Retry with project_id='{resolution.project_id}' or omit to let server assign.",
+        )
+
+    # Server stamps final project_id
+    final_project_id = resolution.project_id
+    # ... proceed with INSERT using final_project_id
+```
+
+### Guard 9: Ambiguity Fail-Closed
+
+**Problem:** Multiple candidate projects means no write.
+
+**Implementation:** Already handled in `resolve_project_from_context()` — returns `confidence="ambiguous"` with candidate list. `is_writable` is `False`.
+
+### Guard 10: Server-Stamped project_id
+
+**Problem:** Persistence uses only resolved canonical `project_id`, never caller's raw claim.
+
+**Implementation:** All write methods use `resolution.project_id` (server-resolved), never `project_id` parameter directly. The parameter is treated as a claim to verify.
+
+### Guard 11: System-Scope Exception
+
+**Problem:** "Default to council" is reasonable for genuine internal system operations, dangerous as a generic fallback.
+
+**Implementation:**
+```python
+# Only these operations may use system_scope:
+SYSTEM_OPERATIONS = {
+    "upsert_summary": lambda kwargs: kwargs.get("source") in (
+        "inline-summary", "auto-detected-assistant-message"
+    ),
+    "upsert_consolidation_cache": True,  # Always system-scoped
+    "upsert_injection_blacklist": True,
+}
+
+# In MCP tool handler:
+def upsert_summary(summary_text, source="inline-summary", project_id=None, ...) -> str:
+    is_system = SYSTEM_OPERATIONS["upsert_summary"]({"source": source})
+    resolution = store.resolve_project_from_context(
+        explicit_project_id=project_id,
+        is_system_operation=is_system,
+    )
+    # System operations allowed to resolve to 'council' by default
+```
+
+### Structured Error Payload
+
+**Problem:** Current `{"error": "Project X not found"}` tells the agent what failed, not how to repair.
+
+**Implementation:**
+```python
+# memory_service/errors.py
+class ProjectResolutionError(Exception):
+    """Structured error for agent self-correction."""
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        provided: dict = None,
+        resolved: dict = None,
+        candidates: list = None,
+        suggested_action: str = None,
+        retryable: bool = True,
+    ):
+        self.payload = {
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "provided": provided or {},
+                "resolved": resolved,
+                "candidates": candidates or [],
+                "suggested_action": suggested_action,
+            }
+        }
+        super().__init__(message)
+
+# Error codes:
+# PROJECT_NOT_FOUND — requested project doesn't exist
+# PROJECT_ARCHIVED — project exists but is archived
+# PROJECT_DELETED — project is soft-deleted
+# PROJECT_RESOLUTION_AMBIGUOUS — multiple candidates, no agreement
+# PROJECT_RESOLUTION_MISMATCH — caller claim doesn't match resolved
+# PROJECT_ANCONFLICT — authoritative anchors disagree
+```
+
+**MCP tool handler:**
+```python
+@self._mcp.tool(name="upsert_summary")
+def upsert_summary(summary_text: str, source: str = "inline-summary", ...) -> str:
+    try:
+        # ... validation and write
+    except ProjectResolutionError as e:
+        return json.dumps(e.payload, indent=2)
+    except ValueError as e:
+        return json.dumps({
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": str(e),
+                "retryable": False,
+            }
+        }, indent=2)
+```
+
+### workspace_bindings Table
+
+```sql
+-- migrations_council_core/04c_workspace_bindings.sql
+CREATE TABLE IF NOT EXISTS workspace_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    binding_type TEXT NOT NULL DEFAULT 'workspace_root'
+        CHECK (binding_type IN ('workspace_root', 'project_root', 'vendor_root')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now')),
+    created_by TEXT NOT NULL DEFAULT 'system',
+    UNIQUE(path, project_id)
+);
+
+-- Seed: current known workspaces
+INSERT OR IGNORE INTO workspace_bindings (path, project_id, binding_type)
+VALUES
+    ('/home/chief/Coding-Projects/7-council', 'afee346a-0de1-4683-afcf-914a417c553c', 'workspace_root'),
+    ('/home/chief/llm-wiki', 'afee346a-0de1-4683-afcf-914a417c553c', 'project_root');
+```
+
+**Steps:**
+1. Create `workspace_bindings` table + seed current workspaces
+2. Add `ResolutionResult` class to `store.py`
+3. Add `resolve_project_from_context()` method
+4. Add `ProjectResolutionError` exception class
+5. Update all write methods to call resolver before validation
+6. Replace raw `ValueError` strings with typed exceptions
+7. Update MCP tool handlers to return structured error JSON
+
+**Tests:**
+- [ ] `resolve_project_from_context(work_item_id=...)` returns authoritative resolution
+- [ ] `resolve_project_from_context(run_id=...)` returns authoritative resolution
+- [ ] `resolve_project_from_context(file_path=...)` uses workspace_bindings
+- [ ] Two anchors with different projects → `confidence="ambiguous"`, `is_writable=False`
+- [ ] Caller `project_id` mismatches resolved → `PROJECT_RESOLUTION_MISMATCH`
+- [ ] No anchors, no explicit → `confidence="ambiguous"`, fail closed
+- [ ] System operation with no anchors → resolves to "council" (system_scope)
+- [ ] Non-system operation with no anchors → fail closed (no silent default)
+- [ ] Structured error payload has all fields: code, message, retryable, provided, resolved, candidates, suggested_action
+- [ ] MCP tool returns structured error JSON (not raw string)
+
+**Dependencies:** A1.5 (G1–G5 must be in place first).
+
+---
+
 ## Phase A2: Fix entry_type Semantics
 
 **What:** Rename `diary` → `summary` for agent-produced entries; reserve `diary` for Arc output; add `consolidation` type.
@@ -470,11 +833,15 @@ def ensure_workflow_run(self, run_id: str, work_item_id: str, project_id: str, .
 | Action | File | Purpose |
 |--------|------|---------|
 | Create | `migrations_council_core/04_drop_zombie_tables.sql` | DROP 14 deprecated tables |
+| Create | `migrations_council_core/04b_add_constraints.sql` | UNIQUE indexes for G2, G4 |
+| Create | `migrations_council_core/04c_workspace_bindings.sql` | workspace_bindings table + seed |
 | Create | `migrations_council_core/05_fix_entry_types.sql` | Rename diary→summary, add consolidation |
 | Create | `migrations_council_core/06_enforce_source_run_id.sql` | Add project_id, backfill, enforce FKs |
+| Create | `memory_service/errors.py` | Typed exceptions + structured error payloads |
 | Create | `tests/test_data_topology.py` | Orphan detection, FK integrity, write path tests |
-| Modify | `memory_service/store.py` | CHECK constraint, new columns, validation |
-| Modify | `memory_service/mcp_server.py` | New params on upsert_summary() |
+| Create | `tests/test_relationalstore_guards.py` | Guard 1-11 unit tests |
+| Modify | `memory_service/store.py` | CHECK constraint, new columns, _validate_project(), guards, resolver |
+| Modify | `memory_service/mcp_server.py` | resolve_project() tool, new params, structured errors |
 | Modify | `memory_service/__main__.py` | If CLI needs new params |
 
 ---
