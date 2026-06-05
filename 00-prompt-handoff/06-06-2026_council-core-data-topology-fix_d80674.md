@@ -102,12 +102,14 @@
 ```
 Phase A1: Drop zombie tables         Phase A2: Fix entry_type semantics
   ↓                                      ↓
-Phase A3: Enforce source_run_id       Phase A4: Tests + verification
-  ↓
-Phase A5: Production wiring (memory service restart, poller check)
+Phase A1.5: RelationalStore Guards    Phase A3: Enforce source_run_id
+  ↓                                      ↓
+Phase A4: Tests + verification        Phase A5: Production wiring
 ```
 
 Phases A1 and A2 are independent — can run in parallel.
+Phase A1.5 depends on A1 (tables must be clean before adding constraints).
+Phase A3 depends on A1.5 (guards must be in place before backfill).
 
 ---
 
@@ -135,6 +137,170 @@ Phases A1 and A2 are independent — can run in parallel.
 - [ ] `python3 -m memory_service` starts without import errors
 
 **Dependencies:** None.
+
+---
+
+## Phase A1.5: RelationalStore Guards (Deduplication + Validation)
+
+**What:** Add five RelationalStore-level guards to prevent duplicate projects, orphaned work items, misassignment, and duplicate runs. All guards are write-time enforcement in `store.py` — every DB write routes through RelationalStore.
+
+**Why RelationalStore?** It is the **single write boundary** for council_core.db. All callers route here:
+- MCP tools (`mcp_server.py`) → `self._store.*()`
+- HTTP endpoints (`http_endpoints.py`) → `store.*()`
+- Arc pipeline (`arc_summarizer/pipeline.py`) → `self._relational_store.*()`
+- ContextRouter (`router.py`) → `self._store.*()` (reads only)
+- DB poller (`db_poller.py`) → direct `store.db` (FTS indexing only)
+
+**Files:**
+- Modify: `memory_service/store.py` — add guards to all write methods
+- Create: `migrations_council_core/04b_add_constraints.sql` — UNIQUE indexes
+- Modify: `memory_service/mcp_server.py` — expose `resolve_project()` tool
+
+### Guard 1: `resolve_project()` — Only Project Creation Path
+
+**Problem:** `get_or_create_project()` exists but is never called. No application-level deduplication.
+
+**Implementation:**
+```python
+# store.py — rename and harden
+def resolve_project(self, slug: str, name: str = None) -> Dict[str, Any]:
+    """Get existing project by slug or create one. ONLY creation path."""
+    row = self.db.execute(
+        "SELECT id, slug, name, status FROM projects "
+        "WHERE slug = ? AND is_deleted = 0",
+        (slug,),
+    ).fetchone()
+    if row:
+        return dict(row)
+    project_id = str(uuid.uuid4())
+    now = self._now_iso()
+    label = name or slug
+    self.db.execute(
+        """INSERT INTO projects (id, slug, name, status, created_at, updated_at,
+           updated_by, updated_source, origin_source)
+           VALUES (?, ?, ?, 'active', ?, ?, 'system', 'council_core', 'council_core')""",
+        (project_id, slug, label, now, now),
+    )
+    self.db.commit()
+    return {"id": project_id, "slug": slug, "name": label, "status": "active"}
+```
+
+**MCP tool:**
+```python
+# mcp_server.py
+@self._mcp.tool(name="resolve_project")
+def resolve_project(slug: str, name: str = None) -> str:
+    """Get or create a project by slug. Returns project_id for use in other tools."""
+    project = self._store.resolve_project(slug, name)
+    return json.dumps({"project_id": project["id"], "slug": project["slug"]})
+```
+
+### Guard 2: UNIQUE Index on (project_id, title) for Work Items
+
+**Problem:** Same work item can be created multiple times in the same project.
+
+**Implementation:**
+```sql
+-- migrations_council_core/04b_add_constraints.sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_project_title
+ON work_items(project_id, title) WHERE is_deleted = 0;
+```
+
+```python
+# store.py — create_work_item() becomes get_or_create_work_item()
+def get_or_create_work_item(self, project_id: str, kind: str, title: str, ...) -> Dict[str, Any]:
+    """Get existing work item or create one. Dedup by (project_id, title)."""
+    row = self.db.execute(
+        "SELECT id, project_id, kind, title FROM work_items "
+        "WHERE project_id = ? AND title = ? AND is_deleted = 0",
+        (project_id, title),
+    ).fetchone()
+    if row:
+        return dict(row)
+    # ... proceed with INSERT (unique index catches race conditions)
+```
+
+### Guard 3: Semantic Project Validation (Prevent Misassignment)
+
+**Problem:** Valid project_id can be wrong contextually (e.g., "council" vs "test-project").
+
+**Implementation:**
+```python
+# store.py — add to create_work_item(), upsert_memory_entry(), etc.
+def _validate_project(self, project_id: str) -> Dict[str, Any]:
+    """Validate project exists, is active, not deleted. Raises ValueError on failure."""
+    project = self.db.execute(
+        "SELECT id, slug, name, status, is_deleted FROM projects WHERE id = ?",
+        (project_id,),
+    ).fetchone()
+    if not project:
+        raise ValueError(f"Project {project_id} not found")
+    if project['is_deleted']:
+        raise ValueError(f"Project {project_id} is soft-deleted")
+    if project['status'] == 'archived':
+        raise ValueError(f"Project {project_id} ({project['slug']}) is archived")
+    return dict(project)
+```
+
+**Apply to all write methods that accept project_id:**
+- `create_work_item()` → call `_validate_project(project_id)` first
+- `upsert_memory_entry()` → if project_id provided, validate
+- `create_review()` → call `_validate_project(project_id)` first
+- `create_workflow_run()` → call `_validate_project(project_id)` first
+
+### Guard 4: One Running Run Per Work Item
+
+**Problem:** Multiple workflow runs can be created for the same work item simultaneously.
+
+**Implementation:**
+```sql
+-- migrations_council_core/04b_add_constraints.sql
+-- Partial index: only enforces uniqueness for running runs
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_active
+ON workflow_runs(work_item_id) WHERE run_state = 'running' AND is_deleted = 0;
+```
+
+```python
+# store.py — in ensure_workflow_run()
+def ensure_workflow_run(self, run_id: str, work_item_id: str, project_id: str, ...) -> None:
+    """Ensure a workflow run exists. Prevents duplicate running runs."""
+    # Check for existing running run
+    existing = self.db.execute(
+        "SELECT id FROM workflow_runs "
+        "WHERE work_item_id = ? AND run_state = 'running' AND is_deleted = 0",
+        (work_item_id,),
+    ).fetchone()
+    if existing and existing[0] != run_id:
+        raise ValueError(
+            f"Work item {work_item_id} already has a running run: {existing[0]}"
+        )
+    # ... proceed with INSERT
+```
+
+### Guard 5: Memory Entry Project Scoping (from Phase A3)
+
+**Problem:** 167 memory_entries have NULL project_id.
+
+**Implementation:** Covered in Phase A3. This phase adds the validation that A3 backfills against.
+
+**Steps:**
+1. Run `04b_add_constraints.sql` against council_core.db
+2. Add `_validate_project()` method to RelationalStore
+3. Add `resolve_project()` MCP tool
+4. Update `create_work_item()` → `get_or_create_work_item()` with dedup
+5. Add `_validate_project()` calls to all project-scoped write methods
+6. Add `ensure_workflow_run()` duplicate-run check
+
+**Tests:**
+- [ ] `resolve_project("council")` returns existing project (no duplicate)
+- [ ] `resolve_project("new-slug")` creates new project
+- [ ] `get_or_create_work_item()` returns existing on duplicate (project_id, title)
+- [ ] `_validate_project(nonexistent_uuid)` raises ValueError
+- [ ] `_validate_project(archived_project_id)` raises ValueError
+- [ ] Two concurrent `ensure_workflow_run()` for same work_item → second fails
+- [ ] UNIQUE indexes enforced (direct INSERT with duplicate fails)
+
+**Dependencies:** A1 (tables must be clean before adding constraints).
 
 ---
 
