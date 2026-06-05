@@ -248,10 +248,10 @@ def _validate_project(self, project_id: str) -> Dict[str, Any]:
 ```
 
 **Apply to all write methods that accept project_id:**
-- `create_work_item()` → call `_validate_project(project_id)` first
-- `upsert_memory_entry()` → if project_id provided, validate
-- `create_review()` → call `_validate_project(project_id)` first
-- `create_workflow_run()` → call `_validate_project(project_id)` first
+- `create_work_item()` → resolve project from work_item_id anchor
+- `upsert_memory_entry()` → resolve project from run_id/work_item_id anchors, verify caller claims, stamp canonical project_id
+- `create_review()` → resolve project from work_item_id anchor
+- `create_workflow_run()` → resolve project from work_item_id anchor
 
 ### Guard 4: One Running Run Per Work Item
 
@@ -286,14 +286,14 @@ def ensure_workflow_run(self, run_id: str, work_item_id: str, project_id: str, .
 
 **Problem:** 167 memory_entries have NULL project_id.
 
-**Implementation:** Covered in Phase A3. This phase adds the validation that A3 backfills against.
+**Implementation:** Covered in Phase A3. This phase establishes the resolver-first contract that A3 enforces on all writes.
 
 **Steps:**
 1. Run `04b_add_constraints.sql` against council_core.db
-2. Add `_validate_project()` method to RelationalStore
+2. Add `_validate_project()` method to RelationalStore (called by resolver after anchor resolution)
 3. Add `resolve_project()` MCP tool
 4. Update `create_work_item()` → `get_or_create_work_item()` with dedup
-5. Add `_validate_project()` calls to all project-scoped write methods
+5. Add resolver-first calls to all project-scoped write methods (resolve from anchors, verify claims, stamp canonical project_id)
 6. Add `ensure_workflow_run()` duplicate-run check
 
 **Tests:**
@@ -542,23 +542,34 @@ def upsert_memory_entry(self, ..., project_id: str = None, run_id: str = None, .
 
 **Implementation:**
 ```python
-# Only these operations may use system_scope:
+# Narrow allowlist: only truly internal/cache-like writes may default to council.
+# Ordinary summary writes (inline-summary, auto-detected) are NOT system-scoped
+# unless provably internal (e.g., system health checks, internal diagnostics).
 SYSTEM_OPERATIONS = {
-    "upsert_summary": lambda kwargs: kwargs.get("source") in (
-        "inline-summary", "auto-detected-assistant-message"
-    ),
-    "upsert_consolidation_cache": True,  # Always system-scoped
-    "upsert_injection_blacklist": True,
+    "upsert_consolidation_cache": True,   # Internal cache, no user content
+    "upsert_injection_blacklist": True,   # Internal guard, no user content
+    "upsert_phase_names": True,            # Internal registry
+    "upsert_event_types": True,            # Internal registry
+    "upsert_outcome_types": True,          # Internal registry
+    "upsert_severity_levels": True,        # Internal registry
 }
 
-# In MCP tool handler:
-def upsert_summary(summary_text, source="inline-summary", project_id=None, ...) -> str:
-    is_system = SYSTEM_OPERATIONS["upsert_summary"]({"source": source})
+# upsert_summary is NOT system-scoped — it carries user/agent content.
+# It requires anchors (run_id, work_item_id) or explicit project resolution.
+def upsert_summary(summary_text, source="inline-summary", project_id=None, run_id=None, ...) -> str:
     resolution = store.resolve_project_from_context(
-        explicit_project_id=project_id,
-        is_system_operation=is_system,
+        run_id=run_id,
+        explicit_project_id=project_id,  # Claim to verify
+        is_system_operation=False,        # Never system-scoped for content writes
     )
-    # System operations allowed to resolve to 'council' by default
+    if not resolution.is_writable:
+        raise ProjectResolutionError(
+            code="PROJECT_RESOLUTION_AMBIGUOUS",
+            message="Summary writes require a project anchor. Provide run_id or resolve_project(slug) first.",
+            provided={"project_id": project_id, "run_id": run_id},
+            candidates=resolution.candidates,
+            suggested_action="Call resolve_project(slug) to get project_id, or provide run_id.",
+        )
 ```
 
 ### Structured Error Payload
@@ -712,13 +723,13 @@ VALUES
 
 ## Phase A3: Enforce source_run_id at Write Time (Resolver-First)
 
-**What:** All write paths route through `resolve_project_from_context()` (A1.6) before validation. No direct raw parameter validation. The resolver is the mandatory write contract — every write must pass through it.
+**What:** All write paths resolve project from authoritative anchors, verify caller claims, stamp canonical project_id, and persist authoritative source_run_id only. The resolver is the mandatory write contract — every write must pass through it.
 
 **Invariant:** No write path may persist caller-supplied `project_id` directly. The server stamps the final `project_id` from the resolution result.
 
 **Files:**
 - Modify: `memory_service/mcp_server.py` — add `project_id`, `run_id` params to `upsert_summary()`
-- Modify: `memory_service/store.py` — resolver-first validation in `upsert_memory_entry()`
+- Modify: `memory_service/store.py` — resolver-first in `upsert_memory_entry()` (resolve anchors, verify claims, stamp canonical project_id)
 - Create: `migrations_council_core/06_enforce_source_run_id.sql` (ALTER TABLE + backfill)
 
 **Steps:**
@@ -752,22 +763,22 @@ VALUES
        project_id: str = None,  # Claim to verify, not trusted
        run_id: str = None,       # Anchor for resolution
    ) -> str:
-       # Resolver-first: server resolves project from anchors
-       is_system = source in ("inline-summary", "auto-detected-assistant-message")
+       # Resolver-first: resolve project from authoritative anchors
+       # Summary writes are NOT system-scoped — they carry user/agent content
        resolution = store.resolve_project_from_context(
            run_id=run_id,
            explicit_project_id=project_id,  # Treated as claim, not truth
-           is_system_operation=is_system,
+           is_system_operation=False,        # Content writes require anchors
        )
 
        # Fail closed on ambiguity (no silent default)
-       if not resolution.is_writable and not resolution.is_system_scope:
+       if not resolution.is_writable:
            raise ProjectResolutionError(
                code="PROJECT_RESOLUTION_AMBIGUOUS",
-               message="Cannot determine project. Provide run_id or work_item_id.",
+               message="Summary writes require a project anchor. Provide run_id or resolve_project(slug) first.",
                provided={"project_id": project_id, "run_id": run_id},
                candidates=resolution.candidates,
-               suggested_action="Call resolve_project(slug) first, or provide run_id.",
+               suggested_action="Call resolve_project(slug) to get project_id, or provide run_id.",
            )
 
        # Verify claim matches resolution
@@ -855,7 +866,8 @@ VALUES
 3. Verify health: `curl http://127.0.0.1:18096/health`
 4. Trigger poller cycle: verify FTS indexes are consistent
 5. End-to-end test:
-   - Call `upsert_summary("test entry", source="inline-summary", project_id="afee346a...")`
+   - Call `resolve_project("council")` → get project_id
+   - Call `upsert_summary("test entry", source="inline-summary", run_id="review-...")` → verify anchored
    - Verify entry in `memory_entries` with correct `entry_type`, `project_id`, `source_run_id`
    - Call `recall.unified("test entry")` — verify it's found
    - Verify FTS search works: `memory_entries_fts MATCH 'test entry'`
@@ -915,7 +927,7 @@ VALUES
 - [ ] 14 zombie tables dropped from both DBs
 - [ ] `entry_type` correctly categorized (raw/summary/diary/consolidation)
 - [ ] All 167 memory_entries have project_id set
-- [ ] `upsert_summary()` accepts and validates project_id + run_id
+- [ ] `upsert_summary()` resolves project from anchors, verifies caller claims, stamps canonical project_id, persists authoritative source_run_id only
 - [ ] Zero orphaned entries (every row traceable to a project)
 - [ ] FTS indexes consistent with table data
 - [ ] Memory service starts, poller runs, health check passes
