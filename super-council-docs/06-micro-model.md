@@ -237,6 +237,27 @@ event_window_summaries (
 - **Context handoff:** Enrichment data included in `ContextRouter.get_run_snapshot()`
 - **MCP tools:** `summarize_artifact`, `classify_failure` exposed via MCP server (SSE `:18097`, HTTP `:18098`)
 - **memory-service:** Initialized in `MemoryService._init_components()`, passed to `MemoryMCPHandler`
+- **Analytics:** Embedding requests logged via `memory_service/analytics.py` for usage telemetry
+
+### Analytics Integration
+
+All embedding requests (MemSearch, UnifiedVectorStore) are logged to `~/.council-memory/analytics/` with:
+- Query text (truncated to 200 chars for privacy)
+- Latency in milliseconds
+- Result count
+- Source (memsearch, unified_recall, etc.)
+- Project ID (if filtered)
+- Error message (if failed)
+
+**Purpose:** Inform caching decisions. If >50% of queries are repeated within 5 minutes, implement LRU cache.
+
+**Summary:**
+```python
+from super_council.memory_service import analytics
+summary = analytics.get_analytics_summary(days_back=7)
+print(f"Requests: {summary['embedding_requests']['total']}")
+print(f"Avg latency: {summary['embedding_requests']['avg_latency_ms']:.1f}ms")
+```
 
 ### Model Loading Details
 

@@ -402,6 +402,78 @@ Assistant message (auto-detected, scored >= 4)
 | `onnxruntime` | (via memsearch) | ONNX embedding inference |
 | `pymilvus` | (via memsearch) | Milvus client library |
 
+## UnifiedVectorStore (Added 2026-06-05)
+
+> Project-scoped vector indexing with server-side filtering. Indexes session_diary + consolidation_cache into Milvus.
+
+**Location:** `memory_service/vector_store.py`
+**Status:** Wired into memory-service, auto re-index on startup
+
+### Why UnifiedVectorStore?
+
+MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (session_diary entries, consolidation_cache) that doesn't exist as files.
+
+| Feature | MemSearch | UnifiedVectorStore |
+|---------|-----------|-------------------|
+| **Source** | Files on disk | SQLite rows |
+| **Filtering** | Client-side | Server-side (project_id, source) |
+| **Re-index** | Manual `index_file()` | Auto on startup + triggers |
+| **Embedding** | pplx-embed-v1 on :18099 | pplx-embed-v1 on :18099 |
+| **Storage** | Milvus-lite | Milvus-lite |
+
+### Usage
+
+```python
+from super_council.memory_service.vector_store import UnifiedVectorStore
+
+store = UnifiedVectorStore(
+    embedding_url="http://127.0.0.1:18099/v1",
+    milvus_uri="~/.memsearch/milvus.db",
+)
+
+# Index a document
+store.index(
+    source="session_diary",
+    source_id="summary-123",
+    text="Decided to use FTS5 for search",
+    project_id="council"
+)
+
+# Search with server-side filters
+results = store.search(
+    query="embedding consolidation",
+    top_k=10,
+    project_id="council",  # Server-side filter
+    source="session_diary"  # Optional source filter
+)
+
+# Re-index existing data
+indexed = store.reindex_existing_data(db_connection)
+# Re-indexed 13 entries into UnifiedVectorStore
+```
+
+### Analytics Logging
+
+All embedding requests are logged to `~/.council-memory/analytics/` for usage telemetry.
+
+```python
+from super_council.memory_service import analytics
+
+analytics.log_embedding_request(
+    query="test query",
+    latency_ms=150.5,
+    result_count=3,
+    source="memsearch",
+    project_id="test-project"
+)
+
+# Get summary
+summary = analytics.get_analytics_summary(days_back=7)
+# {"embedding_requests": {"total": 5, "avg_latency_ms": 120.0, ...}}
+```
+
+**Decision point:** Monitor 48-72h. If >50% repeated queries within 5min → implement LRU cache.
+
 ## Health & Diagnostics
 
 ```bash

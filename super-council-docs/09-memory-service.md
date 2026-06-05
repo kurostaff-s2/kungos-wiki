@@ -26,12 +26,15 @@
 │  │ (writes)     │  │ (recall)     │  │ (slices)     │      │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
 │         │                 │                 │               │
-│  ┌──────┴───────┐  ┌──────┴───────┐               │        │
-│  │ Review       │  │ MemIndex     │               │        │
-│  │ Service      │  │ (vector)     │               │        │
-│  │ (reviews)    │  │ └→ MemSearch │               │        │
-│  │              │  │   (owned)    │               │        │
-│  └──────────────┘  └──────────────┘               │        │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌────┴───────┐       │
+│  │ Review       │  │ MemIndex     │  │ Unified    │       │
+│  │ Service      │  │ (vector)     │  │ Vector     │       │
+│  │ (reviews)    │  │ └→ MemSearch │  │ Store      │       │
+│  │              │  │   (owned)    │  │ (project-  │       │
+│  └──────────────┘  └──────────────┘  │  scoped)   │       │
+│                                      │ └→ Milvus  │       │
+│                                      │  + pplx    │       │
+│                                      └────────────┘       │
 │                                                    │        │
 │  ┌─────────────────────────────────────────────────┐│        │
 │  │  HTTP Endpoints (http_endpoints.py)             ││        │
@@ -90,9 +93,11 @@ token budget formatting, client-side type filtering.
 
 3. **Single source of truth** — One `RelationalStore` (writes), one `ContextRouter` (recall), one `MemoryLayer` (slices), one `ReviewService` (reviews). No duplicate data paths.
 
-4. **Graceful degradation** — `MemIndex` (memsearch) and optional `linter`/`enricher` degrade gracefully when unavailable.
+4. **Graceful degradation** — `MemIndex` (memsearch), `UnifiedVectorStore`, and optional `linter`/`enricher` degrade gracefully when unavailable.
 
 5. **Transport extracted to memory_service** — SSE transport, retry queue, and backoff logic moved from memory_service into a standalone `memory_service` package. memory_service becomes a stateless HTTP backend. memory_service handles connection management, tool proxying, and failure recovery independently.
+
+6. **FTS5 + vector hybrid search** — Keyword search uses FTS5 MATCH (stemming, ranking). Vector search uses pplx-embed-v1 on :18099 with Milvus-lite. Analytics logging informs caching decisions. See [14-recall-search-fine-tuning.md](14-recall-search-fine-tuning.md).
 
 ---
 

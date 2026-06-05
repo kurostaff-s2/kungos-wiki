@@ -17,6 +17,7 @@
 | 09 | [Memory Service](09-memory-service.md) | MemoryService architecture, FastMCP server, 22 tools, 7 resources, unified_log_recall, tool matrix |
 | 10 | [Code Graph](10-codegraph.md) | CodeGraphStore API, 12 MCP tools, FTS5 search, call graph traversal, cross-DB JOINs with memory layer |
 | 11 | [MemSearch](11-memsearch.md) | MemIndex vector indexing, Milvus-lite schema, hybrid search, raw session memory pipeline, direct text upsert |
+| 14 | [Recall Search Fine-Tuning](14-recall-search-fine-tuning.md) | FTS5 indexes, analytics logging, UnifiedVectorStore, project filtering, verification |
 
 ## Plans & Analysis
 
