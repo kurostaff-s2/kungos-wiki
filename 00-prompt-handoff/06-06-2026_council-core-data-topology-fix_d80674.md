@@ -710,13 +710,15 @@ VALUES
 
 ---
 
-## Phase A3: Enforce source_run_id at Write Time
+## Phase A3: Enforce source_run_id at Write Time (Resolver-First)
 
-**What:** Make `upsert_summary` accept `project_id` and `run_id`; validate and store them; backfill existing entries.
+**What:** All write paths route through `resolve_project_from_context()` (A1.6) before validation. No direct raw parameter validation. The resolver is the mandatory write contract — every write must pass through it.
+
+**Invariant:** No write path may persist caller-supplied `project_id` directly. The server stamps the final `project_id` from the resolution result.
 
 **Files:**
 - Modify: `memory_service/mcp_server.py` — add `project_id`, `run_id` params to `upsert_summary()`
-- Modify: `memory_service/store.py` — add validation in `upsert_memory_entry()`
+- Modify: `memory_service/store.py` — resolver-first validation in `upsert_memory_entry()`
 - Create: `migrations_council_core/06_enforce_source_run_id.sql` (ALTER TABLE + backfill)
 
 **Steps:**
@@ -726,41 +728,85 @@ VALUES
    ```
 2. Backfill existing entries:
    ```sql
-   -- All existing entries are from the council project
+   -- All existing entries are from the council project (system-scoped)
    UPDATE memory_entries SET project_id = 'afee346a-0de1-4683-afcf-914a417c553c'
    WHERE project_id IS NULL;
    ```
 3. For `source_run_id`: since none are set, backfill based on `created_at` matching nearest `workflow_runs.started_at`:
    ```sql
-   -- Best-effort: link to most recent active run at time of creation
+   -- INFERRED provenance: temporal matching is best-effort, not authoritative
+   -- Mark as low-confidence: origin_source='temporal-backfill', confidence='inferred'
    UPDATE memory_entries SET source_run_id = (
        SELECT id FROM workflow_runs
        WHERE started_at <= memory_entries.created_at
        ORDER BY started_at DESC LIMIT 1
-   ) WHERE source_run_id IS NULL;
+   ), origin_source = 'temporal-backfill'
+   WHERE source_run_id IS NULL;
    ```
-4. Update `upsert_summary()` MCP tool:
+   **Provenance marking:** All temporal backfills are flagged as `inferred` confidence. They are advisory links, not authoritative truth. Future writes with real anchors supersede them.
+4. Update `upsert_summary()` MCP tool — **resolver-first, not direct validation**:
    ```python
    def upsert_summary(
        summary_text: str,
        source: str = "inline-summary",
-       project_id: str = None,
-       run_id: str = None,
+       project_id: str = None,  # Claim to verify, not trusted
+       run_id: str = None,       # Anchor for resolution
    ) -> str:
+       # Resolver-first: server resolves project from anchors
+       is_system = source in ("inline-summary", "auto-detected-assistant-message")
+       resolution = store.resolve_project_from_context(
+           run_id=run_id,
+           explicit_project_id=project_id,  # Treated as claim, not truth
+           is_system_operation=is_system,
+       )
+
+       # Fail closed on ambiguity (no silent default)
+       if not resolution.is_writable and not resolution.is_system_scope:
+           raise ProjectResolutionError(
+               code="PROJECT_RESOLUTION_AMBIGUOUS",
+               message="Cannot determine project. Provide run_id or work_item_id.",
+               provided={"project_id": project_id, "run_id": run_id},
+               candidates=resolution.candidates,
+               suggested_action="Call resolve_project(slug) first, or provide run_id.",
+           )
+
+       # Verify claim matches resolution
+       if project_id and project_id != resolution.project_id:
+           raise ProjectResolutionError(
+               code="PROJECT_RESOLUTION_MISMATCH",
+               message=f"Claimed project_id '{project_id}' does not match resolved '{resolution.slug}'.",
+               provided={"project_id": project_id},
+               resolved={"project_id": resolution.project_id, "slug": resolution.slug, "basis": resolution.basis},
+               suggested_action=f"Retry with project_id='{resolution.project_id}' or omit to let server assign.",
+           )
+
+       # Server stamps final project_id (never caller's raw claim)
+       final_project_id = resolution.project_id
+       final_source_run_id = run_id  # Only from authoritative anchor, never inferred
+
+       cache_id = store.upsert_memory_entry(
+           entry_type=resolve_entry_type(source),
+           body=summary_text,
+           project_id=final_project_id,       # Server-stamped
+           source_run_id=final_source_run_id, # From anchor
+           source=source,
+       )
    ```
-5. Add validation:
-   - If `run_id` provided → `SELECT 1 FROM workflow_runs WHERE id=?` (fail if not found)
-   - If `project_id` provided → `SELECT 1 FROM projects WHERE id=?` (fail if not found)
-   - If neither → log warning, allow (for global system notes)
-6. Update `upsert_memory_entry()` to accept and store `project_id` and `source_run_id`
+5. Update `upsert_memory_entry()` — **resolver-first semantics**:
+   - `project_id` is always server-stamped from `ResolutionResult.project_id`
+   - `source_run_id` is only set from authoritative anchors (`run_id`, `work_item_id`)
+   - Temporal backfills are marked `origin_source='temporal-backfill'`, `confidence='inferred'`
+   - **No direct raw parameter validation** — all validation flows through resolver
 
 **Tests:**
 - [ ] All 167 entries now have `project_id` set
-- [ ] `upsert_summary(run_id="nonexistent")` fails with FK error
-- [ ] `upsert_summary(project_id="nonexistent")` fails with FK error
-- [ ] `upsert_summary()` without params still works (global entry)
+- [ ] `upsert_summary(run_id="nonexistent")` fails with `PROJECT_RESOLUTION_AMBIGUOUS`
+- [ ] `upsert_summary(project_id="nonexistent")` fails with `PROJECT_NOT_FOUND`
+- [ ] Only system-scoped writes may omit anchors (non-system → fail closed)
+- [ ] Temporal backfills are marked `origin_source='temporal-backfill'`, `confidence='inferred'`
+- [ ] No write path persists caller-supplied `project_id` directly (invariant test)
 
-**Dependencies:** A1 (tables must be clean first).
+**Dependencies:** A1.6 (resolver must be in place before A3).
 
 ---
 
@@ -823,6 +869,10 @@ VALUES
 - [ ] All 167 existing entries have project_id set
 - [ ] All existing tests still pass (no regression)
 - [ ] No orphaned entries (project_id IS NOT NULL for all)
+- [ ] Only system-scoped writes succeed without anchors (non-system → fail closed)
+- [ ] Temporal backfills marked `origin_source='temporal-backfill'`, `confidence='inferred'`
+- [ ] No write path persists caller-supplied `project_id` directly (invariant verified)
+- [ ] Structured error payloads contain all fields: code, message, retryable, provided, resolved, candidates, suggested_action
 
 **Dependencies:** A1–A4 complete.
 
@@ -850,7 +900,10 @@ VALUES
 
 - **No data loss:** All 167 existing memory_entries must survive migration
 - **FK enforcement:** No INSERT with invalid project_id or source_run_id
-- **Backward compatibility:** `upsert_summary()` without new params must still work (global entries)
+- **Resolver-first contract:** All write paths route through `resolve_project_from_context()` — no direct raw parameter validation
+- **No caller-supplied project_id persisted:** Server stamps final `project_id` from resolution result; caller claims are inputs to verification only
+- **System-scope exception:** Only explicitly declared system operations may map to "council" by default; all other writes fail closed on ambiguity
+- **Temporal backfill is inferred:** `source_run_id` from temporal matching is marked `origin_source='temporal-backfill'`, `confidence='inferred'` — advisory, not authoritative
 - **FTS consistency:** FTS indexes must match table counts after migration
 - **memory.db deprecation:** No new writes to memory.db; reads from it return empty
 - **Migration idempotency:** All SQL migrations must be safe to re-run
@@ -874,11 +927,12 @@ VALUES
 
 ## Caveats & Uncertainty
 
-1. **source_run_id backfill is best-effort** — temporal matching (nearest workflow_run by created_at) may produce incorrect links. These should be flagged as `origin_source='temporal-backfill'` for manual review.
+1. **source_run_id backfill is inferred, not authoritative** — temporal matching (nearest workflow_run by created_at) may produce incorrect links. All backfills are flagged as `origin_source='temporal-backfill'`, `confidence='inferred'`. They are advisory provenance, not authoritative truth. Future writes with real anchors supersede them.
 2. **Arc pipeline not fixed in this handoff** — Option B covers Arc redirection. This handoff only fixes the foundation.
 3. **memory.db not deleted** — deprecated but retained until Arc pipeline is fully migrated to council_core.
 4. **sessions/notes/documents still unscoped** — Option B adds project_id to these tables. They remain global for now.
 5. **No ON DELETE CASCADE added** — soft-delete (`is_deleted=1`) is the current policy. Adding CASCADE would be a separate decision.
+6. **Resolver-first is mandatory** — A1.6 is the write contract for all later phases. No write path may bypass `resolve_project_from_context()`. Direct raw parameter validation is prohibited.
 
 ---
 
