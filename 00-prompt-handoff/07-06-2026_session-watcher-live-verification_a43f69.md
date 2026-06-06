@@ -1,15 +1,15 @@
-# Session Watcher Live Verification & Performance Analysis
+# Session Watcher — Runtime Event Verification
 
 | Field | Value |
 |-------|-------|
 | Project ID | `super-council` |
 | Primary entity ID | `a43f69` |
 | Entity type | `session` |
-| Short description | Verify SessionWatcher end-to-end performance by processing this session's Pi JSONL and measuring actual runtime behavior |
+| Short description | Trigger real runtime events through production paths and verify actual behavior in logs, database, and file system — no test scripts |
 | Status | `draft` |
 | Source references | `06-06-2026_session-summarization-flexible-reconciliation_59130b.md`, `memory_service/session_watcher.py` |
 | Generated | `07-06-2026` |
-| Next action / owner | Next session agent — run live verification against current session JSONL |
+| Next action / owner | Next session agent — trigger real events, observe actual runtime behavior |
 
 ## Project Context
 
@@ -30,256 +30,268 @@
 1. **SessionAnalyzer** → called before every summarization (mode-aware prompts)
 2. **Activity/token tracking** → pushed into scheduler on each chat completion
 3. **Event hints** → scheduler wakes on diary/chat summary saves
-4. **Summaries → reconciliation** → already wired in ArcPipeline
-5. **SessionWatcher** → new component that watches Pi JSONL sessions, parses them, classifies, trims, and feeds into reconciliation
+4. **Summaries → reconciliation** → wired in ArcPipeline
+5. **SessionWatcher** → watches Pi JSONL sessions, parses, classifies, trims, feeds into reconciliation
 
-**What needs verification:** The next agent should process **this session's JSONL file** through the full pipeline and measure actual performance, not just run unit tests.
+**What needs verification:** Trigger real events through production paths and observe actual runtime behavior. No test scripts, no mocks — just real production interaction.
+
+## Approach: Observe, Don't Test
+
+**Do NOT run pytest or test scripts.** The 118 tests already pass. Instead:
+
+1. **Trigger real events** through actual production HTTP endpoints
+2. **Observe actual behavior** in logs, database state, and file system changes
+3. **Verify the chain works** with real data flowing through real paths
+4. **Measure actual latency** from real requests, not synthetic benchmarks
 
 ## Pre-Flight Checklist
 
-- [ ] SessionWatcher code is merged/available in `memory_service/session_watcher.py`
-- [ ] All 118 tests pass (baseline: no regressions)
+- [ ] Supervisor process is running (check `curl http://127.0.0.1:8090/v1/council/status` or equivalent)
+- [ ] MemoryService database is accessible at `~/.council-memory/council_core.db`
 - [ ] Pi session JSONL files exist in `~/.pi/agent/sessions/`
-- [ ] MemoryService can be loaded (database accessible)
+- [ ] Recent supervisor logs are available (check `~/.council-memory/supervisor-logs/` or journal)
 
-## Task: Live Runtime Verification
+## Task: Runtime Event Verification
 
-### Step 1: Identify This Session's JSONL
+### Step 1: Baseline — Capture Pre-Event State
+
+Record the system state before triggering any events:
 
 ```bash
-# Find the latest session (should be this session)
-ls -lt ~/.pi/agent/sessions/--home-chief--/*.jsonl | head -3
+# Database state: count existing work items and diary entries
+sqlite3 ~/.council-memory/council_core.db "SELECT count(*) FROM work_items;"
+sqlite3 ~/.council-memory/council_core.db "SELECT count(*) FROM session_diary;"
+sqlite3 ~/.council-memory/council_core.db "SELECT count(*) FROM memory_entries;"
+
+# File system state: note latest chat summary and diary files
+ls -lt ~/.council-memory/chat-summaries/ | head -3
+ls -lt ~/.council-memory/daily/ | head -3
+
+# Process state: check supervisor is running
+ps aux | grep super_council | grep -v grep
+
+# Log state: note current log position
+tail -5 ~/.council-memory/supervisor-logs/*.log 2>/dev/null || journalctl -u council-supervisor --no-pager -n 5 2>/dev/null
 ```
 
-The target file should be the most recent JSONL, likely matching today's date (2026-06-07). Verify it contains the conversation about production wiring (search for "SessionWatcher" or "session_watcher" in the file).
+### Step 2: Trigger Real Chat Completion → Observe Activity Tracking
 
-### Step 2: Process Through Full Pipeline
+Send a real chat completion through the production endpoint and verify activity/tokens are pushed to the scheduler:
 
-Run the SessionWatcher against the target JSONL and capture all metrics:
+```bash
+# Send a real chat completion (use any model available)
+curl -s -X POST http://127.0.0.1:8090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4",
+    "messages": [
+      {"role": "user", "content": "What files were modified in the session summarization wiring task?"}
+    ],
+    "max_tokens": 256
+  }' | python3 -m json.tool | head -20
 
-```python
-import time
-import json
-from pathlib import Path
-from super_council.memory_service.session_watcher import SessionWatcher
+# Immediately check: did the log show activity tracking?
+# Look for: "scheduler._record_activity" or "_add_tokens" in logs
+grep -i "record_activity\|add_tokens\|_last_activity" ~/.council-memory/supervisor-logs/*.log 2>/dev/null | tail -5
 
-jsonl_path = Path("/path/to/target/session.jsonl")
-watcher = SessionWatcher()
-
-# Measure full pipeline
-start = time.monotonic()
-
-# Step A: Parse
-parse_start = time.monotonic()
-turns = watcher._parse_jsonl(jsonl_path)
-parse_ms = (time.monotonic() - parse_start) * 1000
-
-# Step B: Classify
-classify_start = time.monotonic()
-mode = watcher._classify(turns)
-classify_ms = (time.monotonic() - classify_start) * 1000
-
-# Step C: Trim
-trim_start = time.monotonic()
-trimmed = watcher._trim_session(turns, mode, jsonl_path)
-trim_ms = (time.monotonic() - trim_start) * 1000
-
-# Step D: Reconciliation text
-recon_start = time.monotonic()
-recon_text = watcher._trimmed_to_text(trimmed)
-recon_ms = (time.monotonic() - recon_start) * 1000
-
-total_ms = (time.monotonic() - start) * 1000
-
-# Report
-signals = watcher._count_signals(trimmed)
-print(f"""
-=== Performance Report ===
-File: {jsonl_path.name}
-Size: {jsonl_path.stat().st_size / 1024:.1f} KB
-Messages: {len(turns)}
-
---- Timing ---
-Parse:     {parse_ms:.1f}ms
-Classify:  {classify_ms:.1f}ms
-Trim:      {trim_ms:.1f}ms
-Reconcile: {recon_ms:.1f}ms
-Total:     {total_ms:.1f}ms
-
---- Output ---
-Mode: {mode}
-Signals: {signals}
-Recon text: {len(recon_text)} chars
-""")
+# Alternative: check the health endpoint for live scheduler state
+curl -s http://127.0.0.1:8090/v1/council/health 2>/dev/null | python3 -m json.tool 2>/dev/null | grep -A5 "adaptive_triggers\|event_hints"
 ```
 
-### Step 3: Verify Design Expectations
+**Expected evidence:** Log lines showing `_record_activity()` and `_add_tokens()` called after the request. Health check showing `last_activity_age_seconds` < 60.
 
-Compare actual output against the design spec's expectations:
+### Step 3: Trigger Real Session Summary → Observe Analyzer + Event Hint
 
-| Design Expectation | Verification Check |
-|---|---|
-| Raw JSONL stays as source of truth (read-only) | Confirm JSONL file is unmodified after processing |
-| Trimmed summary has 12-field schema | Assert all 12 fields present in `trimmed` dict |
-| Session mode detected correctly | Verify mode matches session content (this session = code/planning mix) |
-| Task-bearing signals preserved | Count signals > 0, verify files/functions/decisions detected |
-| ARC receives trimmed summary (not raw) | Verify `recon_text` is structured, not raw JSONL dump |
-| Reconciliation writes canonical records | Verify `reconcile_tasks()` is called with trimmed input |
+Trigger a real session summary and verify the analyzer runs before summarization, and the event hint wakes the scheduler:
 
-### Step 4: Verify Production Wiring Points
+```bash
+# Trigger real session summary through production endpoint
+curl -s -X POST http://127.0.0.1:8090/v1/council/summarize \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool | head -20
 
-Check each of the 5 wired components is actually callable from production paths:
+# Check logs for: analyzer classification, event hint wake
+grep -i "SessionAnalyzer\|session_mode\|session analyzed\|_wake\|event_hint\|daily_summary_saved" ~/.council-memory/supervisor-logs/*.log 2>/dev/null | tail -10
 
-```python
-# 1. Analyzer wired into ArcSummarizer
-from super_council.arc_summarizer import ArcSummarizer, ArcConfig
-# Verify summarize_session() calls analyzer (check source or add debug log)
+# Check if a new diary entry was created
+sqlite3 ~/.council-memory/council_core.db "SELECT count(*) FROM session_diary ORDER BY created_at DESC LIMIT 1;"
 
-# 2. Activity tracking wired into handle_chat_completion
-# Check super_council.py for scheduler._record_activity() call
-
-# 3. Event hints wired into memory service
-# Check memory_service/__init__.py for _wake_scheduler() calls
-
-# 4. Summaries flow into reconciliation
-# Check ArcPipeline.run_tiered_consolidation() calls reconcile_tasks()
-
-# 5. Health check reports live state
-from super_council.memory_service import MemoryService
-ms = MemoryService.load()
-health = ms.health_check()
-# Verify: live_mode, live_scores, last_activity_age_seconds, current_token_count
+# Check if a new chat summary file was created
+ls -lt ~/.council-memory/chat-summaries/ | head -3
 ```
 
-### Step 5: Process Multiple Sessions
+**Expected evidence:**
+- Log line: `Session analyzed: mode=code scores={...}`
+- Log line: `_wake_scheduler("daily_summary_saved")` or `_handle_event_hint`
+- New row in `session_diary` table
+- New file in `chat-summaries/` directory
 
-Process at least 3 recent sessions to verify consistency:
+### Step 4: Trigger Real Chat Summary → Observe Full Chain
 
-```python
-sessions_dir = Path("~/.pi/agent/sessions/--home-chief--").expanduser()
-jsonl_files = sorted(sessions_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+Trigger a real chat summary (the Pi /quit hook path) and verify the full chain:
 
-results = []
-for jsonl in jsonl_files:
-    watcher = SessionWatcher()
-    turns = watcher._parse_jsonl(jsonl)
-    if len(turns) < 2:
-        continue
-    mode = watcher._classify(turns)
-    trimmed = watcher._trim_session(turns, mode, jsonl)
-    signals = watcher._count_signals(trimmed)
-    results.append({
-        "file": jsonl.name,
-        "size_kb": jsonl.stat().st_size / 1024,
-        "messages": len(turns),
-        "mode": mode,
-        "signals": signals,
-    })
+```bash
+# Trigger real chat summary through production endpoint
+# This exercises the _summarize_chat() path with analyzer + event hint
+curl -s -X POST http://127.0.0.1:8090/v1/council/summarize-chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "Check the session watcher implementation"},
+      {"role": "assistant", "content": "The SessionWatcher is in memory_service/session_watcher.py. It parses JSONL, classifies sessions, and feeds trimmed summaries into reconciliation."}
+    ]
+  }' | python3 -m json.tool | head -30
 
-# Report distribution
-print(f"Processed {len(results)} sessions:")
-for r in results:
-    print(f"  {r['mode']:10s} | {r['messages']:3d} msgs | {r['signals']:2d} signals | {r['size_kb']:6.1f}KB")
+# Check logs for full chain: analyze → summarize → save → upsert → wake
+grep -i "summarize\|chat_summary\|upsert_session_diary\|_wake_scheduler\|chat_summary_saved" ~/.council-memory/supervisor-logs/*.log 2>/dev/null | tail -10
+
+# Verify new diary entry
+sqlite3 ~/.council-memory/council_core.db "SELECT id, source, length(summary_text) as len FROM session_diary ORDER BY created_at DESC LIMIT 3;"
 ```
 
-### Step 6: Verify Scheduler Integration
+**Expected evidence:**
+- Log: `Session analyzed: mode=code` (analyzer ran before summarization)
+- Log: `CHAT SUMMARY: saved to /path/...` (summary saved)
+- Log: `_wake_scheduler("chat_summary_saved")` (event hint fired)
+- Log: `upsert_session_diary` → `_wake_scheduler("daily_summary_saved")` (chain continued)
+- New row in `session_diary` with the summary content
 
-Confirm the scheduler receives event hints and reacts:
+### Step 5: Observe SessionWatcher Processing Real JSONL
 
-```python
-from super_council.memory_service import MemoryService
-ms = MemoryService.load()
+The SessionWatcher runs as a background daemon. Verify it's processing real sessions:
 
-# Check scheduler state
-scheduler = ms.scheduler
-if scheduler:
-    print(f"Scheduler thread alive: {scheduler._thread.is_alive()}")
-    print(f"Last activity age: {time.time() - scheduler._last_activity:.1f}s")
-    print(f"Token count: {scheduler._get_token_count()}")
-    print(f"Event score: {scheduler._get_event_score()}")
-    print(f"Wake cooldown: {scheduler._wake_cooldown}")
-else:
-    print("Scheduler: unavailable")
+```bash
+# Check if the session watcher thread is running
+ps aux | grep -i "session.watcher\|session-watcher" | grep -v grep
 
-# Check session watcher
-watcher = ms.session_watcher
-if watcher:
-    print(f"SessionWatcher running: {watcher._running}")
-    print(f"SessionWatcher stats: {watcher.stats()}")
-else:
-    print("SessionWatcher: unavailable")
+# Check logs for session watcher activity
+grep -i "SessionWatcher\|session.*watcher\|processing.*jsonl\|parsed.*turns\|classified as" ~/.council-memory/supervisor-logs/*.log 2>/dev/null | tail -20
+
+# Check database for any work items created from session processing
+sqlite3 ~/.council-memory/council_core.db "SELECT id, title, kind, first_seen_run_id FROM work_items ORDER BY created_at DESC LIMIT 5;"
+
+# Check if reconciliation ran (look for reconcile_tasks in logs)
+grep -i "reconcile\|reconciliation\|arc_delta\|task.*reconcil" ~/.council-memory/supervisor-logs/*.log 2>/dev/null | tail -10
 ```
+
+**Expected evidence:**
+- Log: `SessionWatcher started (JSONL → trim → reconcile active)`
+- Log: `SessionWatcher: processing <filename> (N messages, X.XKB)`
+- Log: `SessionWatcher: classified as <mode>`
+- Log: `SessionWatcher: completed <filename> (mode=X, N signals)`
+- New work_items in database from session processing
+
+### Step 6: Verify Health Check Reports Live State
+
+Check the health endpoint and verify it reports actual live state, not just capability:
+
+```bash
+# Get full health check response
+curl -s http://127.0.0.1:8090/v1/council/health 2>/dev/null | python3 -m json.tool
+
+# Specifically check: live_mode, live_scores, last_activity_age, current_token_count, thread_alive
+# These should have real values, not static strings like "wired"
+```
+
+**Expected evidence:**
+- `live_mode`: actual mode string (e.g., "code"), not "unavailable"
+- `live_scores`: actual score dict from real classification
+- `last_activity_age_seconds`: real number (seconds since last activity)
+- `current_token_count`: actual accumulated token count
+- `thread_alive`: true (scheduler thread running)
+- `last_wake_age_seconds`: real number (seconds since last wake)
+
+### Step 7: Verify Reconciliation Wrote Canonical Records
+
+Check the database for actual reconciliation output:
+
+```bash
+# Check work_items for entries from session processing
+sqlite3 ~/.council-memory/council_core.db "
+  SELECT id, title, kind, status, first_seen_run_id, source_summary_id
+  FROM work_items
+  ORDER BY created_at DESC
+  LIMIT 10;
+"
+
+# Check session_diary for entries from session processing
+sqlite3 ~/.council-memory/council_core.db "
+  SELECT id, source, length(summary_text) as text_len, created_at
+  FROM session_diary
+  ORDER BY created_at DESC
+  LIMIT 5;
+"
+
+# Check memory_entries for consolidation entries
+sqlite3 ~/.council-memory/council_core.db "
+  SELECT id, entry_type, tier, title, source
+  FROM memory_entries
+  ORDER BY created_at DESC
+  LIMIT 5;
+"
+```
+
+**Expected evidence:**
+- Work items with `source_summary_id` pointing to session files
+- Session diary entries with summaries from real sessions
+- Memory entries with `entry_type='diary'` from consolidation
 
 ## Success Criteria
 
-- [ ] Target JSONL identified and contains this session's conversation
-- [ ] Full pipeline timing captured (parse, classify, trim, reconcile)
-- [ ] Total pipeline time < 5 seconds for sessions under 1MB
-- [ ] Session mode correctly detected (this session should be `code` or `mixed`)
-- [ ] At least 5 task-bearing signals extracted from this session
-- [ ] Trimmed summary contains all 12 schema fields
-- [ ] Reconciliation text is structured (not raw JSONL dump)
-- [ ] All 5 production wiring points verified callable
-- [ ] Health check reports live state (not just capability presence)
-- [ ] At least 3 sessions processed with consistent results
-- [ ] Scheduler thread alive and responsive
-- [ ] SessionWatcher running and tracking processed files
-- [ ] No regressions in existing 118 tests
+- [ ] Real chat completion triggered → activity tracking visible in logs
+- [ ] Real session summary triggered → analyzer classification visible in logs
+- [ ] Real chat summary triggered → full chain visible (analyze → save → upsert → wake)
+- [ ] SessionWatcher processing real JSONL → log evidence of parse/classify/trim
+- [ ] Health check reports live values (not static "wired" strings)
+- [ ] Database has new records from real event processing (work_items, session_diary)
+- [ ] No errors in supervisor logs during event triggering
+- [ ] JSONL files remain unmodified (read-only verification)
 
-## Expected Outcomes
+## Evidence Collection Template
 
-### This Session's Profile
+For each event triggered, record:
 
-Based on the conversation content (production wiring discussion, code changes, test results):
+```markdown
+### Event: [event name]
+**Trigger:** [command/endpoint used]
+**Timestamp:** [when it was triggered]
 
-- **Expected mode:** `code` or `mixed` (heavy code references + planning signals)
-- **Expected signals:** 15-30 (file paths, function names, decisions, completed work)
-- **Expected files detected:** `session_watcher.py`, `analyzer.py`, `__init__.py`, `super_council.py`, `scheduler.py`
-- **Expected decisions:** analyzer wiring, event hint wiring, health check enhancement
-
-### Performance Baselines
-
-| Operation | Expected Range | Notes |
-|-----------|----------------|-------|
-| Parse (100 msgs) | 10-50ms | JSON parsing, text extraction |
-| Classify | 5-20ms | Regex signal counting |
-| Trim | 10-30ms | Pattern matching on raw text |
-| Reconcile text build | <1ms | Dict → string formatting |
-| Total pipeline | <100ms | For sessions under 100 messages |
-
-## Deliverables
-
-Produce a verification report with:
-
-1. **Performance numbers** — actual timing for each pipeline stage
-2. **Signal quality** — what was detected, what was missed, false positives
-3. **Mode accuracy** — was the session classified correctly? Why/why not?
-4. **Wiring verification** — pass/fail for each of the 5 production points
-5. **Health check output** — actual live health check response
-6. **Multi-session consistency** — mode distribution, signal counts across 3+ sessions
-7. **Issues found** — any gaps, bugs, or performance problems discovered
-
-Save the report to:
+**Log Evidence:**
 ```
-/home/chief/llm-wiki/00-prompt-handoff/07-06-2026_session-watcher-verification-report_[hash].md
+[paste relevant log lines]
+```
+
+**Database Evidence:**
+```
+[sqlite3 query output showing new/changed records]
+```
+
+**File System Evidence:**
+```
+[ls output showing new files]
+```
+
+**Verdict:** PASS / FAIL — [reason]
 ```
 
 ## Constraints
 
+- **No test scripts:** Use real HTTP endpoints and observe real logs/database/files
 - **Read-only on JSONL:** Never modify Pi's session files
-- **Non-blocking:** Pipeline must complete in <5 seconds for sessions under 1MB
-- **Graceful degradation:** Missing components (pipeline, scheduler) should not crash the watcher
-- **Idempotent:** Processing the same JSONL twice should produce the same trimmed output
-- **No model calls for classification:** SessionAnalyzer uses regex/heuristics only (no LLM)
+- **Non-destructive:** Do not delete or modify existing database records
+- **Use real endpoints:** Hit the actual production supervisor, not mocked versions
 
-## Caveats & Uncertainty
+## Deliverables
 
-1. **Session content varies widely:** Code sessions have clear signals; research/planning sessions may produce lower signal counts. This is expected — the 12-field schema handles sparse signals.
+Save a runtime verification report to:
+```
+/home/chief/llm-wiki/00-prompt-handoff/07-06-2026_runtime-event-verification-report_[hash].md
+```
 
-2. **Thinking blocks included:** Pi sessions include `[thinking]` content. This adds noise but also contains useful signals (decisions, analysis). The classifier should handle this correctly.
-
-3. **Tool results are nested:** Tool output appears as nested content blocks. The `_extract_text()` method handles recursion, but deeply nested structures may lose some context.
-
-4. **Reconciliation needs live database:** Full reconciliation verification requires the MemoryService with a live RelationalStore. If unavailable, verify the pipeline calls are made (mock the store).
-
-5. **Scheduler state is ephemeral:** Token counts and event scores reset after summarization fires. The health check shows point-in-time state, not historical totals.
+Include:
+1. **Pre-event baseline** — database counts, file listing, process state
+2. **Event-by-event evidence** — logs, database changes, file changes for each triggered event
+3. **Health check output** — full JSON response with live values highlighted
+4. **Database diff** — new records created during verification
+5. **Issues found** — any gaps, missing log lines, unexpected behavior
+6. **Pass/fail summary** — each of the 5 wiring points verified or not
