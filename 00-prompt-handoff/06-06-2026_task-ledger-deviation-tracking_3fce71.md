@@ -227,6 +227,9 @@ All phases are sequential. No parallel fan-out — each phase depends on prior s
 - **Confidence gates auto-apply** — high confidence (>0.8) auto-applies; medium (0.5-0.8) flags for review; low (<0.5) requires human confirmation.
 - **Both databases updated** — migrations apply to `council_core.db` and `pipelines.db`.
 - **No zombie tables** — all writes route through `memory_entries` / `work_items` / `plan_deviations` (not `session_diary` or `consolidation_cache`).
+- **carry_forward is typed JSON, not TEXT blobs** — bounded schema: `{kind, text, priority, source_entry_id, expires_after_tier}`. No freeform prose persistence.
+- **Carry-forward accumulation is capped** — max 5 items per tier; items must be explicit unresolved work, risk, or continuity notes; items expire after 2 same-tier cycles unless reasserted. This is a Phase 1 rule, not a caveat.
+- **Bimonthly tier is an experiment gate** — implemented but treated as provisional. If first post-deployment verification run produces thin or empty output, drop bimonthly and promote `weekly` to top tier. Default assumption: weekly is the de facto top useful tier unless bimonthly proves otherwise.
 
 ---
 
@@ -252,6 +255,7 @@ All phases are sequential. No parallel fan-out — each phase depends on prior s
 3. **Dedup accuracy:** Title normalization + fuzzy matching may produce false merges (different tasks with similar titles) or false negatives (same task with different phrasing). Confidence scoring mitigates but doesn't eliminate.
 4. **Database consistency:** Two databases (`council_core.db` and `pipelines.db`) must stay in sync. Consider consolidating to one database in a future migration.
 5. **Performance:** Reconciliation runs after every consolidation. If consolidations are frequent, reconciliation must be fast (<500ms per run).
+6. **Bimonthly tier is provisional** — implemented as experiment gate. If first verification run is thin/empty, drop to weekly-top-tier. This is a hard decision, not a revisit trigger.
 
 ---
 
@@ -260,3 +264,6 @@ All phases are sequential. No parallel fan-out — each phase depends on prior s
 - **Status model:** 7 states chosen based on proposal, but 4 states (`open`, `blocked`, `done`, `wont_do`) cover 90% of cases. Build all 7 now to avoid migration later.
 - **Deviation types:** 3 types (`planned`, `unplanned`, `optimization`) instead of proposed 4. `emergency` is a subset of `unplanned` with higher severity, not a distinct type.
 - **Dedup key:** Compound identity (`normalized_title + project_id + optional_subsystem`) is the reconciliation key. Subsystem is optional — if not provided, falls back to title + project_id only.
+- **carry_forward is typed JSON:** Bounded schema `{kind, text, priority, source_entry_id, expires_after_tier}` — no freeform TEXT blobs. Ages better than stringly-typed persistence.
+- **Carry-forward safeguards are Phase 1 rules:** Max 5 items per tier; items must be explicit unresolved work, risk, or continuity notes; items expire after 2 same-tier cycles unless reasserted. This prevents the carry-forward channel from becoming a second source of compression pollution.
+- **Bimonthly is an experiment gate:** Implemented but treated as provisional. If first post-deployment verification run produces thin (<3 meaningful entries) or empty output, drop bimonthly and promote `weekly` to top tier. Default assumption: weekly is the de facto top useful tier unless bimonthly proves otherwise. This keeps the pyramid from preserving an expensive, low-yield stage purely out of symmetry.

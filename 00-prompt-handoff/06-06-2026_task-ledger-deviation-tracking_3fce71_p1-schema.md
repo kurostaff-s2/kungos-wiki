@@ -124,7 +124,34 @@ CREATE TABLE IF NOT EXISTS plan_deviations_events (
 CREATE INDEX IF NOT EXISTS idx_deviations_events_deviation_id ON plan_deviations_events(deviation_id);
 ```
 
-**1d. Create `work_item_events` table (for status transition audit trail):**
+**1d. Create `carry_forward` table (typed structured payload, not TEXT blobs):**
+```sql
+CREATE TABLE IF NOT EXISTS carry_forward (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    tier TEXT NOT NULL CHECK (tier IN ('daily','short','weekly','bimonthly')),
+    kind TEXT NOT NULL CHECK (kind IN ('unresolved_work','risk','continuity_note','decision_pending','blocker')),  -- bounded enum, not freeform
+    text TEXT NOT NULL,  -- the carry-forward content
+    priority TEXT CHECK (priority IN ('low','medium','high','critical')),
+    source_entry_id TEXT,  -- provenance: which consolidation entry produced this item
+    expires_after_tier INTEGER NOT NULL DEFAULT 2,  -- expires after N same-tier cycles unless reasserted
+    ttl_runs INTEGER,  -- alternative: expires after N runs regardless of tier
+    is_reasserted INTEGER NOT NULL DEFAULT 0,  -- was this item explicitly reasserted in a later cycle?
+    reasserted_at TEXT,  -- when was it last reasserted?
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','consumed')),
+    is_deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_carry_forward_project_tier ON carry_forward(project_id, tier);
+CREATE INDEX IF NOT EXISTS idx_carry_forward_expires ON carry_forward(expires_after_tier, is_reasserted);
+
+-- Constraint: max 5 active carry-forward items per (project_id, tier)
+-- Enforced at application layer (RelationalStore), not SQL (SQLite lacks row-level triggers for this pattern)
+```
+
+**1e. Create `work_item_events` table (for status transition audit trail):**
 ```sql
 CREATE TABLE IF NOT EXISTS work_item_events (
     event_id TEXT PRIMARY KEY,
@@ -141,7 +168,7 @@ CREATE TABLE IF NOT EXISTS work_item_events (
 CREATE INDEX IF NOT EXISTS idx_work_item_events_task_id ON work_item_events(task_id);
 ```
 
-**1e. Create `work_item_sources` table (for multi-run provenance):**
+**1f. Create `work_item_sources` table (for multi-run provenance):**
 ```sql
 CREATE TABLE IF NOT EXISTS work_item_sources (
     source_id TEXT PRIMARY KEY,
@@ -183,6 +210,70 @@ def link_work_item_source(self, task_id: str, run_id: str, source_type: str, exc
 
 def get_work_item_events(self, task_id: str) -> List[Dict[str, Any]]:
     """Get all events for a work item."""
+```
+
+**3c. Carry-forward methods (typed, bounded, capped):**
+```python
+def upsert_carry_forward(self, project_id: str, tier: str, kind: str, text: str, priority: str = 'medium', source_entry_id: str = None, expires_after_tier: int = 2) -> Dict[str, Any]:
+    """Create or reassert a carry-forward item.
+    Enforces: max 5 active items per (project_id, tier).
+    Enforces: kind must be in bounded enum.
+    Enforces: expires_after_tier defaults to 2 same-tier cycles.
+    """
+    # Check cap: max 5 active items per (project_id, tier)
+    active_count = self.db.execute(
+        "SELECT COUNT(*) FROM carry_forward "
+        "WHERE project_id = ? AND tier = ? AND status = 'active' AND is_deleted = 0",
+        (project_id, tier),
+    ).fetchone()[0]
+    if active_count >= 5:
+        # Expire the oldest item to make room
+        self.db.execute(
+            "UPDATE carry_forward SET status = 'expired' "
+            "WHERE project_id = ? AND tier = ? AND status = 'active' AND is_deleted = 0 "
+            "ORDER BY created_at ASC LIMIT 1",
+            (project_id, tier),
+        )
+        self.db.commit()
+
+    item_id = str(uuid.uuid4())
+    now = self._now_iso()
+    self.db.execute(
+        "INSERT INTO carry_forward (id, project_id, tier, kind, text, priority, source_entry_id, expires_after_tier, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (item_id, project_id, tier, kind, text, priority, source_entry_id, expires_after_tier, now, now),
+    )
+    self.db.commit()
+    return {'id': item_id, 'project_id': project_id, 'tier': tier, 'kind': kind, 'text': text}
+
+def expire_carry_forward(self, project_id: str, tier: str, cycles_since_reassert: int = 2) -> int:
+    """Expire carry-forward items that haven't been reasserted within their TTL.
+    Returns number of items expired.
+    """
+    # Items expire after N same-tier cycles unless reasserted
+    cutoff = datetime.now(IST) - timedelta(days=cycles_since_reassert * 7)  # rough estimate
+    self.db.execute(
+        "UPDATE carry_forward SET status = 'expired' "
+        "WHERE project_id = ? AND tier = ? AND status = 'active' AND is_deleted = 0 "
+        "AND (is_reasserted = 0 OR reasserted_at < ?)",
+        (project_id, tier, cutoff.isoformat()),
+    )
+    self.db.commit()
+    return self.db.changes()
+
+def get_active_carry_forward(self, project_id: str, tier: str) -> List[Dict[str, Any]]:
+    """Get active carry-forward items for a project+tier.
+    Returns at most 5 items (enforced at insert time).
+    """
+    rows = self.db.execute(
+        "SELECT id, project_id, tier, kind, text, priority, source_entry_id, expires_after_tier, is_reasserted, created_at, updated_at "
+        "FROM carry_forward "
+        "WHERE project_id = ? AND tier = ? AND status = 'active' AND is_deleted = 0 "
+        "ORDER BY priority DESC, created_at DESC "
+        "LIMIT 5",
+        (project_id, tier),
+    ).fetchall()
+    return [dict(r) for r in rows]
 ```
 
 **3b. Deviation methods:**
@@ -232,6 +323,10 @@ Run `PRAGMA table_info` on all new/modified tables in both databases. Verify:
 4. **Deviation CRUD works:** Create → update → query deviation → verify all fields
 5. **Event logging works:** Log status transition → query events → verify event is recorded
 6. **Source linkage works:** Link work item to source run → query sources → verify linkage
+7. **Carry-forward cap enforced:** Insert 6 items for same (project_id, tier) → only 5 active, oldest expired
+8. **Carry-forward kind is bounded:** Insert with invalid kind → CHECK constraint fails
+9. **Carry-forward expiration works:** Create item with expires_after_tier=2 → after 2 cycles without reassert → status = 'expired'
+10. **Carry-forward is typed JSON:** Verify all fields are structured (kind, text, priority, source_entry_id, expires_after_tier) — no freeform TEXT blobs
 
 ---
 

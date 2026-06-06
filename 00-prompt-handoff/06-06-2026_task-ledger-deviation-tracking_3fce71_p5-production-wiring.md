@@ -287,6 +287,7 @@ def check_reconciliation_status():
 - [ ] All integration tests pass (`pytest super_council/memory_service/test_reconciliation.py -v`)
 - [ ] All existing tests still pass (no regression)
 - [ ] Health check includes reconciliation status
+- [ ] **Bimonthly experiment gate verified:** First post-deployment bimonthly run produces non-empty, non-thin output. If output is thin (<3 meaningful entries) or empty, drop bimonthly tier and promote `weekly` to top tier. This is a hard decision, not a revisit trigger.
 
 ---
 
