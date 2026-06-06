@@ -43,9 +43,9 @@ re-chunk → SHA-256 hash each chunk
 
 | Feature | Intended (Upstream) | Our Usage |
 |---------|---|---|
-| **Source** | Persistent `.md` files in `.memsearch/memory/` | `/tmp/trace-*` (deleted after index) + real files |
-| **Sync** | `memsearch watch` — live file watcher | Manual `index_file()` calls, no watcher |
-| **Dedup** | SHA-256 hash — skips unchanged chunks | No dedup — re-embeds every time |
+| **Source** | Persistent `.md` files in `.memsearch/memory/` | `index_staging/` (persistent) + real files |
+| **Sync** | `memsearch watch` — live file watcher | SqliteIndexer (30s poll) + manual `index_file()` |
+| **Dedup** | SHA-256 hash — skips unchanged chunks | ✅ Content-based (file unchanged → skip) |
 | **Recall** | 3-layer progressive (search → expand → transcript) | Single-layer search only (`top_k=5`) |
 | **Compact** | `memsearch compact` — LLM summarization | Not used |
 | **Expand** | `memsearch expand <hash>` — full section | Not used |
@@ -54,13 +54,14 @@ re-chunk → SHA-256 hash each chunk
 
 ```
 super_council.py
-  └── memory_service.indexer.*    (Python API)
+  └── memory_service.indexer.*    (Python API — files)
         └── MemIndex              (owns lifecycle, config, locking)
               └── MemSearch       (external package, owned by memory service only)
                     └── MilvusStore (Milvus-lite, local *.db file)
-```
-
-**Location:** `memory_service/index.py` (MemIndex), `memory_service/memsearch_wrapper.py` (ProjectAwareMemSearch)
+  └── memory_service._poller.*    (Python API — DB rows)
+        └── SqliteIndexer         (exports rows → staging → memsearch)
+              └── MemSearch.index() (public API, content-based dedup)
+                    └── MilvusStore (same collection, hybrid search)
 
 ### Components
 
@@ -190,11 +191,10 @@ raw_text → upsert_raw_session_memory() → DB (raw_session_memories)
 
 | Gap | Impact | Fix |
 |-----|--------|-----|
-| **Live watcher** | Manual `index_file()` calls needed everywhere | `memsearch watch ~/.council-memory/traces/` |
-| **SHA-256 dedup** | Re-embeds identical content every session | Use persistent `.md` files + watch |
+| **Live watcher (DB)** | SqliteIndexer polls every 30s | Acceptable — DB changes are infrequent |
 | **Progressive recall** | Only get chunk snippets, not full context | L2 `expand` + L3 `transcript` |
 | **Compact** | Old chunks accumulate forever | `memsearch compact` on schedule |
-| **Source of truth** | `/tmp/trace-*` deleted after index | Persistent `.md` files in `~/.council-memory/traces/` |
+| **Session traces** | `raw_session_memories` uses temp files | Persistent `.md` files in `~/.council-memory/traces/` |
 
 ## Milvus Schema
 
@@ -402,9 +402,10 @@ Assistant message (auto-detected, scored >= 4)
 | `onnxruntime` | (via memsearch) | ONNX embedding inference |
 | `pymilvus` | (via memsearch) | Milvus client library |
 
-## UnifiedVectorStore (Added 2026-06-05)
+## UnifiedVectorStore (Added 2026-06-05, Updated 2026-06-06)
 
 > Project-scoped vector indexing with server-side filtering. Indexes session_diary + consolidation_cache into Milvus.
+> Dedup via `_source_exists()` — skips already-indexed (source, source_id) pairs.
 
 **Location:** `memory_service/vector_store.py`
 **Status:** Wired into memory-service, auto re-index on startup
@@ -413,13 +414,14 @@ Assistant message (auto-detected, scored >= 4)
 
 MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (session_diary entries, consolidation_cache) that doesn't exist as files.
 
-| Feature | MemSearch | UnifiedVectorStore |
-|---------|-----------|-------------------|
-| **Source** | Files on disk | SQLite rows |
-| **Filtering** | Client-side | Server-side (project_id, source) |
-| **Re-index** | Manual `index_file()` | Auto on startup + triggers |
-| **Embedding** | pplx-embed-v1 on :18099 | pplx-embed-v1 on :18099 |
-| **Storage** | Milvus-lite | Milvus-lite |
+| Feature | MemSearch | SqliteIndexer | UnifiedVectorStore |
+|---------|-----------|---------------|-------------------|
+| **Source** | Files on disk | SQLite rows → staging `.md` | SQLite rows (direct) |
+| **Dedup** | chunk_hash (content) | File content match | `_source_exists()` check |
+| **Filtering** | Client-side | N/A (uses MemSearch) | Server-side (project_id, source) |
+| **Re-index** | Manual `index_file()` | 30s poll, skips unchanged | Auto on startup, dedup-aware |
+| **Embedding** | ONNX bge-m3 | pplx-embed-v1 on :18099 | pplx-embed-v1 on :18099 |
+| **Storage** | Milvus-lite | Milvus-lite (same) | Milvus-lite (separate collection) |
 
 ### Usage
 

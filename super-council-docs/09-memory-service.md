@@ -26,15 +26,15 @@
 │  │ (writes)     │  │ (recall)     │  │ (slices)     │      │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
 │         │                 │                 │               │
-│  ┌──────┴───────┐  ┌──────┴───────┐  ┌────┴───────┐       │
-│  │ Review       │  │ MemIndex     │  │ Unified    │       │
-│  │ Service      │  │ (vector)     │  │ Vector     │       │
-│  │ (reviews)    │  │ └→ MemSearch │  │ Store      │       │
-│  │              │  │   (owned)    │  │ (project-  │       │
-│  └──────────────┘  └──────────────┘  │  scoped)   │       │
-│                                      │ └→ Milvus  │       │
-│                                      │  + pplx    │       │
-│                                      └────────────┘       │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌─────────────┐  ┌────┴───────┐       │
+│  │ Review       │  │ MemIndex     │  │ SqliteIndexer│  │ Unified    │       │
+│  │ Service      │  │ (vector)     │  │ (DB→md→ms)  │  │ Vector     │       │
+│  │ (reviews)    │  │ └→ MemSearch │  │ └→ staging  │  │ Store      │       │
+│  │              │  │   (owned)    │  │   + memsearch│  │ (project-  │       │
+│  └──────────────┘  └──────────────┘  └─────────────┘  │  scoped)   │       │
+│                                                       │ └→ Milvus  │       │
+│                                                       │  + pplx    │       │
+│                                                       └────────────┘       │
 │                                                    │        │
 │  ┌─────────────────────────────────────────────────┐│        │
 │  │  HTTP Endpoints (http_endpoints.py)             ││        │
@@ -402,14 +402,40 @@ service.health_check()
 - All writes route through RelationalStore public methods
 - Input validation through OutputGate
 
-### MemIndex (Vector Indexing)
+### MemIndex (Vector Indexing — Files)
 
-**Full documentation:** [11-memsearch.md](11-memsearch.md) — MemSearch architecture, Milvus schema, indexing pipeline, direct text upsert.
+**Full documentation:** [11-memsearch.md](11-memsearch.md) — MemSearch architecture, Milvus schema, indexing pipeline.
 
-- Wraps memsearch for project-aware indexing
+- Wraps memsearch for project-aware file indexing
 - File type inference: `code`, `spec`, `doc`, `review`
 - Graceful degradation when memsearch unavailable
 - Fire-and-forget with `fcntl.flock()` (released on process death)
+
+### SqliteIndexer (Vector Indexing — Database Rows)
+
+**Added:** 2026-06-06
+**Location:** `memory_service/sqlite_indexer.py`
+**Replaces:** DbIndexPoller (deleted, was frozen 2026-06-06)
+
+Exports SQLite rows to markdown staging files, then indexes via memsearch's public API.
+
+| Feature | DbIndexPoller (old) | SqliteIndexer (new) |
+|---------|---------------------|---------------------|
+| **API** | `ms._embed_and_store()` (private) | `ms.index()` (public) |
+| **Dedup** | SQLite `is_indexed` flag | Content-based (file unchanged → skip) |
+| **Stale cleanup** | ❌ Never removes deleted rows | ✅ Deleted files → removed chunks |
+| **Search** | Dense-only | Dense + BM25 hybrid (RRF) |
+| **Survives upgrades** | ❌ Private API | ✅ Public API |
+
+**Pipeline:**
+```
+SQLite rows → export to ~/.council-memory/index_staging/{table}/{id}.md
+  → memsearch.index() (public API)
+  → chunk_markdown() → chunk_hash dedup → embed → upsert
+  → Stale cleanup: deleted DB rows → removed files → removed chunks
+```
+
+**Polling:** 30s interval. Exports all rows from 8 tables (memory_entries, memory_rollups, review_findings, work_items, knowledge_cards, chat_messages, notes, documents). Skips unchanged files (content match → 0 re-embeds). Graceful degradation when memsearch unavailable.
 
 ### ProjectAwareMemSearch (MemSearch Wrapper)
 
@@ -848,6 +874,8 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 | MemoryLayer | `super_council/memory_service/layer.py` |
 | ReviewService | `super_council/memory_service/review.py` |
 | MemIndex | `super_council/memory_service/index.py` |
+| SqliteIndexer | `super_council/memory_service/sqlite_indexer.py` |
+| UnifiedVectorStore | `super_council/memory_service/vector_store.py` |
 | ProjectAwareMemSearch | `super_council/memory_service/memsearch_wrapper.py` |
 | HTTP Endpoints | `super_council/memory_service/http_endpoints.py` |
 | FastMCP Server | `super_council/memory_service/mcp_server.py` |
@@ -875,8 +903,9 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 
 | Resource | Path |
 |----------|------|
-| Database | `~/.council-memory/pipelines.db` |
+| Database | `~/.council-memory/council_core.db` |
 | Memsearch DB | `~/.memsearch/milvus.db` |
+| Index staging | `~/.council-memory/index_staging/` (SqliteIndexer) |
 | Daily logs | `~/.council-memory/daily/*.md` |
 | Chat summaries | `~/.council-memory/chat-summaries/*.md` |
 | MCP pending queue | `~/.council-memory/mcp-pending/*.json` |
