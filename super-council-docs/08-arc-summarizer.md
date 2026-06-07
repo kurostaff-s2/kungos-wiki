@@ -10,7 +10,7 @@
 │                                                                             │
 │  Bi-Weekly Overview (15d)    ← digests weekly reviews                      │
 │  ┌─────────────────────────┐   window=15d, ttl=60d, source=weekly          │
-│  │ consolidation_cache     │   prompt: strategic themes, corrections        │
+│  │ memory_rollups          │   prompt: strategic themes, corrections        │
 │  │ (consol-bimonthly-*)    │   output: executive summary, knowledge base    │
 │  └────────────┬────────────┘                                                │
 │               │                                                             │
@@ -50,11 +50,11 @@ Every entry carries a prefix that reveals its origin:
 | `consol-daily-*` | `session_diary` | Arc A380 | Tiered consolidation (daily) |
 | `consol-short-*` | `session_diary` | Arc A380 | Tiered consolidation (3-day) |
 | `consol-weekly-*` | `session_diary` | Arc A380 | Tiered consolidation (weekly) |
-| `consol-bimonthly-*` | `consolidation_cache` | Arc A380 | Tiered consolidation (bi-weekly) |
-| `consol-*` | `consolidation_cache` | Arc A380 | Legacy startup consolidation |
+| `consol-bimonthly-*` | `memory_rollups` | Arc A380 | Tiered consolidation (bi-weekly) |
+| `consol-*` | `memory_rollups` | Arc A380 | Legacy startup consolidation |
 | `sess-*` | `session_diary` | Mechanical | Pi extension hook or `memory.upsert_summary` |
 
-**Design principle:** `consolidation_cache` = Arc A380 only. `session_diary` = mechanical upsert + tiered daily/short/weekly. Provenance is traceable from prefix alone.
+**Design principle:** `memory_rollups` = Arc A380 only (replaces zombie `consolidation_cache`). `session_diary` = mechanical upsert + tiered daily/short/weekly. Provenance is traceable from prefix alone.
 
 ## Module Structure
 
@@ -257,7 +257,7 @@ On init: ArcPipeline created from config, wired to ContextRouter for lazy-on-rec
 {
     "tiers": {"daily": {"last_run_at": ..., "overdue": bool, "entries_count": int}, ...},
     "ttl_distribution": {"active": int, "aging": int, "expired": int, "total": int, "expiring_within_24h": int},
-    "consolidation_cache": {"total_entries": int, "active": int, "probation": int, "expired": int},
+    "consolidation_cache": {"note": "memory_rollups (replaces consolidation_cache)", "total_entries": int, "active": int, "indexed": int, "expired": int},
     "injection_blacklist": {"active_patterns": int, "total_patterns": int},
 }
 ```
@@ -278,7 +278,7 @@ Also available via `MemoryService.health_check()` → `arc_server` section.
 
 ## What Does NOT Change
 
-- **`consolidation_cache` / `session_diary` separation** — Provenance traceability preserved
+- **`memory_rollups` / `session_diary` separation** — Provenance traceability preserved (replaces zombie consolidation_cache)
 - **Arc A380 routing** — Health gate + fallback pattern unchanged
 - **Pi extension `message_end` hook** — Mechanical upsert to `session_diary` unchanged
 - **Legacy `run_consolidation()`** — Kept for backward compatibility

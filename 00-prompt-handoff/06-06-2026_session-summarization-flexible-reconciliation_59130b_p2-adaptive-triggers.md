@@ -304,3 +304,9 @@ Phase 4 (Production Wiring) expects:
 - All adaptive triggers wired and tested
 - Event hints flowing through scheduler
 - Pre-summary hooks preserving context on model swap
+
+**Ownership boundary for Phase 4 wiring:**
+- Runtime (`super_council.py`) PRODUCES session signals: calls `_record_activity()`, `_add_tokens()`, `_record_event()`
+- Scheduler CONSUMES signals and DECIDES when to act: runs `_check_idle()`, `_check_token_budget()`, `_check_event_score()`
+- The scheduler never queries the runtime for state. The runtime pushes; the scheduler reacts.
+- No new abstraction layer needed — direct method calls (Option C)

@@ -13,7 +13,7 @@ Implemented 5 units to fix operational weaknesses in search/recall: wrong model,
 | Component | Before | After |
 |-----------|--------|-------|
 | **Keyword search** | `LIKE '%query%'` (no stemming, no ranking) | FTS5 MATCH (stemming, ranking, multi-term) |
-| **Vector search** | Chat summaries only | session_diary + consolidation_cache (13 entries) |
+| **Vector search** | Chat summaries only | session_diary + memory_rollups (2 entries) |
 | **Project filtering** | Client-side (wasteful) | Server-side Milvus filter_expr |
 | **Analytics** | None | Structured JSON logs with latency/result tracking |
 | **ChromaDB** | Dead imports | Deprecation warnings, no crashes |
@@ -106,7 +106,7 @@ summary = analytics.get_analytics_summary(days_back=7)
 **Files:** `memory_service/vector_store.py` (new), `memory_service/__init__.py`
 
 **Changes:**
-- UnifiedVectorStore indexes session_diary + consolidation_cache into Milvus
+- UnifiedVectorStore indexes session_diary + memory_rollups into Milvus
 - Auto re-index on memory-service startup (13 entries indexed)
 - Uses pplx-embed-v1 on :18099 for embeddings
 
@@ -135,7 +135,7 @@ indexed = store.reindex_existing_data(db_connection)
 
 **Changes:**
 - Server-side `project_id` filtering via Milvus `filter_expr`
-- Optional `source` filtering (session_diary, consolidation_cache, etc.)
+- Optional `source` filtering (session_diary, memory_rollups, etc.)
 - Client no longer filters after retrieval
 
 **Query example:**
@@ -194,6 +194,25 @@ results = store.search(
 | **P2: Embedding cache** | ⏸️ Deferred | Awaiting 48-72h analytics data |
 | **P3: ChromaDB removal** | ✅ Done | Deprecation warnings added |
 | **P4: raw_session_memories FTS5** | ⏸️ Deferred | Low priority, small table |
+
+## FTS5 Trigger Fix (2026-06-06)
+
+**Issue:** FTS5 indexes required manual rebuild (`INSERT INTO fts5_table(ft5_table) VALUES('rebuild')`) because auto-sync triggers were missing from both databases.
+
+**Root cause:** Migration SQL creates triggers but they were lost during initial DB setup (no migration tracking). The `codegraph.db` triggers were never applied because `_ensure_fts_triggers()` was only called during full sync, not on startup.
+
+**Fix:**
+- `CodeGraphStore.__init__()` → calls `_ensure_fts_triggers()` on startup (creates triggers idempotently)
+- `RelationalStore.__init__()` → calls `_ensure_fts_triggers()` on startup (creates `memory_entries` triggers)
+
+**Tables affected:**
+
+| DB | FTS5 Table | Triggers Before | Triggers After |
+|----|-----------|----------------|----------------|
+| codegraph.db | cg_nodes_fts | 0 (no auto-sync) | 3 (ai/ad/au) ✅ |
+| council_core.db | memory_entries_fts | 0 (no auto-sync) | 3 (ai/ad/au) ✅ |
+
+**Verification:** New inserts are auto-indexed immediately. Triggers survive service restarts.
 
 ## Analytics Dashboard
 

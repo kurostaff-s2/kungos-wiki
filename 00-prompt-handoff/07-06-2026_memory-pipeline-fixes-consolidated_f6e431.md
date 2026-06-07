@@ -5,11 +5,12 @@
 | Project ID | `super-council` |
 | Primary entity ID | `f6e431` |
 | Entity type | `handoff` |
-| Short description | Fix 5 mismatches between MD format, consumer extraction patterns, and trimmed schema; wire into SessionWatcher flow; verify end-to-end with real JSONL |
+| Short description | Fix MD format alignment; drop fake Topics Discussed; promote errors_blockers + notable_deviations to structured carry_forward; add round-trip fidelity tests; wire into SessionWatcher flow |
 | Status | `draft` |
 | Source references | `/home/chief/llm-wiki/00-prompt-handoff/07-06-2026_memory-pipeline-redundancy-audit_ea8ef8.md` (Phase 9) |
 | Generated | `07-06-2026` |
-| Next action / owner | Next session agent — execute Phase 1 (regex+loop fixes), Phase 2 (_write_session_md), Phase 3 (unit tests), Phase 4 (production runtime verification) |
+| Updated | `07-06-2026 11:15 IST` — dropped Topics Discussed, promoted blockers/deviations, added round-trip fidelity |
+| Next action / owner | Next session agent — execute Phase 1 (regex+loop fixes), Phase 2 (_write_session_md), Phase 3 (alignment+round-trip tests), Phase 3b (wiring), Phase 4 (production runtime verification) |
 
 ## Project Context
 
@@ -24,9 +25,9 @@
 
 ## Goal
 
-Fix all alignment mismatches between the canonical MD format, `upsert_session_diary()` extraction patterns, and the SessionAnalyzer trimmed schema so that Phase 4A (SessionWatcher writes MD + wired services) produces correct data in all session_diary columns.
+Fix all alignment mismatches between the canonical MD format, `upsert_session_diary()` extraction patterns, and the SessionAnalyzer trimmed schema. Drop fake abstractions (Topics Discussed), promote actionable signals (errors_blockers, notable_deviations) to structured consumers, and verify round-trip fidelity so the MD is semantically faithful, not just syntactically valid.
 
-**Total effort: ~2.5h across 3 phases, 2 files.**
+**Total effort: ~3h across 4 phases, 2 files.**
 
 ---
 
@@ -84,9 +85,15 @@ for hdr in ("Open Items", "Open Items / Follow-ups", "Follow-ups", "Unresolved")
 
 ---
 
-## Phase 2: Write `_write_session_md()` with Correct Field→Header Mapping
+## Phase 2: Write `_write_session_md()` — Signal-Faithful, No Duplication
 
-**What:** Add `_write_session_md()` to SessionWatcher. This method maps trimmed schema fields to MD section headers that match `upsert_session_diary()` extraction patterns. It does NOT use `_trimmed_to_text()` which generates wrong headers.
+**What:** Add `_write_session_md()` to SessionWatcher. Maps trimmed schema fields to MD section headers that match `upsert_session_diary()` extraction patterns. Does NOT use `_trimmed_to_text()` which generates wrong headers.
+
+**Design principles (enforced):**
+- **No fake abstraction:** Every MD section must carry signal that isn't already in a structured column. If `## Topics Discussed` is just `decisions + open_work + completed_work` re-listed, it's noise — drop it.
+- **Promote actionable signals:** `errors_blockers` and `notable_deviations` are structured facts, not metadata. They get their own MD sections and wired consumers, not a dump in `## Reference`.
+- **Reference is optional:** Only include if it carries signal useful to memsearch that isn't elsewhere. Cap at 5 items.
+- **Round-trip fidelity:** trimmed → MD → extract → DB must preserve every item. No silent drops.
 
 **Critical constraint:** `_trimmed_to_text()` stays as-is (it feeds ArcPipeline.reconcile_tasks()). `_write_session_md()` is a NEW method with correct headers.
 
@@ -111,9 +118,13 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
         explicit_decisions → ## Decisions
         open_work → ## Open Items
         completed_work → ## Work Completed
-        (derived signals) → ## Topics Discussed
-        files_changed, functions_touched, tests_written,
-        errors_blockers, notable_deviations → ## Reference
+        errors_blockers → ## Blockers (structured, wired to carry_forward)
+        notable_deviations → ## Deviations (structured, wired to carry_forward)
+        files_changed, functions_touched, tests_written → ## Reference (capped, optional)
+
+    DROPPED: ## Topics Discussed — no real topic extractor exists.
+        Deriving from signal sections duplicates structured facts.
+        Re-add when SessionAnalyzer produces a proper topics_discussed field.
     """
     from datetime import datetime
     from ..memory_service.config import IST
@@ -158,20 +169,28 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
             lines.append(f"- {c}")
         lines.append("")
 
-    # Topics Discussed: derived from signal sections
-    # NOTE: trimmed schema has no 'topics_discussed' field; derive from signals
-    all_signals = (
-        trimmed.get("explicit_decisions", []) +
-        trimmed.get("completed_work", []) +
-        trimmed.get("open_work", [])
-    )
-    if all_signals:
-        lines.append("## Topics Discussed")
-        for item in all_signals[:5]:  # Cap at 5 to avoid noise
-            lines.append(f"- {item}")
+    # Blockers: errors_blockers → ## Blockers
+    # Structured signal — wired to carry_forward (kind="blocker") in Phase 4B.
+    # NOT hidden in Reference. Extracted to session_diary via new column or session_context.
+    blockers = trimmed.get("errors_blockers", [])
+    if blockers:
+        lines.append("## Blockers")
+        for b in blockers:
+            lines.append(f"- {b}")
         lines.append("")
 
-    # Reference: aggregate metadata fields (not extracted to DB columns)
+    # Deviations: notable_deviations → ## Deviations
+    # Structured signal — wired to carry_forward (kind="deviation") in Phase 4B.
+    # NOT hidden in Reference. Same continuity path as blockers.
+    deviations = trimmed.get("notable_deviations", [])
+    if deviations:
+        lines.append("## Deviations")
+        for d in deviations:
+            lines.append(f"- {d}")
+        lines.append("")
+
+    # Reference: aggregate metadata (optional, capped — only if useful to memsearch)
+    # Omitted if empty. Capped at 5 items to prevent noise dumps.
     ref_items = []
     if trimmed.get("files_changed"):
         ref_items.append(f"files: {trimmed['files_changed']}")
@@ -179,14 +198,11 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
         ref_items.append(f"functions: {trimmed['functions_touched']}")
     if trimmed.get("tests_written"):
         ref_items.append(f"tests: {trimmed['tests_written']}")
-    if trimmed.get("errors_blockers"):
-        ref_items.append(f"errors: {trimmed['errors_blockers']}")
-    if trimmed.get("notable_deviations"):
-        ref_items.append(f"deviations: {trimmed['notable_deviations']}")
 
     if ref_items:
         lines.append("## Reference")
-        lines.extend(ref_items)
+        for item in ref_items[:5]:  # Cap to prevent noise
+            lines.append(item)
         lines.append("")
 
     # Write to ~/.council-memory/sessions/
@@ -202,13 +218,15 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
 
 **Header→Extraction alignment (verify these match):**
 
-| MD Header | `upsert_session_diary()` Extracts | Match? |
-|-----------|-----------------------------------|--------|
-| `## Decisions` | `"Key Decisions"` or `"Decisions"` | ✅ Second fallback |
-| `## Open Items` | `"Open Items"` (first try) | ✅ First match |
-| `## Work Completed` | `"Work Completed"` (first try) | ✅ First match |
-| `## Topics Discussed` | `"Topics Discussed"` (first try) | ✅ First match |
-| `## Reference` | Not extracted (indexed only) | ✅ N/A |
+| MD Header | `upsert_session_diary()` Extracts | Match? | Notes |
+|-----------|-----------------------------------|--------|-------|
+| `## Decisions` | `"Key Decisions"` or `"Decisions"` | ✅ Second fallback | Primary signal |
+| `## Open Items` | `"Open Items"` (first try) | ✅ First match | Primary signal |
+| `## Work Completed` | `"Work Completed"` (first try) | ✅ First match | Primary signal |
+| ~~`## Topics Discussed`~~ | ~~`"Topics Discussed"`~~ | ❌ **DROPPED** | No real topic extractor — was duplicated noise |
+| `## Blockers` | Not extracted by session_diary | ✅ Wired to carry_forward | **NEW** — promoted from Reference |
+| `## Deviations` | Not extracted by session_diary | ✅ Wired to carry_forward | **NEW** — promoted from Reference |
+| `## Reference` | Not extracted (indexed only) | ✅ N/A | Capped at 5, optional |
 
 **Dependencies:** Phase 1 (regex fix must be in place so extraction works correctly).
 
@@ -216,14 +234,18 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
 
 ---
 
-## Phase 3: Verification Tests
+## Phase 3: Verification Tests — Alignment + Round-Trip Fidelity
 
-**What:** Verify that the MD format produces correct extraction results through the full pipeline (MD → `_extract_section()` → DB columns).
+**What:** Verify that the MD format produces correct extraction results AND that the full round-trip (trimmed → MD → extract → DB) preserves every item without silent drops.
+
+**Two test categories:**
+1. **Alignment tests** — regex works, headers match, sections extract correctly
+2. **Round-trip fidelity tests** — trimmed dict → MD → extract → matches original trimmed dict item-for-item
 
 **Files:**
 | Action | File | Purpose |
 |--------|------|---------|
-| Create | `tests/test_md_format_alignment.py` | End-to-end MD format → extraction verification |
+| Create | `tests/test_md_format_alignment.py` | MD format → extraction verification + round-trip fidelity |
 
 **Steps:**
 
@@ -234,6 +256,8 @@ def _write_session_md(self, trimmed: dict, jsonl_path: Path) -> Path:
 
 Verifies that the canonical MD format produces correct extraction results
 through the full pipeline: MD text → _extract_section() → DB columns.
+
+Includes round-trip fidelity tests: trimmed → MD → extract → matches original.
 """
 import re
 import pytest
@@ -249,6 +273,14 @@ def _extract_section(text: str, header: str):
         content = match.group(1).strip()
         return content if content else None
     return None
+
+
+def _parse_bullet_list(text: str) -> list:
+    """Parse a bullet list from extracted section text."""
+    if text is None or text == "- none":
+        return []
+    return [line.lstrip("- ").strip() for line in text.split("\n")
+            if line.strip().startswith("-")]
 
 
 def _build_sample_md() -> str:
@@ -270,17 +302,15 @@ project: council
 - Fixed _wait_idle() stability semantics
 - Rewrote verification handoff with actual endpoints
 
-## Topics Discussed
-- Use dict.get() not if key in d (cleaner semantics)
-- Return False from _wait_idle() on deadline expiry
-- Fixed _wait_idle() stability semantics
-- Rewrote verification handoff with actual endpoints
-- Fix carry_forward writer (priority: high)
+## Blockers
+- database is locked during migration
+
+## Deviations
+- carry_forward timing changed from immediate to deferred
 
 ## Reference
 files: [session_watcher.py, store.py]
 functions: [_wait_idle, _extract_section]
-errors: [database is locked]
 """
 
 
@@ -355,11 +385,19 @@ class TestMdFormatAlignment:
         assert result is not None
         assert "stability semantics" in result
 
-    def test_topics_discussed_extracted(self):
+    def test_blockers_extracted(self):
+        """Blockers are now a structured section, not hidden in Reference."""
         md = _build_sample_md()
-        result = _extract_section(md, "Topics Discussed")
+        result = _extract_section(md, "Blockers")
         assert result is not None
-        assert "dict.get()" in result  # derived from decisions
+        assert "database is locked" in result
+
+    def test_deviations_extracted(self):
+        """Deviations are now a structured section, not hidden in Reference."""
+        md = _build_sample_md()
+        result = _extract_section(md, "Deviations")
+        assert result is not None
+        assert "carry_forward timing" in result
 
     def test_explicitly_empty_decisions(self):
         """- none is stored as TEXT, distinguishable from NULL."""
@@ -372,13 +410,122 @@ class TestMdFormatAlignment:
         result = _extract_section(md, "Open Items")
         assert result == "- none"
 
+    def test_no_topics_discussed_section(self):
+        """Topics Discussed was dropped — no real topic extractor exists."""
+        md = _build_sample_md()
+        result = _extract_section(md, "Topics Discussed")
+        assert result is None, "Topics Discussed should not exist in MD"
+
     def test_reference_not_extracted_by_session_diary(self):
         """Reference section is not extracted by upsert_session_diary()."""
         md = _build_sample_md()
-        # upsert_session_diary() does NOT extract Reference
-        # It only extracts: Decisions, Open Items, Work Completed, Topics Discussed, Models Used
         assert _extract_section(md, "Reference") is not None  # Exists in MD
         # But it's not extracted to any DB column by upsert_session_diary()
+
+
+class TestRoundTripFidelity:
+    """Verify trimmed → MD → extract preserves every item.
+
+    These tests catch silent data loss: items that are written to MD
+    but not extracted back, or items that are dropped by caps/filters.
+    """
+
+    def test_decisions_count_fidelity(self):
+        """All trimmed decisions appear in MD, none dropped."""
+        decisions = [f"decision-{i}" for i in range(10)]
+        md_lines = ["# Session: test", ""]
+        md_lines.append("## Decisions")
+        for d in decisions:
+            md_lines.append(f"- {d}")
+        md_lines.append("")
+        md_lines.append("## Open Items")
+        md_lines.append("- none")
+        md = "\n".join(md_lines)
+
+        extracted = _extract_section(md, "Decisions")
+        extracted_items = _parse_bullet_list(extracted)
+        assert len(extracted_items) == len(decisions), \
+            f"Expected {len(decisions)} decisions, got {len(extracted_items)}"
+        for d in decisions:
+            assert d in extracted_items, f"Missing: {d}"
+
+    def test_open_items_count_fidelity(self):
+        """All open items survive round-trip."""
+        items = [f"open-item-{i}" for i in range(8)]
+        md = "## Open Items\n" + "\n".join(f"- {i}" for i in items)
+
+        extracted = _extract_section(md, "Open Items")
+        extracted_items = _parse_bullet_list(extracted)
+        assert len(extracted_items) == len(items)
+        for item in items:
+            assert item in extracted_items
+
+    def test_completed_work_count_fidelity(self):
+        """All completed work items survive round-trip."""
+        items = [f"completed-{i}" for i in range(12)]
+        md = "## Work Completed\n" + "\n".join(f"- {i}" for i in items)
+
+        extracted = _extract_section(md, "Work Completed")
+        extracted_items = _parse_bullet_list(extracted)
+        assert len(extracted_items) == len(items)
+
+    def test_blockers_count_fidelity(self):
+        """All blockers survive round-trip."""
+        blockers = [f"blocker-{i}" for i in range(5)]
+        md = "## Blockers\n" + "\n".join(f"- {b}" for b in blockers)
+
+        extracted = _extract_section(md, "Blockers")
+        extracted_items = _parse_bullet_list(extracted)
+        assert len(extracted_items) == len(blockers)
+
+    def test_deviations_count_fidelity(self):
+        """All deviations survive round-trip."""
+        deviations = [f"deviation-{i}" for i in range(4)]
+        md = "## Deviations\n" + "\n".join(f"- {d}" for d in deviations)
+
+        extracted = _extract_section(md, "Deviations")
+        extracted_items = _parse_bullet_list(extracted)
+        assert len(extracted_items) == len(deviations)
+
+    def test_empty_sections_roundtrip(self):
+        """Empty sections produce '- none', not NULL."""
+        md = "## Decisions\n- none\n\n## Open Items\n- none"
+        assert _extract_section(md, "Decisions") == "- none"
+        assert _extract_section(md, "Open Items") == "- none"
+        assert _parse_bullet_list("- none") == []  # But parseable as empty
+
+    def test_multi_section_isolation(self):
+        """Extracting one section doesn't leak into adjacent sections."""
+        md = """## Decisions
+- decision-A
+
+## Open Items
+- open-A
+
+## Work Completed
+- completed-A
+
+## Blockers
+- blocker-A
+
+## Deviations
+- deviation-A
+"""
+        decisions = _parse_bullet_list(_extract_section(md, "Decisions"))
+        open_items = _parse_bullet_list(_extract_section(md, "Open Items"))
+        completed = _parse_bullet_list(_extract_section(md, "Work Completed"))
+        blockers = _parse_bullet_list(_extract_section(md, "Blockers"))
+        deviations = _parse_bullet_list(_extract_section(md, "Deviations"))
+
+        assert decisions == ["decision-A"]
+        assert open_items == ["open-A"]
+        assert completed == ["completed-A"]
+        assert blockers == ["blocker-A"]
+        assert deviations == ["deviation-A"]
+
+        # Cross-check: no leakage
+        for items in [open_items, completed, blockers, deviations]:
+            assert "decision-A" not in items
 
 
 class TestHeaderMatching:
@@ -387,8 +534,6 @@ class TestHeaderMatching:
     def test_decisions_matches_fallback(self):
         """## Decisions matches second fallback 'Decisions'."""
         md = "## Decisions\n- item"
-        # First try: "Key Decisions" → no match
-        # Second try: "Decisions" → match
         assert _extract_section(md, "Key Decisions") is None
         assert _extract_section(md, "Decisions") is not None
 
@@ -402,11 +547,6 @@ class TestHeaderMatching:
         md = "## Work Completed\n- item"
         assert _extract_section(md, "Work Completed") is not None
 
-    def test_topics_discussed_matches_primary(self):
-        """## Topics Discussed matches first try 'Topics Discussed'."""
-        md = "## Topics Discussed\n- item"
-        assert _extract_section(md, "Topics Discussed") is not None
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
@@ -418,7 +558,7 @@ cd /home/chief/Coding-Projects/7-council/super_council
 python -m pytest tests/test_md_format_alignment.py -v
 ```
 
-3. Verify all 12 tests pass.
+3. Verify all tests pass (19 tests: 4 regex + 9 alignment + 7 round-trip + 3 header).
 
 **Dependencies:** Phase 1, Phase 2.
 
@@ -426,14 +566,18 @@ python -m pytest tests/test_md_format_alignment.py -v
 
 ---
 
-## Phase 3b: Wire `_write_session_md()` into `_process_session()` Flow
+## Phase 3b: Wire `_write_session_md()` + Structured Signal Consumers
 
-**What:** Integrate `_write_session_md()` into the SessionWatcher `_process_session()` method so the MD file is written after trimming and before reconciliation. This is the production wiring step — without it, `_write_session_md()` exists but is never called.
+**What:** Integrate `_write_session_md()` into the SessionWatcher `_process_session()` method. Wire `errors_blockers` and `notable_deviations` into carry_forward as structured consumers.
+
+**Two wiring paths:**
+1. **MD write** — `_write_session_md()` called after `_trim_session()`, before `_reconcile()`
+2. **Structured signals** — `errors_blockers` → carry_forward(kind="blocker"), `notable_deviations` → carry_forward(kind="deviation")
 
 **Files:**
 | Action | File | Purpose |
 |--------|------|---------|
-| Modify | `memory_service/session_watcher.py` | Wire `_write_session_md()` into `_process_session()` |
+| Modify | `memory_service/session_watcher.py` | Wire `_write_session_md()` + `_wire_carry_forward()` |
 
 **Steps:**
 
@@ -444,7 +588,7 @@ python -m pytest tests/test_md_format_alignment.py -v
 def _process_session(self, jsonl_path: Path) -> None:
     """Process a single JSONL session file.
 
-    Flow: parse → classify → trim → write MD → reconcile → wake scheduler.
+    Flow: parse → classify → trim → write MD → wire carry_forward → reconcile → wake.
     """
     try:
         # Step 1: Parse JSONL into conversation turns
@@ -466,15 +610,22 @@ def _process_session(self, jsonl_path: Path) -> None:
         # Step 3: Generate trimmed summary
         trimmed = self._trim_session(turns, session_mode, jsonl_path)
 
-        # Step 3b: Write canonical MD file (NEW)
-        # NOTE: _write_session_md() is called BEFORE _reconcile()
-        # so the MD file exists for downstream consumers.
+        # Step 3a: Write canonical MD file (NEW)
+        # Called BEFORE _reconcile() so the MD exists for downstream consumers.
         try:
             md_path = self._write_session_md(trimmed, jsonl_path)
             log.info("SessionWatcher: wrote MD to %s", md_path)
         except Exception as e:
             log.warning("SessionWatcher: MD write failed (non-fatal): %s", e)
             md_path = None
+
+        # Step 3b: Wire structured signals to carry_forward (NEW)
+        # errors_blockers → carry_forward(kind="blocker")
+        # notable_deviations → carry_forward(kind="deviation")
+        try:
+            self._wire_carry_forward(trimmed, jsonl_path)
+        except Exception as e:
+            log.warning("SessionWatcher: carry_forward wiring failed (non-fatal): %s", e)
 
         # Step 4: Feed into reconciliation pipeline
         self._reconcile(trimmed, jsonl_path)
@@ -493,17 +644,70 @@ def _process_session(self, jsonl_path: Path) -> None:
         log.warning("SessionWatcher: failed to process %s: %s", jsonl_path.name, e)
 ```
 
-3. Verify `_trimmed_to_text()` is NOT modified (it's still used by `_reconcile()` for ARC).
+3. Add `_wire_carry_forward()` method to SessionWatcher:
+
+```python
+def _wire_carry_forward(self, trimmed: dict, jsonl_path: Path) -> None:
+    """Wire structured signals from trimmed summary to carry_forward.
+
+    Promotes errors_blockers and notable_deviations from unstructured
+    MD text into the carry_forward table for structured tracking.
+
+    This is the immediate carry_forward writer — ArcPipeline creates
+    carry_forward during consolidation (Phase 4B). SessionWatcher creates
+    carry_forward for immediate session-level signals.
+
+    Args:
+        trimmed: Trimmed summary dict from SessionAnalyzer.
+        jsonl_path: Source JSONL path for provenance.
+    """
+    if not self._memory_service:
+        log.debug("SessionWatcher: no memory_service, skipping carry_forward")
+        return
+
+    store = self._memory_service.store
+    project_id = trimmed.get("project_id", "")
+
+    # Wire errors_blockers → carry_forward(kind="blocker")
+    blockers = trimmed.get("errors_blockers", [])
+    for blocker in blockers:
+        store.create_carry_forward(
+            project_id=project_id,
+            tier="daily",
+            kind="blocker",
+            text=blocker,
+            priority="high",  # Blockers are high priority by definition
+            source_file=str(jsonl_path),
+        )
+
+    # Wire notable_deviations → carry_forward(kind="deviation")
+    deviations = trimmed.get("notable_deviations", [])
+    for deviation in deviations:
+        store.create_carry_forward(
+            project_id=project_id,
+            tier="daily",
+            kind="deviation",
+            text=deviation,
+            priority="medium",  # Deviations are medium priority
+            source_file=str(jsonl_path),
+        )
+```
+
+4. Verify `_trimmed_to_text()` is NOT modified (it's still used by `_reconcile()` for ARC).
 
 **Tests:**
 
 1. Verify `_process_session()` calls `_write_session_md()` after `_trim_session()`.
-2. Verify MD write failure is non-fatal (reconciliation still proceeds).
-3. Verify `_trimmed_to_text()` is unchanged (ARC pipeline regression check).
+2. Verify `_process_session()` calls `_wire_carry_forward()` after MD write.
+3. Verify MD write failure is non-fatal (reconciliation still proceeds).
+4. Verify carry_forward wiring failure is non-fatal.
+5. Verify `_trimmed_to_text()` is unchanged (ARC pipeline regression check).
+6. Verify `errors_blockers` → carry_forward(kind="blocker", priority="high").
+7. Verify `notable_deviations` → carry_forward(kind="deviation", priority="medium").
 
 **Dependencies:** Phase 1, Phase 2, Phase 3 (unit tests).
 
-**Estimated effort:** ~15 min
+**Estimated effort:** ~20 min
 
 ---
 
@@ -511,7 +715,7 @@ def _process_session(self, jsonl_path: Path) -> None:
 
 **What:** End-to-end verification with a real JSONL file. This is NOT a mock test — it processes an actual session file through the full pipeline and verifies the output in the database.
 
-**Critical distinction:** Phase 3 tests mock MD strings against `_extract_section()`. Phase 4 tests the full pipeline: real JSONL → `_process_session()` → MD file → `upsert_session_diary()` → DB columns.
+**Critical distinction:** Phase 3 tests mock MD strings against `_extract_section()`. Phase 4 tests the full pipeline: real JSONL → `_process_session()` → MD file → `upsert_session_diary()` → DB columns + carry_forward.
 
 **Files:**
 | Action | File | Purpose |
@@ -527,6 +731,7 @@ def _process_session(self, jsonl_path: Path) -> None:
 
 Tests the full pipeline with real JSONL files:
     JSONL → _process_session() → MD file → upsert_session_diary() → DB columns
+    JSONL → _wire_carry_forward() → carry_forward (blockers, deviations)
 
 This is NOT a mock test. It uses actual session files from the sessions directory.
 """
@@ -585,9 +790,19 @@ def _verify_session_diary_columns(store, summary_id: str):
     # (this is acceptable — absence is not meaningful for this section)
 
     # session_context: may be NULL if no topics or models
-    # (this is acceptable — context is additive)
+    # (this is acceptable — context is additive, and Topics Discussed is dropped)
 
     return row
+
+
+def _verify_carry_forward_entries(store, project_id: str):
+    """Verify carry_forward entries were created for structured signals."""
+    rows = store.db.execute(
+        "SELECT id, kind, text, priority FROM carry_forward "
+        "WHERE project_id = ? ORDER BY id DESC LIMIT 10",
+        (project_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 class TestSessionWatcherRuntime:
@@ -620,6 +835,9 @@ class TestSessionWatcherRuntime:
         content = md_path.read_text()
         assert "## Decisions" in content, "MD missing Decisions section"
         assert "## Open Items" in content, "MD missing Open Items section"
+        # Topics Discussed should NOT be present
+        assert "## Topics Discussed" not in content, \
+            "Topics Discussed should be dropped (no real topic extractor)"
 
     def test_full_pipeline_jsonl_to_db(self, tmp_path):
         """Full pipeline: JSONL → MD → upsert_session_diary() → DB columns."""
@@ -666,6 +884,46 @@ class TestSessionWatcherRuntime:
         row = _verify_session_diary_columns(store, summary_id)
         assert row["decisions"] in ("- none",), f"decisions should be '- none' or items, got: {row['decisions'][:50]}"
         assert row["open_items"] in ("- none",), f"open_items should be '- none' or items, got: {row['open_items'][:50]}"
+
+    def test_carry_forward_wiring(self, tmp_path):
+        """Verify errors_blockers and notable_deviations wire to carry_forward."""
+        jsonl_path = _get_recent_jsonl()
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        test_jsonl = sessions_dir / jsonl_path.name
+        test_jsonl.write_bytes(jsonl_path.read_bytes())
+
+        store = _build_test_store(tmp_path)
+        from super_council.memory_service import MemoryService
+        memory_service = MemoryService(store=store)
+
+        from super_council.memory_service.session_watcher import SessionWatcher
+        watcher = SessionWatcher(
+            sessions_dir=str(sessions_dir),
+            pipeline=None,
+            scheduler=None,
+            memory_service=memory_service,
+        )
+
+        # Parse and trim
+        turns = watcher._parse_jsonl(test_jsonl)
+        session_mode = watcher._classify(turns)
+        trimmed = watcher._trim_session(turns, session_mode, test_jsonl)
+
+        # Wire carry_forward
+        watcher._wire_carry_forward(trimmed, test_jsonl)
+
+        # Verify: if trimmed had blockers, carry_forward should have them
+        blockers = trimmed.get("errors_blockers", [])
+        deviations = trimmed.get("notable_deviations", [])
+        cf_entries = _verify_carry_forward_entries(store, trimmed.get("project_id", ""))
+
+        cf_kinds = {e["kind"] for e in cf_entries}
+        if blockers:
+            assert "blocker" in cf_kinds, "blockers should create carry_forward(kind='blocker')"
+        if deviations:
+            assert "deviation" in cf_kinds, "deviations should create carry_forward(kind='deviation')"
 
     def test_trimmed_to_text_unchanged(self):
         """Verify _trimmed_to_text() was NOT modified (ARC pipeline regression)."""
@@ -715,9 +973,10 @@ cd /home/chief/Coding-Projects/7-council/super_council
 python -m pytest tests/test_session_watcher_runtime.py -v --tb=short
 ```
 
-3. Verify all 5 tests pass:
-   - `test_process_session_writes_md_file` — MD file exists after processing
+3. Verify all tests pass:
+   - `test_process_session_writes_md_file` — MD file exists, no Topics Discussed
    - `test_full_pipeline_jsonl_to_db` — JSONL → MD → DB columns verified
+   - `test_carry_forward_wiring` — errors_blockers/deviations → carry_forward
    - `test_trimmed_to_text_unchanged` — ARC pipeline not affected
    - `test_existing_session_diary_entries` — No regression in existing data
 
@@ -732,8 +991,12 @@ python -m pytest tests/test_session_watcher_runtime.py -v --tb=short
 - **Do NOT modify `_trimmed_to_text()`** — It feeds ArcPipeline.reconcile_tasks(). Changing it risks ARC parsing. `_write_session_md()` is a separate method.
 - **Do NOT modify the trimmed schema** — `open_work` stays as-is. The naming mismatch is documented and fixed at the boundary.
 - **`- none` must be lowercase** — Consumers check `val == "- none"`. Capitalization matters.
-- **Topics Discussed cap at 5** — Prevents noise when signal sections are large.
-- **Reference section is optional** — Omitted if no metadata fields present.
+- **No fake abstraction** — Every MD section must carry signal not already in a structured column. If a section just duplicates Decisions + Open Items + Completed Work, drop it.
+- **Topics Discussed is DROPPED** — No real topic extractor exists. Deriving from signal sections duplicates structured facts. Re-add when SessionAnalyzer produces `topics_discussed`.
+- **errors_blockers are STRUCTURED** — Wired to carry_forward(kind="blocker", priority="high"). Not hidden in Reference.
+- **notable_deviations are STRUCTURED** — Wired to carry_forward(kind="deviation", priority="medium"). Not hidden in Reference.
+- **Reference section is capped at 5** — Prevents noise dumps. Omitted if empty.
+- **Round-trip fidelity required** — trimmed → MD → extract must preserve every item. No silent drops from caps or filters on structured sections.
 
 ---
 
@@ -744,19 +1007,28 @@ python -m pytest tests/test_session_watcher_runtime.py -v --tb=short
 - [ ] Phase 1: `open_items` loop tries each header once (no duplicate)
 - [ ] Phase 1: All existing tests still pass (no regression)
 - [ ] Phase 2: `_write_session_md()` exists in SessionWatcher with correct field→header mapping
-- [ ] Phase 2: MD headers match `upsert_session_diary()` extraction patterns (Decisions, Open Items, Work Completed, Topics Discussed)
+- [ ] Phase 2: MD headers match `upsert_session_diary()` extraction patterns (Decisions, Open Items, Work Completed)
+- [ ] Phase 2: `## Blockers` section exists when errors_blockers present (promoted from Reference)
+- [ ] Phase 2: `## Deviations` section exists when notable_deviations present (promoted from Reference)
+- [ ] Phase 2: `## Topics Discussed` does NOT exist (dropped — no real topic extractor)
 - [ ] Phase 2: Empty Decisions and Open Items write `- none` (not omitted)
-- [ ] Phase 2: Topics Discussed derived from signal sections, capped at 5
-- [ ] Phase 2: Reference section aggregates metadata fields, omitted if empty
-- [ ] Phase 3: All 12 alignment tests pass
+- [ ] Phase 2: Reference section capped at 5 items, omitted if empty
+- [ ] Phase 3: All 19 alignment + round-trip tests pass
 - [ ] Phase 3: Multi-paragraph extraction works (regex fix verified)
 - [ ] Phase 3: `- none` distinguishes from NULL (explicitly empty vs. not tracked)
+- [ ] Phase 3: Round-trip fidelity — all N items in trimmed → MD → extract → N items back (no silent drops)
+- [ ] Phase 3: Section isolation — extracting one section doesn't leak into adjacent sections
 
 **Production Runtime (Phase 4):**
 - [ ] Phase 3b: `_process_session()` calls `_write_session_md()` after `_trim_session()`
+- [ ] Phase 3b: `_process_session()` calls `_wire_carry_forward()` after MD write
 - [ ] Phase 3b: MD write failure is non-fatal (reconciliation still proceeds)
+- [ ] Phase 3b: carry_forward wiring failure is non-fatal
 - [ ] Phase 3b: `_trimmed_to_text()` is unchanged (ARC pipeline regression check)
+- [ ] Phase 3b: errors_blockers → carry_forward(kind="blocker", priority="high")
+- [ ] Phase 3b: notable_deviations → carry_forward(kind="deviation", priority="medium")
 - [ ] Phase 4: Real JSONL → MD file written to disk
+- [ ] Phase 4: MD has no `## Topics Discussed` section
 - [ ] Phase 4: MD → `upsert_session_diary()` → DB columns populated (decisions, open_items not NULL)
 - [ ] Phase 4: Existing session_diary entries still readable (no regression)
 - [ ] Phase 4: `_trimmed_to_text()` source unchanged (ARC pipeline not affected)
@@ -768,11 +1040,11 @@ python -m pytest tests/test_session_watcher_runtime.py -v --tb=short
 ```
 Phase 1 (regex+loop fix, 10min)
     ↓
-Phase 2 (_write_session_md, 1h)
+Phase 2 (_write_session_md — signal-faithful, 1h)
     ↓
-Phase 3 (unit tests, 30min)
+Phase 3 (alignment + round-trip fidelity tests, 30min)
     ↓
-Phase 3b (wire into _process_session, 15min)
+Phase 3b (wire MD + carry_forward into _process_session, 20min)
     ↓
 Phase 4 (production runtime verification, 45min)
 ```
@@ -780,6 +1052,13 @@ Phase 4 (production runtime verification, 45min)
 All phases are sequential. Total estimated effort: ~3h.
 
 **Gate:** Phase 4 must pass before Phase 4A implementation proceeds. If any production runtime test fails, stop and debug — do not proceed with mock tests alone.
+
+**Design invariants (must hold at every phase):**
+- Single canonical MD per session, written once by SessionWatcher
+- Writer/reader separation: `_write_session_md()` writes, consumers read
+- No fake abstraction: every MD section carries unique signal
+- Actionable signals are structured (blockers → carry_forward, deviations → carry_forward)
+- Round-trip fidelity: trimmed → MD → extract preserves every item
 
 ---
 
@@ -789,6 +1068,7 @@ After these fixes are complete AND Phase 4 runtime tests pass, Phase 4A can proc
 1. `_wire_session_diary()` reads the MD file and calls `upsert_session_diary()`
 2. `_wire_memindex()` indexes the MD file via MemIndex.index_file()
 3. `_wire_work_items()` (renamed from `_reconcile()`) extracts tasks from MD
+4. carry_forward already has immediate writers for blockers and deviations (from Phase 3b)
 
 **Prerequisite:** Phase 4 runtime tests must pass. The MD format must produce correct DB columns with real JSONL data before Phase 4A wiring begins.
 
@@ -796,6 +1076,11 @@ After these fixes are complete AND Phase 4 runtime tests pass, Phase 4A can proc
 - Fixed `_extract_section()` regex (multi-paragraph extraction works)
 - Fixed `open_items` loop (no duplicate header tries)
 - `_write_session_md()` with correct field→header mapping
+- `## Blockers` and `## Deviations` promoted from Reference to structured sections
+- `## Topics Discussed` dropped (was duplicated noise, no real topic extractor)
+- `_wire_carry_forward()` wires errors_blockers → carry_forward(kind="blocker")
+- `_wire_carry_forward()` wires notable_deviations → carry_forward(kind="deviation")
+- Round-trip fidelity tests (trimmed → MD → extract → matches original)
 - Wired into `_process_session()` flow
-- Production runtime verification (real JSONL → DB columns)
+- Production runtime verification (real JSONL → DB columns + carry_forward)
 - Regression checks (ARC pipeline unchanged, existing data intact)

@@ -404,7 +404,7 @@ Assistant message (auto-detected, scored >= 4)
 
 ## UnifiedVectorStore (Added 2026-06-05, Updated 2026-06-06)
 
-> Project-scoped vector indexing with server-side filtering. Indexes session_diary + consolidation_cache into Milvus.
+> Project-scoped vector indexing with server-side filtering. Indexes session_diary + memory_rollups into Milvus.
 > Dedup via `_source_exists()` — skips already-indexed (source, source_id) pairs.
 
 **Location:** `memory_service/vector_store.py`
@@ -412,7 +412,7 @@ Assistant message (auto-detected, scored >= 4)
 
 ### Why UnifiedVectorStore?
 
-MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (session_diary entries, consolidation_cache) that doesn't exist as files.
+MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (session_diary entries, memory_rollups) that doesn't exist as files.
 
 | Feature | MemSearch | SqliteIndexer | UnifiedVectorStore |
 |---------|-----------|---------------|-------------------|

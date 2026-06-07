@@ -50,7 +50,7 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
 
 ## Phase 1: Session Analyzer + Trimmed Summary
 
-**What:** Heuristic session classifier that detects session mode from content signals. Generates trimmed summary with fixed 11-field schema. Integrates mode-aware summarization into ArcClient.
+**What:** Heuristic session classifier that detects session mode from content signals. Generates trimmed summary with fixed 12-field schema. Integrates mode-aware summarization into ArcClient.
 
 **Files:**
 - Create: `super_council/arc_summarizer/analyzer.py` — SessionAnalyzer class
@@ -63,11 +63,14 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
    - Returns score vector: `{code: float, research: float, planning: float, debugging: float, mixed: float}`
    - Picks highest score as `session_mode`. Falls back to `mixed` when scores are within 0.1 of each other
 2. Implement `trim_session()` method:
-   - Input: raw session summary text
-   - Output: fixed-schema dict with 11 fields (session_id, project_id, run_id, session_type, files_changed, functions_touched, tests_written, errors_blockers, explicit_decisions, completed_work, open_work, notable_deviations)
+   - Input: structured session material (preferred) or raw session summary text (fallback)
+   - If Pi session JSONL or chat message structure is available, consume that directly for stable, phrase-independent extraction
+   - Falls back to plain-text parsing only when structured material is unavailable
+   - Output: fixed-schema dict with 12 fields (session_id, project_id, run_id, session_mode, files_changed, functions_touched, tests_written, errors_blockers, explicit_decisions, completed_work, open_work, notable_deviations)
    - Strips conversational noise, preserves task-bearing signals
 3. Update `SUMMARIZATION_PROMPT_TEMPLATE` to include superset schema:
    - All 12 sections (topics, decisions, work_completed, open_items, files_changed, functions_modified, tests_written, bugs_fixed, sources_consulted, key_findings, root_cause, resolution)
+   - Emits structured output alongside human-readable text so `trim_session()` can consume it directly
    - Mode-specific emphasis via system prompt instructions (e.g., code mode emphasizes files_changed + functions_modified)
 4. Update `ArcClient.summarize_session()` to accept `session_mode` parameter:
    - Routes to mode-appropriate prompt variant
@@ -241,7 +244,7 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
 
 - **One summarizer, no role sprawl:** Keep one summarizer prompt family with session_mode switch. Do not create multiple summarizer roles.
 - **Heuristic-first classifier:** No extra model call for classification. Use signal counts (code paths, errors, decisions, URLs, planning verbs).
-- **Fixed 11-field schema:** The trimmed summary schema is a contract. All downstream consumers (ARC, reconciliation, deviation detection) depend on it. Extensible via `_extra` catch-all field.
+- **Fixed 12-field schema:** The trimmed summary schema is a contract. All downstream consumers (ARC, reconciliation, deviation detection) depend on it. Extensible via `_extra` catch-all field.
 - **Raw fidelity preserved:** Raw session logs are never modified. Trimmed summary is a derived artifact. Raw text is consulted only on low-confidence matches.
 - **Threshold stability:** The matcher sees structured signals (trimmed summary), not full chat noise. Thresholds are calibrated against trimmed input.
 - **Decision order enforced:** Exact match → same project + fuzzy match → same project + subsystem + fuzzy evidence → fallback to new task or deviation candidate.
@@ -253,7 +256,7 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
 ## Success Criteria
 
 - [ ] SessionAnalyzer classifies sessions into 5 modes with heuristic signals
-- [ ] Trimmed summary preserves all task-bearing signals in fixed 11-field schema
+- [ ] Trimmed summary preserves all task-bearing signals in fixed 12-field schema
 - [ ] Mode-aware summarization produces correct output per session type
 - [ ] Adaptive triggers fire on: idle, turn count, token budget, model swap, significant events
 - [ ] Scheduler responds to event hints via _wake() method
@@ -274,7 +277,7 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
 
 3. **Idle detection thread safety:** Last-activity timestamp tracking must be thread-safe in the HTTP server. Use `threading.Lock` or atomic operations.
 
-4. **Schema evolution risk:** The 11-field trimmed summary is a contract. Adding/removing fields requires migration if downstream consumers depend on specific fields. The `_extra` catch-all mitigates this.
+4. **Schema evolution risk:** The 12-field trimmed summary is a contract. Adding/removing fields requires migration if downstream consumers depend on specific fields. The `_extra` catch-all mitigates this.
 
 5. **Event hint timing:** _wake() signals immediate check cycle, but the scheduler may be mid-cycle. Use `threading.Event` for non-blocking wake.
 
@@ -286,6 +289,6 @@ Phases 2 and 3 can execute in parallel after Phase 1 completes.
 
 - **Session modes:** 5 modes chosen (code, research, planning, debugging, mixed) based on observed session patterns. `mixed` is the fallback when scores are close, not a sixth mode.
 - **Score vector:** Each mode gets a 0.0-1.0 score. Highest score wins. If two scores are within 0.1, default to `mixed`. This prevents forced classification on ambiguous sessions.
-- **Trimmed schema:** 11 fields chosen to cover all task-bearing signals. `_extra` field allows extensibility without breaking the contract.
+- **Trimmed schema:** 12 fields chosen to cover all task-bearing signals. `_extra` field allows extensibility without breaking the contract.
 - **Threshold banding:** New bands (0.90/0.80/0.50) are tighter than current (0.8/0.5). Calibrated against trimmed summary input, not raw session text.
 - **Event hints:** 4 signals chosen (chat_summary_saved, daily_summary_saved, daily_count_threshold_reached, weekly_completed) to cover the consolidation pyramid without a full event bus.

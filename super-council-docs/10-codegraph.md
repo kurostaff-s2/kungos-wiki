@@ -52,6 +52,14 @@ Three triggers keep `cg_nodes_fts` in sync with `cg_nodes`:
 | `cg_nodes_ad` | DELETE | Delete row from FTS5 |
 | `cg_nodes_au` | UPDATE | Delete old + insert new in FTS5 |
 
+**Auto-ensure on startup (2026-06-06):** `CodeGraphStore.__init__()` calls `_ensure_fts_triggers()` which creates missing triggers idempotently. This fixes the persistent FTS5 rebuild issue where triggers were lost after initial data load (triggers created by `sync.py` but never applied to existing DBs). Triggers now survive service restarts and are recreated automatically if missing.
+
+**Manual rebuild (if needed):**
+```bash
+# Rebuild FTS5 index + recreate triggers
+python3 -m super_council.code_graph.sync --rebuild-fts ~/.council-memory/codegraph.db
+```
+
 ## Indexing
 
 ### Full Re-index

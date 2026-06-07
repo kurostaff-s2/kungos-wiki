@@ -344,7 +344,7 @@ service.health_check()
 
 | Channel | Table | Method | Provenance |
 |---------|-------|--------|------------|
-| **Arc A380 pipeline** | `consolidation_cache` | `upsert_consolidation_cache()` | `consol-*` — Granite-4.1-3B output |
+| **Arc A380 pipeline** | `memory_rollups` | `upsert_memory_rollup()` | `consol-*` — Granite-4.1-3B output |
 | **Mechanical upsert** | `session_diary` | `upsert_session_diary()` | `sess-*` — auto-detected or manual |
 | **Todo reconciliation** | `session_diary` (read) | `reconcile_open_items()` | deduped open items across entries |
 
@@ -352,7 +352,9 @@ service.health_check()
 
 **`reconcile_open_items(days_back=14)`** — Deduplicates open items across all diary entries. Groups by normalized text (lowercase, stripped bullet/number prefixes), counts occurrences, tracks first/last seen dates. Returns `{items: [{text, count, first_seen, last_seen}], total_raw, total_unique}`.
 
-**`upsert_consolidation_cache(...)`** — Arc-only. Writes raw YAML output from Granite-4.1-3B consolidation pipeline. Supports probation/activation lifecycle. Generates `consol-*` IDs. **Not fed by session_diary** — consolidation_cache remains Arc-only for provenance traceability.
+**`upsert_memory_rollup(...)`** — Arc-only. Replaces `upsert_consolidation_cache()` (zombie table, 0 rows). Writes consolidation output from Granite-4.1-3B pipeline. Generates `consol-*` IDs. **Not fed by session_diary** — memory_rollups remains Arc-only for provenance traceability.
+
+> **Migration note (2026-06-06):** `consolidation_cache` is a zombie table (exists but empty). All consolidation data lives in `memory_rollups`. The `_query_consolidation_channel()` and `_get_consolidation_metrics()` methods were updated to query `memory_rollups` via `get_memory_rollups()`.
 
 ### ContextRouter (Canonical Recall Path)
 
@@ -373,22 +375,43 @@ service.health_check()
 | `find_similar_runs(query, project_id)` | pipelines + workflow_runs | Text-match on tasks |
 | `get_review_findings(project_id, limit)` | event_log + workflow_runs | Review findings/verdicts |
 | `query_session_diary(query, limit, days_back)` | session_diary | Auto-upserted summaries |
-| `get_startup_context(max_tokens)` | consolidation_cache | Tier 1 knowledge card |
+| `get_startup_context(max_tokens)` | memory_rollups | Tier 1 knowledge card (replaces zombie consolidation_cache) |
 
 ### MemoryLayer (Artifact Management)
 
 - Token-budgeted context slices with artifact boundaries
-- **Two recall methods:**
-  - `unified_recall()` — Four-channel recall (text + structural + execution + diary)
+- **Three recall methods:**
+  - `unified_recall()` — Scoped multi-channel recall (6 channels, scope-gated)
   - `unified_log_recall()` — Multi-channel log recall (8 channels + service health + MCP status)
-- Unified four-channel recall (all routed through ContextRouter):
+  - `get_context_slice()` — Token-budgeted artifact context
+- Scoped recall via `SCOPE_CHANNELS` mapping (replaces blind 6-channel firehose):
 
-| Channel | Source | When Included |
-|---------|--------|---------------|
-| **Text Memory** | memsearch + ContextRouter.get_artifacts() + get_review_findings() | Always |
-| **Structural Graph** | RelationalStore.get_workflow_definitions() | Only when query contains `phase/workflow/pipeline/transition/state/gate/tdd` |
-| **Execution History** | ContextRouter.find_similar_runs() | Only runs from last 3 days |
-| **Session Diary** | ContextRouter.query_session_diary() | When query matches diary entries; skips entries with no structured fields |
+| Scope | Channels Fired | Use Case |
+|-------|---------------|----------|
+| `None` (default) | memsearch only | Highest precision vector search |
+| `decision` | memsearch + diary | "What did we decide?" |
+| `repair` | memsearch + execution | "How do I fix this?" |
+| `recent` | recent_context only | "What just happened?" |
+| `run` | memsearch + artifacts + execution | "What happened in run X?" |
+| `architecture` | memsearch + structural | "How does X work?" |
+| `all` | all 6 channels | Explicit opt-in, respects token budget |
+
+**Channel sources (updated 2026-06-06):**
+
+| Channel | Source | Data |
+|---------|--------|-----|
+| **Text Memory** | memsearch (Milvus + pplx-embed-v1) | Vector search, threshold-gated (0.60) |
+| **Structural Graph** | CodeGraphStore.search_nodes() → codegraph.db | 20K+ code nodes, FTS5 MATCH |
+| **Execution History** | ContextRouter.find_similar_runs() | Runs from last N days (default 3) |
+| **Session Diary** | ContextRouter.query_session_diary() | Skips entries with no structured fields |
+| **Artifacts** | ContextRouter.get_artifacts() | Text-filtered recent artifacts (50 max) |
+| **Recent Context** | ContextRouter.query_raw_session_memories() | Last 3 days, 3KB budget |
+
+**Fixes applied 2026-06-06:**
+- Structural channel: queries codegraph.db (20K nodes) via CodeGraphStore, not council_core.db
+- Consolidation channel: queries `memory_rollups` (2 entries), not zombie `consolidation_cache` (0 rows)
+- Artifacts: text filter for non-run-id queries (regex `prefix-hex` detection)
+- SSE path: passes `severity`, `days_back`, `threshold` to unified_recall()
 
 - Artifact ingestion, eviction, context slicing
 - **Never cuts mid-artifact** — uses `ARTIFACT_BOUNDARY` markers
@@ -587,7 +610,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
 |---------|--------|-------|
 | `system_events` | event_log table | SQL LIKE match |
 | `session_diary` | session_diary table | ContextRouter.query_session_diary() |
-| `consolidation` | consolidation_cache table | RelationalStore.query_consolidation_cache() |
+| `consolidation` | memory_rollups table | RelationalStore.get_memory_rollups() (replaces zombie consolidation_cache) |
 | `daily_logs` | `~/.council-memory/daily/*.md` | DailyLogParser (markdown tables) |
 | `chat_summaries` | `~/.council-memory/chat-summaries/*.md` | ChatSummaryQuery (sectioned markdown) |
 | `workflow_state` | workflow_runs table | SQL LIKE match |

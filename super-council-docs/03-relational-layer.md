@@ -24,8 +24,9 @@ raw_session_memories  -- Raw auto-detected assistant messages (raw_text, no stru
                       -- Provenance prefix: trace-*
                       -- Migration 07: split from session_diary
                       -- Auto-indexed into memsearch on upsert
-consolidation_cache   -- Arc A380 pipeline ONLY (Granite-4.1-3B consolidation output)
+memory_rollups        -- Arc A380 pipeline ONLY (replaces zombie consolidation_cache)
                       -- Provenance prefix: consol-*
+                      -- Migration 2026-06-06: consolidation_cache → memory_rollups
 session_diary         -- Structured knowledge (Arc tier outputs + manual upserts)
                       -- Provenance prefix: sess-* (manual), consol-* (Arc tier)
                       -- Migration 04: created from split of consolidation_cache
@@ -45,13 +46,13 @@ severity_levels       -- Enum: critical, error, warning, info
 | Prefix | Table | Source | Structure |
 |--------|-------|--------|-----------|
 | `trace-*` | `raw_session_memories` | Auto-detected (Pi extension) | raw_text only, no structure |
-| `consol-*` | `consolidation_cache` | Arc A380 (Granite-4.1-3B) | continuity_notes, preferences, decisions, unresolved |
+| `consol-*` | `memory_rollups` | Arc A380 (Granite-4.1-3B) | tier, window_start/end, content, summary, status |
 | `sess-*` | `session_diary` | Manual upsert / test | decisions, open_items, work_completed, session_context |
 | `consol-{tier}-*` | `session_diary` | Arc tier pipeline | structured fields + consolidation_tier |
 
 **raw_session_memories** — Raw auto-detected assistant messages. Written by `RelationalStore.upsert_raw_session_memory()` when the Pi extension's `message_end` hook detects a high-scoring message. Stores full raw_text (1-4KB typical). Auto-indexed into memsearch on upsert for vector recall. Feeds the Arc tier pipeline (`_gather_tier_input()` reads this table for the 'daily' tier).
 
-**consolidation_cache** — Arc A380 pipeline only. Written by `ArcPipeline.run_consolidation()` after Granite-4.1-3B produces YAML output. Supports Tier 1 knowledge card injection, probation/activation lifecycle, and memsearch indexing.
+**memory_rollups** — Arc A380 pipeline only (replaces zombie `consolidation_cache`). Written by `ArcPipeline.run_consolidation()` after Granite-4.1-3B produces output. Stores tier, window_start/end, content, summary, status. Query via `RelationalStore.get_memory_rollups()`. The old `consolidation_cache` table exists but is empty (zombie).
 
 **session_diary** — Structured knowledge table. Two sources:
 1. **Arc tier pipeline** — `run_tiered_consolidation()` writes consolidated outputs with `consolidation_tier` set ('daily', 'short', 'weekly', 'bimonthly')
