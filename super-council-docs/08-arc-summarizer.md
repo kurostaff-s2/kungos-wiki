@@ -276,6 +276,93 @@ Also available via `MemoryService.health_check()` → `arc_server` section.
 | `test_consolidation_metrics.py` | 17 | Metrics queries, overdue detection, TTL, cache, blacklist, integration |
 | **Total** | **93** | All passing |
 
+## Reconciliation Framework
+
+Memory consolidation and reconciliation are **separate processes** with different goals:
+
+| Aspect | Memory Consolidation | Reconciliation |
+|--------|---------------------|----------------|
+| **Goal** | Preserve running narrative memory that evolves | Track workflow, mistakes, deviations |
+| **LLM** | ARC LLM (Granite-4.1-3B) | Mechanical extraction (no LLM) |
+| **Input** | Raw session data, annotated conversation | Consolidation outputs from `arc-memory/` |
+| **Output** | `arc-memory/daily/` (structured MD) | `arc-reconcile/daily/` (tasks.md, deviations.md, carry_forward.md) |
+| **Frequency** | Per session, tiered (daily→short→weekly→bimonthly) | After consolidation, scheduled |
+
+### Why Split?
+
+The ARC LLM isn't powerful enough to do both simultaneously. Consolidation focuses on narrative preservation. Reconciliation focuses on workflow tracking. Separate processes avoid overloading the model.
+
+### Raw Session Data Format (Path B)
+
+Canonical raw session files in `~/.council-memory/canonical-raw-session-data/` use an **annotated conversation format**:
+
+```
+## Annotated Conversation
+
+USER: check the CPU usage on pplx-embed
+
+ASSISTANT: Found it — server.py on port 18099. [file:server.py]
+
+ACTION [edit]: /path/to/db_poller.py (1 edit(s))
+
+ASSISTANT: Fixed the poll interval. Got a ValueError. [error:ValueError]
+```
+
+**Inline annotations preserve positional context:**
+- `[file:path]` — file references at the turn where they appear
+- `[func:name]` — function/method references
+- `[error:type]` — error/exception references
+- `[read:path]`, `[edit:path]`, `[write:path]` — tool actions
+- `[bash:cmd] [files:...]` — shell commands with file context
+- `FLAG[label]` — destructive operation warnings
+
+**No hardcoded sections.** The ARC LLM extracts structured data (decisions, work completed, deviations) from the annotated conversation with full positional traceability.
+
+### Reconciliation Pipeline
+
+```
+arc-memory/daily/ (consolidation outputs)
+       ↓
+  ArcReconciler (mechanical extraction)
+       ↓
+  arc-reconcile/daily/ (tasks.md, deviations.md, carry_forward.md)
+```
+
+**ArcReconciler** (`arc_summarizer/reconcile.py`):
+- Reads latest consolidation MD from `arc-memory/{tier_id}/`
+- Extracts tasks, deviations, carry_forward items
+- Preserves structured fields (position, evidence, files, functions)
+- Filters noise items ("None identified", "none", "N/A")
+- Every item includes source tag for traceability
+
+### Reconciliation Output Format
+
+```
+# Reconciliation: tasks
+date: 2026-06-09T00:00:00+0530
+tier: daily
+items: 3
+
+## Completed
+- Fixed schema count inconsistency [source:consolidation-20260608-233513.md]
+  - position: after investigating CPU usage
+  - files: session_summarization.md
+  - functions: trim_session
+
+## Open
+- Clarify upsert mechanism [source:consolidation-20260608-233513.md]
+  - position: end of session
+  - evidence: Reviewing memory_service pipelines
+```
+
+### Known Limitations
+
+1. **Reconciliation is purely reactive** — only extracts what ARC LLM already produced
+2. **No independent workflow analysis** — can't detect mistakes/deviations that consolidation missed
+3. **Deviations rarely produced** — ARC LLM only produces deviations when explicitly stated
+
+**Fix options documented:** `/home/chief/llm-wiki/00-prompt-handoff/09-06-2026_arc-reconciliation-framework-fix_cd2902.md`
+
 ## What Does NOT Change
 
 - **`memory_rollups` / `session_diary` separation** — Provenance traceability preserved (replaces zombie consolidation_cache)
