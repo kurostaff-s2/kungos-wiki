@@ -20,6 +20,78 @@
 
 ---
 
+## 0. What is Hybrid Search?
+
+### Definition
+
+**Hybrid search** combines two retrieval methods into a single ranked result set:
+
+| Method | What it does | Strength | Weakness |
+|--------|-------------|----------|----------|
+| **Dense (vector)** | Semantic similarity via embeddings | Finds conceptually similar content | Misses exact keywords, poor at rare terms |
+| **Sparse (BM25)** | Keyword frequency + inverse document frequency | Exact keyword matches, rare terms | No semantic understanding, no synonyms |
+
+**Example:** Query "memory consolidation pipeline"
+- **Dense alone:** Returns documents about "memory management", "data pipelines" (semantically similar)
+- **BM25 alone:** Returns documents containing "memory" AND "consolidation" AND "pipeline" (exact match)
+- **Hybrid (RRF fusion):** Returns documents that are BOTH semantically relevant AND contain the keywords
+
+### How RRF (Reciprocal Rank Fusion) Works
+
+```
+RRF_score(doc) = 1 / (k + rank_dense(doc)) + 1 / (k + rank_bm25(doc))
+```
+
+Where `k=60` (constant). Documents ranked high by BOTH methods get the highest score.
+
+### Do Other Open-Source Alternatives Provide Hybrid Search?
+
+**Yes — many do.** Milvus Lite is NOT unique:
+
+| Store | Dense | Sparse (BM25) | Hybrid (RRF) | Notes |
+|-------|-------|---------------|--------------|-------|
+| **Milvus Lite** | ✅ | ✅ (BM25) | ✅ (RRF) | Built-in, automatic |
+| **Qdrant** | ✅ | ✅ (BM25) | ✅ (RRF) | Named vectors, parallel queries |
+| **LanceDB** | ✅ | ✅ (FTS) | ✅ (RRF) | Full-text search + vector |
+| **Weaviate** | ✅ | ✅ (BM25) | ✅ (RRF) | AlphaNum query, multi-stage |
+| **pgvector** | ✅ | ⚠️ (manual) | ⚠️ (manual) | Combine with PostgreSQL FTS |
+| **Chroma** | ✅ | ❌ | ❌ | Dense only, no BM25 |
+| **SQLite-vec** | ✅ | ⚠️ (FTS5) | ⚠️ (manual) | Combine with SQLite FTS5 |
+
+### Can We Get Hybrid Search with SQLite-vec?
+
+**Yes.** SQLite has a built-in **FTS5** extension that provides BM25 scoring. The hybrid search pattern is:
+
+```sql
+-- Dense search (sqlite-vec)
+SELECT id, content, vec_distance L2(distance) AS dist
+FROM documents
+ORDER BY dist
+LIMIT 50;
+
+-- Sparse search (FTS5)
+SELECT rowid AS id, content, rank
+FROM documents_fts
+WHERE documents_fts MATCH 'memory consolidation pipeline'
+LIMIT 50;
+
+-- Hybrid (RRF fusion in application code)
+-- Combine both result sets using RRF formula
+```
+
+This is demonstrated in [sqlite-hybrid-search](https://github.com/liamca/sqlite-hybrid-search) and [alexgarcia.xyz](https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html).
+
+**Trade-off:** Manual RRF fusion in application code vs. built-in hybrid search in Milvus/Qdrant/LanceDB. At our scale (~2K vectors), the performance difference is negligible.
+
+### Recommendation
+
+If hybrid search is critical:
+1. **SQLite-vec + FTS5** (manual RRF) — single DB, concurrent access, no lock issues
+2. **LanceDB** (built-in hybrid) — disk-based, concurrent access, hybrid search
+3. **Qdrant** (built-in hybrid) — excellent performance, requires server process
+
+---
+
 ## 1. Tokenizer Warning Investigation
 
 ### What's Happening
@@ -163,14 +235,82 @@ The model (`pplx-embed-v1-0.6b-int8`) uses a Mistral tokenizer that has a known 
 
 ### Options
 
-#### Vibe Kanban (BloopAI)
-- **Status:** 🌅 **Sunsetting** — will continue as open source/community maintained
-- **Features:** Kanban board, workspace management, agent orchestration, diff review, PR creation
-- **Agents supported:** Claude Code, Codex, Gemini CLI, GitHub Copilot, Amp, Cursor, OpenCode, Droid, CCR, Qwen Code
-- **Tech stack:** Rust backend, React frontend, npm package
-- **Pros:** Designed for AI agents, multi-agent support, built-in diff review
-- **Cons:** Sunsetting, community maintenance uncertain, may not be updated
-- **Integration complexity:** Medium (requires npm, Rust, agent authentication)
+#### Vibe Kanban (BloopAI) — Refactoring Analysis
+
+**Status:** 🌅 **Sunsetting** — will continue as open source/community maintained
+**License:** MIT
+**Tech stack:** Rust (server, db, git, workspaces, MCP) + Node.js/React (web UI)
+
+##### Architecture
+
+```
+vibe-kanban/
+├── crates/              # Rust backend
+│   ├── db/              # SQLite database (SQLx, migrations)
+│   ├── server/          # HTTP server, WebSocket relay
+│   ├── workspace-manager/  # Git worktree management
+│   ├── worktree-manager/   # Branch isolation
+│   ├── git/             # Git operations
+│   ├── mcp/             # MCP protocol integration
+│   ├── executors/       # Agent execution (Claude, Codex, etc.)
+│   ├── relay-*/         # WebSocket/WeRTC relay for terminal
+│   └── ...              # 30+ crates total
+├── packages/            # Node.js frontend
+│   ├── ui/              # React components
+│   ├── local-web/       # Local web UI
+│   ├── remote-web/      # Remote web UI
+│   └── web-core/        # Shared web utilities
+└── npx-cli/             # CLI entry point
+```
+
+##### Data Model (SQLite)
+
+```sql
+-- Core tables
+projects (id, name, git_repo_path, setup_script)
+tasks (id, project_id, title, description, status)
+workspaces (id, task_id, branch, worktree_path)
+sessions (id, workspace_id, executor, status)
+execution_processes (id, workspace_id, run_reason)
+
+-- Status values
+tasks.status: 'todo' | 'inprogress' | 'done' | 'cancelled' | 'inreview'
+workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
+```
+
+##### Refactoring Feasibility
+
+| Aspect | Effort | Notes |
+|--------|--------|-------|
+| **Database adapter** | Medium | Replace SQLite with council-core (or dual-write) |
+| **Data model mapping** | Medium | Map work_items→tasks, plan_deviations→activities, runs→workspaces |
+| **Server API** | High | Replace Rust server with Python/council-core API |
+| **Frontend UI** | Low-Medium | React components are reusable; customize for council-core |
+| **Agent integration** | High | Replace executor crate with pi-subagents integration |
+| **Git worktree** | Medium | Keep or replace with council-core worktree management |
+| **Total effort** | **2-4 weeks** | Full refactoring, not trivial |
+
+##### Pros of Refactoring
+
+- **Proven UI:** Kanban board, workspace management, diff review are battle-tested
+- **MIT license:** Can modify freely
+- **Rust performance:** Server-side operations are fast
+- **Multi-agent support:** Designed for parallel agent execution
+- **Git integration:** Built-in worktree management, PR creation
+
+##### Cons of Refactoring
+
+- **Sunsetting:** No official support, community maintenance uncertain
+- **Complex architecture:** 30+ Rust crates, steep learning curve
+- **Agent-specific:** Designed for Claude/Codex/Gemini, not pi-subagents
+- **Data model mismatch:** Vibe Kanban uses projects/tasks/workspaces; we use work_items/deviations/runs
+- **Maintenance burden:** Full codebase to maintain after refactoring
+
+##### Recommendation
+
+**Not recommended for full refactoring.** The effort (2-4 weeks) is significant, and the data model mismatch requires substantial changes. The sunset status adds risk.
+
+**Alternative:** Fork the **frontend UI only** (packages/ui/) and build a custom backend that reads from council-core. This reduces effort to ~1 week and provides a familiar kanban interface.
 
 #### KaibanJS
 - **Status:** ✅ **Active** — beta, MIT license, regular updates
@@ -193,16 +333,26 @@ The model (`pplx-embed-v1-0.6b-int8`) uses a Mistral tokenizer that has a known 
 | Option | Effort | Fit | Risk |
 |--------|--------|-----|------|
 | **KaibanJS** | Low-Medium | ✅ Good | Low (active, MIT) |
-| **Vibe Kanban** | Medium | ⚠️ OK | High (sunset) |
+| **Vibe Kanban (fork UI)** | Medium | ✅ Good | Medium (sunset, but code is stable) |
+| **Vibe Kanban (full refactor)** | High | ⚠️ OK | High (sunset, complex) |
 | **Custom build** | High | ✅ Best | Medium (maintenance) |
 
-**Recommendation:** Start with **KaibanJS** for quick visualization. It's active, MIT-licensed, and designed for AI agent workflows. If it doesn't meet our needs, consider a custom build tailored to council-core.
+**Recommendation:** 
+1. **Short-term:** Use **KaibanJS** for quick visualization (npm package, active development)
+2. **Medium-term:** Fork **Vibe Kanban's UI** (packages/ui/) and build a custom council-core adapter
+3. **Long-term:** Build custom kanban if neither meets requirements
 
-**Integration path:**
+**Integration path (KaibanJS):**
 1. Install KaibanJS (`npx kaibanjs@latest init`)
 2. Create a custom adapter that reads from council-core (work_items, plan_deviations)
 3. Map council-core status values to KaibanJS columns
 4. Deploy as a local service (or embed in existing UI)
+
+**Integration path (Vibe Kanban UI fork):**
+1. Fork packages/ui/ from vibe-kanban
+2. Replace the Rust API calls with council-core HTTP API
+3. Map data model: work_items→tasks, plan_deviations→activities, runs→workspaces
+4. Deploy as a standalone React app
 
 ---
 
@@ -222,14 +372,15 @@ The model (`pplx-embed-v1-0.6b-int8`) uses a Mistral tokenizer that has a known 
 
 ### Kanban UI
 
-| Criteria | KaibanJS | Vibe Kanban | Custom |
-|----------|----------|-------------|--------|
-| Active development | ✅ | ❌ (sunset) | ✅ |
-| Agent integration | ✅ | ✅ | ❌ (build) |
-| Open source | ✅ (MIT) | ✅ (MIT) | ✅ |
-| Integration effort | Low | Medium | High |
-| Council-core fit | ⚠️ (adapter) | ⚠️ (adapter) | ✅ (native) |
-| **Overall fit** | **✅ Best** | ⚠️ OK | ✅ Best (long-term) |
+| Criteria | KaibanJS | Vibe Kanban (UI fork) | Vibe Kanban (full) | Custom |
+|----------|----------|----------------------|-------------------|--------|
+| Active development | ✅ | ⚠️ (sunset, stable) | ❌ (sunset) | ✅ |
+| Agent integration | ✅ | ✅ (proven) | ✅ (proven) | ❌ (build) |
+| Open source | ✅ (MIT) | ✅ (MIT) | ✅ (MIT) | ✅ |
+| Integration effort | Low | Medium | High | High |
+| Council-core fit | ⚠️ (adapter) | ✅ (custom adapter) | ⚠️ (mismatch) | ✅ (native) |
+| Maintenance burden | Low | Medium | High | High |
+| **Overall fit** | **✅ Best (short-term)** | **✅ Good (medium-term)** | ❌ Poor | ✅ Best (long-term) |
 
 ---
 
@@ -241,20 +392,29 @@ The model (`pplx-embed-v1-0.6b-int8`) uses a Mistral tokenizer that has a known 
 - **Change:** Add `fix_mistral_regex=True` to `SentenceTransformer()` call
 
 ### Phase 2: Vector Store Migration (Short-term)
-- **Option A (Recommended):** Migrate to SQLite-vec for both channels
+- **Option A (Recommended):** Migrate to **SQLite-vec + FTS5** for hybrid search
   - Eliminate Milvus Lite dependency
   - Unified architecture (single DB)
-  - Lose hybrid search (BM25) — acceptable at 2K vectors
-- **Option B (Alternative):** Migrate to LanceDB
-  - Keep hybrid search
+  - Manual RRF fusion for hybrid search (dense + BM25)
+  - Concurrent access, no lock issues
+- **Option B (Alternative):** Migrate to **LanceDB**
+  - Keep built-in hybrid search (dense + FTS)
   - Disk-based storage
   - Slightly more complex setup
+- **Option C (Overkill):** Migrate to **Qdrant**
+  - Excellent hybrid search (dense + sparse)
+  - Requires server process
+  - Best performance, but overkill for 2K vectors
 
 ### Phase 3: Kanban Integration (Medium-term)
-- **Option A (Recommended):** Integrate KaibanJS
+- **Option A (Recommended):** Integrate **KaibanJS** for quick visualization
   - Quick setup, active development
   - Custom adapter for council-core data
-- **Option B (Long-term):** Build custom kanban
+- **Option B (Alternative):** Fork **Vibe Kanban UI** (packages/ui/)
+  - Proven kanban interface
+  - Build custom council-core adapter
+  - Medium effort, stable codebase
+- **Option C (Long-term):** Build custom kanban
   - Full control, tailored to our data model
   - Higher effort, maintenance burden
 
@@ -275,10 +435,13 @@ The model (`pplx-embed-v1-0.6b-int8`) uses a Mistral tokenizer that has a known 
 - [ ] Tokenizer warning suppressed (fix_mistral_regex=True)
 - [ ] Vector store migration plan selected and documented
 - [ ] Kanban integration approach selected and documented
-- [ ] Migration implementation completed (if approved)
+- [ ] Hybrid search requirement evaluated (BM25 needed or not)
+- [ ] If SQLite-vec + FTS5: Manual RRF fusion implemented and tested
+- [ ] If LanceDB: Built-in hybrid search verified
+- [ ] If Vibe Kanban UI fork: Council-core adapter implemented
 - [ ] All existing tests pass (no regression)
-- [ ] Hybrid search evaluated (BM25 needed or not)
 - [ ] Data migration tested (Milvus → new store)
+- [ ] Concurrent access verified (no lock issues)
 
 ---
 
