@@ -5,7 +5,7 @@
 | Project ID | `super-council` |
 | Primary entity ID | `fb17aa` |
 | Entity type | `session` |
-| Short description | Investigation of vector store options (Milvus Lite vs Chroma vs SQLite-vec vs LanceDB) and kanban UI options (Vibe Kanban vs KaibanJS vs custom) for agent memory and workflow visualization |
+| Short description | Investigation of vector store options (Milvus Lite vs Chroma vs SQLite-vec vs LanceDB) and kanban UI options (Vibe Kanban vs Odysseus vs KaibanJS vs custom) for agent memory and workflow visualization |
 | Status | `draft` |
 | Source references | Research findings below, GitHub issues, community benchmarks |
 | Generated | `11-06-2026` |
@@ -312,6 +312,83 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 
 **Alternative:** Fork the **frontend UI only** (packages/ui/) and build a custom backend that reads from council-core. This reduces effort to ~1 week and provides a familiar kanban interface.
 
+#### Odysseus (pewdiepie-archdaemon/odysseus) — Fork Analysis
+
+**Status:** ✅ **Active** — PewDiePie's personal project, regular updates
+**License:** MIT
+**Tech stack:** Python (FastAPI/Uvicorn) + Vanilla JS (no build step)
+**Local copy:** `/home/chief/Coding-Projects/7-council/super_council/vendor/odysseus/`
+
+##### Architecture
+
+```
+odysseus/
+├── app.py                 # FastAPI entry point
+├── routes/                # 50+ route modules (chat, tasks, notes, calendar, etc.)
+├── src/                   # Core logic (agents, embeddings, memory, RAG)
+├── static/                # Frontend (vanilla JS, no build step)
+│   ├── index.html         # Single-page app
+│   ├── app.js             # Main app loader
+│   ├── style.css          # 35K lines, single file
+│   ├── js/                # 140 ES6 modules
+│   │   ├── chat.js        # Chat UI
+│   │   ├── tasks.js       # Cron-style scheduled prompts
+│   │   ├── notes.js       # Google Keep-style notes
+│   │   ├── calendar.js    # Calendar integration
+│   │   └── ...            # 135 more modules
+│   └── lib/               # Third-party libs (highlight.js, xlsx, etc.)
+└── services/              # Background services (email, MCP, etc.)
+```
+
+##### Feature Set
+
+| Feature | Available? | Notes |
+|---------|-----------|-------|
+| **Kanban board** | ❌ **None** | No drag-and-drop task visualization |
+| **Task management** | ✅ Cron-style | Scheduled LLM prompts, not workflow tracking |
+| **Notes** | ✅ Google Keep-style | Cards, labels, reminders, checklists |
+| **Chat UI** | ✅ Full | ChatGPT/Claude-like interface |
+| **Calendar** | ✅ CalDAV sync | Local-first, agent-aware |
+| **Email** | ✅ IMAP/SMTP | AI triage, auto-tag, auto-reply |
+| **Documents** | ✅ Multi-tab editor | Markdown, HTML, CSV, syntax highlighting |
+| **Memory/Skills** | ✅ ChromaDB | Vector + keyword retrieval |
+| **Deep Research** | ✅ Multi-step | Source gathering, synthesis, visual reports |
+| **Model Cookbook** | ✅ Hardware-aware | Model scanning, downloading, serving |
+| **PWA** | ✅ Mobile-responsive | Installable, touch gestures |
+
+##### Fork Feasibility
+
+| Aspect | Effort | Notes |
+|--------|--------|-------|
+| **Frontend** | Low | Vanilla JS, no build step, ES6 modules |
+| **Backend** | Medium | Python (FastAPI), replace with council-core |
+| **Data model** | Medium | Map council-core to Odysseus API endpoints |
+| **CSS** | Low | 35K lines, single file, easy to customize |
+| **Total effort** | **1-2 days** | Zero build step, straightforward |
+
+##### Pros of Forking
+
+- **Zero build step:** Serve static files directly, no bundler
+- **Active development:** Regular updates, personal project of PewDiePie
+- **MIT license:** Can modify freely
+- **Python backend:** Easy to integrate with council-core (Python)
+- **Rich feature set:** Chat, notes, calendar, email, documents, memory
+- **Mobile-friendly:** PWA, responsive design
+
+##### Cons of Forking
+
+- ❌ **No kanban board:** This is the killer — no visual workflow tracking
+- ❌ **No drag-and-drop:** Tasks are cron-style prompts, not workflow cards
+- ❌ **No work_items/runs visualization:** Can't track council-core workflows
+- ❌ **Personal project:** No community, single maintainer
+- ❌ **Vanilla JS:** No component reusability, harder to maintain at scale
+
+##### Recommendation
+
+**Not recommended for kanban visualization.** Odysseus is an excellent chat/workspace UI, but it has **no kanban board**. It can't visualize work_items, runs, or plan_deviations in a drag-and-drop workflow.
+
+**Alternative use:** If you want a **chat interface** for council-core (e.g., querying memory, running agents), Odysseus is a great fork candidate. The chat UI is production-ready and the Python backend integrates easily with council-core.
+
 #### KaibanJS
 - **Status:** ✅ **Active** — beta, MIT license, regular updates
 - **Features:** Kanban board, agent orchestration, workflow visualization, real-time tracking
@@ -335,12 +412,14 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 | **KaibanJS** | Low-Medium | ✅ Good | Low (active, MIT) |
 | **Vibe Kanban (fork UI)** | Medium | ✅ Good | Medium (sunset, but code is stable) |
 | **Vibe Kanban (full refactor)** | High | ⚠️ OK | High (sunset, complex) |
+| **Odysseus (fork)** | Low | ❌ Poor | Low (active, MIT) — **no kanban** |
 | **Custom build** | High | ✅ Best | Medium (maintenance) |
 
-**Recommendation:** 
+**Recommendation:**
 1. **Short-term:** Use **KaibanJS** for quick visualization (npm package, active development)
 2. **Medium-term:** Fork **Vibe Kanban's UI** (packages/ui/) and build a custom council-core adapter
 3. **Long-term:** Build custom kanban if neither meets requirements
+4. **Alternative:** Fork **Odysseus** for chat/workspace UI (no kanban, but rich feature set)
 
 **Integration path (KaibanJS):**
 1. Install KaibanJS (`npx kaibanjs@latest init`)
@@ -353,6 +432,13 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 2. Replace the Rust API calls with council-core HTTP API
 3. Map data model: work_items→tasks, plan_deviations→activities, runs→workspaces
 4. Deploy as a standalone React app
+
+**Integration path (Odysseus fork):**
+1. Copy static/ directory (vanilla JS, no build step)
+2. Replace Python backend routes with council-core HTTP API
+3. Map data model: council-core endpoints → Odysseus API format
+4. Deploy as a local service (FastAPI or static file server)
+5. **Note:** No kanban board — use for chat/workspace UI only
 
 ---
 
@@ -372,15 +458,18 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 
 ### Kanban UI
 
-| Criteria | KaibanJS | Vibe Kanban (UI fork) | Vibe Kanban (full) | Custom |
-|----------|----------|----------------------|-------------------|--------|
-| Active development | ✅ | ⚠️ (sunset, stable) | ❌ (sunset) | ✅ |
-| Agent integration | ✅ | ✅ (proven) | ✅ (proven) | ❌ (build) |
-| Open source | ✅ (MIT) | ✅ (MIT) | ✅ (MIT) | ✅ |
-| Integration effort | Low | Medium | High | High |
-| Council-core fit | ⚠️ (adapter) | ✅ (custom adapter) | ⚠️ (mismatch) | ✅ (native) |
-| Maintenance burden | Low | Medium | High | High |
-| **Overall fit** | **✅ Best (short-term)** | **✅ Good (medium-term)** | ❌ Poor | ✅ Best (long-term) |
+| Criteria | KaibanJS | Vibe Kanban (UI fork) | Vibe Kanban (full) | Odysseus | Custom |
+|----------|----------|----------------------|-------------------|----------|--------|
+| Active development | ✅ | ⚠️ (sunset, stable) | ❌ (sunset) | ✅ | ✅ |
+| Agent integration | ✅ | ✅ (proven) | ✅ (proven) | ✅ (opencode) | ❌ (build) |
+| Open source | ✅ (MIT) | ✅ (MIT) | ✅ (MIT) | ✅ (MIT) | ✅ |
+| Integration effort | Low | Medium | High | Low | High |
+| Council-core fit | ⚠️ (adapter) | ✅ (custom adapter) | ⚠️ (mismatch) | ⚠️ (Python) | ✅ (native) |
+| Maintenance burden | Low | Medium | High | Low | High |
+| **Kanban board** | ✅ | ✅ | ✅ | ❌ **None** | ✅ |
+| **Chat UI** | ❌ | ❌ | ❌ | ✅ | ❌ (build) |
+| **Drag-and-drop** | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Overall fit** | **✅ Best (short)** | **✅ Good (medium)** | ❌ Poor | ❌ **No kanban** | ✅ Best (long) |
 
 ---
 
@@ -414,7 +503,12 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
   - Proven kanban interface
   - Build custom council-core adapter
   - Medium effort, stable codebase
-- **Option C (Long-term):** Build custom kanban
+- **Option C (Alternative):** Fork **Odysseus** for chat/workspace UI
+  - **No kanban board** — use for chat interface only
+  - Zero build step (vanilla JS)
+  - Python backend integrates easily with council-core
+  - Rich feature set: chat, notes, calendar, email, documents
+- **Option D (Long-term):** Build custom kanban
   - Full control, tailored to our data model
   - Higher effort, maintenance burden
 
@@ -439,6 +533,7 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 - [ ] If SQLite-vec + FTS5: Manual RRF fusion implemented and tested
 - [ ] If LanceDB: Built-in hybrid search verified
 - [ ] If Vibe Kanban UI fork: Council-core adapter implemented
+- [ ] If Odysseus fork: Chat UI integrated with council-core
 - [ ] All existing tests pass (no regression)
 - [ ] Data migration tested (Milvus → new store)
 - [ ] Concurrent access verified (no lock issues)
@@ -451,5 +546,7 @@ workspaces.status: 'idle' | 'running' | 'completed' | 'failed'
 - SQLite-vec benchmarks: https://deepwiki.com/asg017/sqlite-vec/6.3-performance-benchmarks
 - KaibanJS: https://github.com/kaiban-ai/kaibanjs
 - Vibe Kanban (sunset): https://github.com/BloopAI/vibe-kanban
+- Odysseus (active): https://github.com/pewdiepie-archdaemon/odysseus
+- Odysseus local copy: `/home/chief/Coding-Projects/7-council/super_council/vendor/odysseus/`
 - Chroma vs LanceDB: https://zilliz.com/comparison/chroma-vs-lancedb
 - Vector DB comparison 2026: https://www.firecrawl.dev/blog/best-vector-databases
