@@ -69,7 +69,7 @@ The consolidation pipeline has **five production-readiness gaps** that cause sil
 **Impact:** 20 sessions × 2.4 hours = 48 hours total. Pipeline appears "stuck" for hours.
 
 **Fix:** Three-part:
-1. **Hard-enforce single-task-in-flight:** The queue already serializes, but the LLM can hold multiple tasks in KV cache. After each request completes, explicitly cancel all other tasks via `POST /v1/chat/message` or `DELETE /slots/{id}`.
+1. **Hard-enforce single-task-in-flight:** The queue already serializes, but the LLM can hold multiple tasks in KV cache. After each request completes, explicitly cancel all other tasks via slot erase (see Cancellation Mechanism below).
 2. **Reduce `consolidation_max_tokens` to 4096** (or configurable per-tier). Daily tier needs ~2K output, not 8K.
 3. **Add KV cache monitoring:** If `tg < 5 tok/s` for >60s, cancel current task, clear cache, retry with smaller prompt.
 
@@ -83,22 +83,28 @@ The consolidation pipeline has **five production-readiness gaps** that cause sil
 
 **Impact:** No visibility into pipeline state. No recovery from partial failures. No audit trail.
 
-**Fix:** Add a `consolidation_requests` table:
+**Fix:** Add a `consolidation_requests` table. Use `source_file` as the canonical primary key — same PK as `session_lifecycle` and FK in `memory_rollups`. One key, zero confusion.
 
 ```sql
 CREATE TABLE IF NOT EXISTS consolidation_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trace_id TEXT NOT NULL,
-    tier_id TEXT NOT NULL,
+    source_file TEXT PRIMARY KEY,       -- same PK as session_lifecycle
+    tier_id TEXT NOT NULL,              -- daily/short/weekly/bimonthly
     status TEXT NOT NULL DEFAULT 'queued',  -- queued, submitted, generating, complete, failed, cancelled
     submitted_at TEXT,
     completed_at TEXT,
     llama_task_id INTEGER,
     error TEXT,
     output_rollup_id TEXT,
-    UNIQUE(trace_id, tier_id, status)
+    UNIQUE(source_file, tier_id)        -- one active request per file+tier
 );
 ```
+
+**Canonical key chain:**
+```
+session_lifecycle.source_file  =PK=  consolidation_requests.source_file  =FK=  memory_rollups.source_file
+```
+
+For higher tiers (short/weekly/bimonthly) that consolidate multiple rollups into one, use synthetic key `batch:<tier>:<date>` (e.g., `batch:short:2026-06-18`). Same column, same mental model.
 
 Every queue submission writes a row. On completion/failure, update status + error. The scheduler queries this table instead of filesystem glob.
 
@@ -129,11 +135,11 @@ Every queue submission writes a row. On completion/failure, update status + erro
 
 **Impact:** Pipeline completely stalls until timeout expires. No fail-fast mechanism.
 
-**Fix:** Replace blocking `future.result()` with periodic health checks:
-1. After submitting request to LLM, start a health-check timer (every 30s).
-2. If LLM is unreachable OR all slots are idle (request was lost), cancel and retry.
-3. Max total wait time per request: `timeout_seconds` (configurable, default 600s).
-4. On timeout: mark `consolidation_requests.status = 'failed'` with error message.
+**Fix:** Pre-submit health check + maintain 1200s timeout for active generations:
+1. **Before submitting:** `GET /v1/models` with 3-second timeout. If unreachable → fail fast, don't submit. Prevents orphaned requests to dead LLM.
+2. **After submitting:** Keep 1200s timeout (matches A380's long prompt processing times). The LLM is healthy at submit time, so let it run.
+3. **On timeout:** Mark `consolidation_requests.status = 'failed'` with error message. Connection close triggers server-side `SERVER_TASK_TYPE_CANCEL`.
+4. **Rationale:** Reducing timeouts causes premature cancellation of valid long prompts. Pre-submit check catches the actual problem (dead LLM) before it wastes GPU time.
 
 ---
 
@@ -159,34 +165,48 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 **Steps:**
 
 1. **Add `consolidation_requests` table to `session_store.py`:**
-   - Create table with schema above (Gap 3).
-   - Add `upsert_consolidation_request(trace_id, tier_id, status, **kwargs)` method.
-   - Add `update_consolidation_request(id, status, error=None, output_rollup_id=None)` method.
+   - Create table with schema above (Gap 3). `source_file` is the canonical PK.
+   - Add `upsert_consolidation_request(source_file, tier_id, status, **kwargs)` method.
+   - Add `update_consolidation_request(source_file, status, error=None, output_rollup_id=None)` method.
    - Add `get_active_requests()` method (returns rows where status IN ('queued', 'submitted', 'generating')).
+   - Add `get_failed_requests()` method (returns rows where status = 'failed').
 
 2. **Add explicit task cancellation to `llm_queue.py`:**
-   - After `_process_request` completes (success or failure), call `_cancel_all_other_tasks(current_task_id)`.
-   - `_cancel_all_other_tasks(task_id)`: GET `/slots`, find all tasks where `id_task != task_id AND is_processing`, send `POST /v1/chat/message` with `{"slot_id": N, "content": ""}` or equivalent cancel mechanism.
-   - Log cancelled tasks.
+
+   **Primary (B): Slot erase via `--slot-save-path`:**
+   - Add `--slot-save-path /tmp/llama-slots` to `arc_summarizer/start.sh`.
+   - After `_process_request` completes, call `_cancel_all_other_tasks()`.
+   - `_cancel_all_other_tasks()`: GET `/slots`, find all slots where `id_task IS NOT NULL AND is_processing`, send `POST /slots/{id}?action=erase` for each.
+   - Log erased slots. Requires `--slot-save-path` flag (adds ~10s startup cost).
+
+   **Fallback (A): Streaming + connection close:**
+   - If `--slot-save-path` is unavailable (server not restarted yet), use streaming mode.
+   - Add `"stream": true` to all LLM requests.
+   - Read response until completion. On timeout/error, close connection → triggers server-side `SERVER_TASK_TYPE_CANCEL` → `slot.release()`.
+   - This is the native llama.cpp cancel path (same as UI Stop button).
 
 3. **Add DB tracking to queue submissions:**
-   - In `ArcClient._call_with_fallback()`, before `self._queue.submit()`, call `store.upsert_consolidation_request(trace_id, tier_id, status='queued')`.
+   - In `ArcClient._call_with_fallback()`, before `self._queue.submit()`, call `store.upsert_consolidation_request(source_file, tier_id, status='queued')`.
    - After `future.result()`, update status to 'complete' or 'failed'.
-   - Pass `trace_id` and `tier_id` through the queue (add to `QueuedRequest` dataclass).
+   - Pass `source_file` and `tier_id` through the queue (add to `QueuedRequest` dataclass).
+   - `source_file` = the JSONL path for daily tier, or `batch:<tier>:<date>` for higher tiers.
 
-4. **Add fail-fast health check to `_worker_loop`:**
-   - After submitting HTTP request, start a timer.
-   - Every 30 seconds, check if LLM is healthy (`GET /v1/models`).
-   - If unhealthy AND all slots idle → request was lost, cancel and retry.
-   - If total elapsed > `timeout_seconds` → mark as failed, don't retry.
+4. **Add pre-submit health check to `_worker_loop`:**
+   - **Before** `urlopen()`: `GET /v1/models` with 3-second timeout.
+   - If unreachable → raise `LLMUnreachableError`, mark request as 'failed' with error message.
+   - If reachable → proceed with `urlopen()` using full 1200s timeout.
+   - Rationale: Catches dead LLM before submitting. Keeps 1200s timeout for active generations (long prompts on A380).
 
-5. **Remove stale `_clear_prompt_cache()` method:**
-   - Current implementation only reads `/slots` (read-only). Replace with actual cache clear via cancel.
+5. **Replace stale `_clear_prompt_cache()` method:**
+   - Current implementation only reads `/slots` (read-only). Replace with slot erase (primary) or connection close (fallback).
+   - Add `_wait_for_idle_slots(timeout=30)` helper: polls `/slots` until all `is_processing == false`.
 
 **Tests:**
-- [ ] Unit test: `LLMRequestQueue` submits one request, completes, cancels others.
-- [ ] Unit test: `consolidation_requests` table created, upserted, queried.
-- [ ] Integration test: Queue worker detects dead LLM, marks request as failed within 60s.
+- [ ] Unit test: `LLMRequestQueue` submits one request, completes, erases other slots via `POST /slots/{id}?action=erase`.
+- [ ] Unit test: `consolidation_requests` table created with `source_file` PK, upserted, queried.
+- [ ] Unit test: Pre-submit health check (`GET /v1/models`) fails fast when LLM unreachable.
+- [ ] Integration test: Queue worker detects dead LLM before submitting, marks request as 'failed' within 3s.
+- [ ] Integration test: Fallback streaming mode closes connection, triggers server-side cancel.
 
 **Dependencies:** None.
 
@@ -211,8 +231,9 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 
 2. **Make scheduler DB-first for tier decisions:**
    - `_find_due_tiers()` should query `consolidation_requests` table for active/pending requests.
-   - If `consolidation_requests` shows active request for a tier → skip that tier.
+   - If `consolidation_requests` shows active request (status IN ('submitted', 'generating')) → skip that tier.
    - If `consolidation_requests` shows failed request → retry with backoff.
+   - Query uses `source_file` as join key with `session_lifecycle`.
 
 3. **Add error visibility to lifecycle dashboard:**
    - Backend API (`api/consolidation_status.py`) already returns `error` field from `session_lifecycle`.
@@ -221,7 +242,7 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 
 4. **Add `consolidation_status` endpoint for active requests:**
    - New API endpoint: `GET /v1/consolidation/active-requests`
-   - Returns: list of active `consolidation_requests` with status, trace_id, tier_id, submitted_at, error.
+   - Returns: list of active `consolidation_requests` with status, source_file, tier_id, submitted_at, error.
 
 **Tests:**
 - [ ] Unit test: SessionWatcher skips already-processed sessions (all guard paths).
@@ -332,13 +353,14 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 | Action | File | Purpose |
 |--------|------|---------|
 | Modify | `memory_service/consolidate/llm_queue.py` | Task cancellation, DB tracking, fail-fast, KV monitoring |
-| Modify | `memory_service/consolidate/client.py` | Pass trace_id/tier_id through queue |
+| Modify | `memory_service/consolidate/client.py` | Pass source_file/tier_id through queue |
 | Modify | `memory_service/consolidate/config.py` | Per-tier max_tokens |
 | Modify | `memory_service/consolidate/pipeline.py` | Use per-tier max_tokens, DB tracking |
 | Modify | `memory_service/consolidate/scheduler.py` | DB-first tier decisions |
 | Modify | `memory_service/ingest/session_watcher.py` | Strengthen guard |
 | Modify | `memory_service/store/session_store.py` | `consolidation_requests` table |
 | Modify | `memory_service/api/consolidation_status.py` | Active requests endpoint |
+| Modify | `arc_summarizer/start.sh` | Add `--slot-save-path /tmp/llama-slots` flag |
 | Modify | `council_main.py` | Remove ArcSummarizer entirely (already disabled) |
 | Create | `tests/test_consolidation_queue.py` | Queue hardening tests |
 | Create | `tests/test_consolidation_requests.py` | DB tracking tests |
@@ -350,7 +372,8 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 - **Single owner:** Only `memory-service` may submit consolidation requests. No other process may call the LLM for consolidation.
 - **Single task in flight:** Only one LLM request may be active at any time. The queue enforces this, but the LLM KV cache must be cleared between requests.
 - **DB-backed state:** All pipeline state must be in `session_lifecycle` and `consolidation_requests`. No in-memory-only state.
-- **Fail-fast:** If LLM is unreachable, detect within 60 seconds. Never block for 20+ minutes.
+- **Fail-fast:** If LLM is unreachable, detect within 3 seconds (pre-submit `GET /v1/models`). Never block for 20+ minutes.
+- **Canonical key:** `source_file` is the single tracking key across `session_lifecycle`, `consolidation_requests`, and `memory_rollups`. No `trace_id` in new code.
 - **No silent failures:** Every failed request must have an error recorded in DB.
 - **Token budget:** Total prompt + generation tokens must fit in A380 VRAM. Monitor `tg` to detect cache pressure.
 
@@ -361,7 +384,8 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 - [ ] Only one process (memory-service) submits consolidation requests
 - [ ] Only one LLM task active at any time (KV cache clear between requests)
 - [ ] All requests tracked in `consolidation_requests` table with status + error
-- [ ] Dead LLM detected within 60 seconds, request marked as failed
+- [ ] Dead LLM detected within 3 seconds (pre-submit health check), request marked as failed
+- [ ] `source_file` used as canonical key throughout (no `trace_id` in new code)
 - [ ] SessionWatcher doesn't reprocess already-processed files
 - [ ] All 20 pending sessions consolidated in <3 hours (not 48)
 - [ ] Frontend dashboard shows real-time pipeline status
@@ -370,28 +394,38 @@ Phase 1 (LLM Queue hardening) ──→ Phase 2 (Scheduler + lifecycle DB) ─�
 
 ---
 
+## Cancellation Mechanism (RESOLVED)
+
+**Primary (B): Slot erase via `--slot-save-path`:**
+- Add `--slot-save-path /tmp/llama-slots` to `arc_summarizer/start.sh`.
+- Enables `POST /slots/{id}?action=erase` — forcefully clears slot's KV cache.
+- Works regardless of streaming mode. Requires server restart (~10s cost).
+- Source: `server-context.cpp` line 2323 (`SERVER_TASK_TYPE_SLOT_SAVE` handler).
+
+**Fallback (A): Streaming + connection close:**
+- Add `"stream": true` to all LLM requests.
+- On timeout/error, close HTTP connection → triggers `server_response_reader::stop()` → posts `SERVER_TASK_TYPE_CANCEL` → `slot.release()`.
+- Same mechanism as llama.cpp UI Stop button (`AbortController.abort()`).
+- Source: `server-queue.cpp` line 431, `server-context.cpp` line 2230.
+
+**Decision:** Implement B first (server config change). If server restart is blocked, A works immediately (code-only change). Both achieve same outcome.
+
 ## Caveats & Uncertainty
 
-1. **LLM cancel mechanism:** llama.cpp's `/slots` endpoint may not support task cancellation. May need to use `POST /v1/chat/message` with empty content or restart the LLM. **Needs verification.**
-2. **KV cache monitoring:** The `/slots` endpoint reports `tg` (tokens/sec generation) in timing logs, but not in the JSON response. May need to parse logs or use a different endpoint. **Needs verification.**
-3. **A380 SYCL performance:** The model runs at ~333 tok/s prompt processing but only ~5 tok/s generation under normal conditions. The 0.58 tok/s observed was under KV cache pressure. Normal generation speed needs baseline measurement. **Needs verification.**
-4. **Per-tier max_tokens:** 4092 for daily tier may be too small for large sessions. Monitor output quality after reduction. **May need tuning.**
-5. **council_main ArcSummarizer removal:** If council_main has other dependencies on `self._arc` (e.g., health checks), those need to be migrated to the memory-service API. **Needs audit.**
+1. **KV cache monitoring:** The `/slots` endpoint reports `tg` (tokens/sec generation) in timing logs, but not in the JSON response. May need to parse logs or use a different endpoint. **Needs verification.**
+2. **A380 SYCL performance:** The model runs at ~333 tok/s prompt processing but only ~5 tok/s generation under normal conditions. The 0.58 tok/s observed was under KV cache pressure. Normal generation speed needs baseline measurement. **Needs verification.**
+3. **Per-tier max_tokens:** 4092 for daily tier may be too small for large sessions. Monitor output quality after reduction. **May need tuning.**
+4. **council_main ArcSummarizer removal:** If council_main has other dependencies on `self._arc` (e.g., health checks), those need to be migrated to the memory-service API. **Needs audit.**
+5. **`--slot-save-path` startup cost:** Adding the flag adds ~10s to server startup. Acceptable for production but note for rapid restart scenarios.
 
 ---
 
 ## Clarification Needed Before Drafting
 
-**Issue:** LLM task cancellation mechanism is uncertain.
+**RESOLVED:** LLM task cancellation mechanism is now verified.
 
-**Context:** llama.cpp's `/slots` endpoint is read-only (GET). There's no documented cancel endpoint. The old code used `POST /v1/chat/message` but that endpoint doesn't exist on this fork.
+- **Primary:** `--slot-save-path` flag enables `POST /slots/{id}?action=erase` (forceful KV cache clear).
+- **Fallback:** Streaming requests + connection close triggers native `SERVER_TASK_TYPE_CANCEL`.
+- Both mechanisms verified in llama.cpp source (`server-context.cpp`, `server-queue.cpp`).
 
-**Options:**
-- A: Restart `arc-summarizer.service` to clear KV cache (nuclear option, loses all state)
-- B: Send `POST /v1/chat/completions` with `stream: true` then immediately close connection (may work, may not)
-- C: Add a custom cancel endpoint to llama.cpp fork (requires C++ changes)
-- D: Accept that cancellation isn't possible; rely on timeout + retry instead
-
-**Recommendation:** Option D (timeout + retry) is safest. The queue already has per-request timeout. If a request times out, the LLM will eventually free the slot. Add a "graceful cancel" via connection close as a best-effort.
-
-**Blocking:** No — can proceed with timeout-based approach. Cancel is optimization.
+**No further clarification needed.** Ready to execute Phase 1.
