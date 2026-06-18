@@ -4,69 +4,155 @@
 
 ## Health Checks
 
-### Supervisor Status
+### llama-swap Status
 
 ```bash
-# Quick health check
-curl http://127.0.0.1:8090/health
-# → {"ok": true, "supported_features": {...}}
+# Service status
+systemctl --user status llama-swap.service
 
-# Detailed stats
-curl http://127.0.0.1:8090/status
-# → {swaps, cache_hits, uptime, current_alias, errors}
+# Running models
+curl http://127.0.0.1:9292/running
+# → {"running": [{"model": "qwen-160k-UD-fast", "state": "ready", ...}]}
 
-# Upstream metrics
-curl http://127.0.0.1:8090/metrics
-# → llama-server internal metrics
+# All models
+curl http://127.0.0.1:9292/v1/models
+# → {"models": [{"id": "qwen-160k-UD-fast", ...}]}
+
+# Slot persistence status
+curl http://127.0.0.1:9292/api/slots/status
+# → [{"model_id": "qwen-160k-UD-fast", "enabled": true, "slot_count": 0, ...}]
+
+# Manual slot save/restore
+curl -X POST http://127.0.0.1:9292/api/slots/save/qwen-160k-UD-fast
+curl -X POST http://127.0.0.1:9292/api/slots/restore/qwen-160k-UD-fast
+curl -X POST http://127.0.0.1:9292/api/slots/cleanup
+```
+
+### Memory Service Status
+
+```bash
+# Service status
+systemctl --user status memory-service.service
+
+# MCP SSE endpoint
+curl http://127.0.0.1:18097/sse
 ```
 
 ### Memsearch Stats
 
 ```bash
-curl http://127.0.0.1:8090/v1/council/memsearch-stats
-# → {"available": true, "total_chunks": 470, "indexed_sources": [...]}
+# Service status
+systemctl --user status memsearch-watch.service
+
+# Milvus port check
+ss -tlnp | grep 19530
+
+# DB location
+ls -la ~/.memsearch/milvus.db/
+```
+
+### Arc LLM Status
+
+```bash
+# Service status (port 18095)
+curl http://127.0.0.1:18095/health
 ```
 
 ## Common Issues
 
-### 1. Delegation Returns 409
+### 1. Slot Restore Fails
 
-**Symptom:** `{"error": "Delegation already in progress", "status": 409}`
+**Symptom:** Restore timeout or checksum mismatch in llama-swap logs.
 
-**Cause:** Concurrent delegation attempt. Delegation lock held by another request.
-
-**Fix:** Wait for current delegation to complete. Check `/status` for `_delegating` state.
-
-### 2. Delegation Returns 503
-
-**Symptom:** `{"error": "System unstable — swap-back failed", "status": 503}`
-
-**Cause:** `_system_error` set (swap-back failed twice consecutively).
-
-**Fix:**
-```bash
-# Option A: Wait for auto-recovery (30s intervals, 5 attempts max)
-# Option B: Manual restart
-curl -X POST http://127.0.0.1:8090/v1/council/restart
-```
-
-### 3. Slot Restore Fails
-
-**Symptom:** Restore timeout or checksum mismatch.
-
-**Cause:** Slot bin corrupted or config hash changed.
+**Cause:** Slot bin corrupted or config hash changed (model path, ctx_size, ngl, ctk, ctv).
 
 **Fix:**
 ```bash
 # Check slot metadata
-cat ~/tmp/llama-slots/<alias>/<config_hash>/slot-0.json
+cat ~/Coding-Projects/7-council/council-config/slots/<model_id>/<config_hash>/slot-0.json
 
 # Invalidate slot (forces cold start)
-rm ~/tmp/llama-slots/<alias>/<config_hash>/slot-0.bin*
-rm ~/tmp/llama-slots/<alias>/<config_hash>/slot-0.json
+rm ~/Coding-Projects/7-council/council-config/slots/<model_id>/<config_hash>/slot-0.bin*
+rm ~/Coding-Projects/7-council/council-config/slots/<model_id>/<config_hash>/slot-0.json
 
-# Restart upstream to reload model
-curl -X POST http://127.0.0.1:8090/v1/council/restart
+# Or trigger cleanup for all models
+curl -X POST http://127.0.0.1:9292/api/slots/cleanup
+```
+
+### 2. llama-swap OOM Kill
+
+**Symptom:** Service restarts unexpectedly, `MemoryMax` exceeded.
+
+**Cause:** `MemoryMax` in systemd unit too low for model's RSS + swap usage.
+
+**Fix:**
+```bash
+# Check current limit
+grep MemoryMax ~/.config/systemd/user/llama-swap.service
+# Should be 8G for 27B models
+
+# Reload and restart
+systemctl --user daemon-reload
+systemctl --user restart llama-swap.service
+```
+
+### 3. Stream Errors (Stream ended without finish_reason)
+
+**Symptom:** LLM responses cut off mid-stream, `Connection error` in logs.
+
+**Cause:** llama-server overloaded (CPU at 100%) or OOM-killed. Check `MemoryMax` and VRAM usage.
+
+**Fix:**
+```bash
+# Check llama-swap logs for OOM
+journalctl --user -u llama-swap.service --no-pager -n 50 | grep -i "oom\|kill\|memory"
+
+# Check VRAM
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+
+# If VRAM is near 24GB, reduce context size or batch size
+```
+
+### 4. Milvus Lite WAL Corruption
+
+**Symptom:** `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0` in memsearch-watch logs.
+
+**Cause:** Corrupted WAL database (unclean shutdown, OOM kill, or memsearch bug).
+
+**Fix:**
+```bash
+# Backup and delete corrupted DB
+mv ~/.memsearch/milvus.db ~/.memsearch/milvus.db.bak
+systemctl --user restart memsearch-watch.service
+# Service will rebuild index from source directories
+```
+
+### 5. Config Hash Mismatch (Cold Starts)
+
+**Symptom:** Every request triggers a cold start (~165s prefill) instead of slot restore.
+
+**Cause:** Config hash changed (model path, ctx_size, ngl, ctk, ctv, upstream_bin). Existing slot bins from old config are incompatible.
+
+**Fix:** Clear stale slot bins to force fresh save with new hash:
+```bash
+rm -rf ~/Coding-Projects/7-council/council-config/slots/<model_id>/<old-hash>/
+```
+
+### 6. Pipeline Stuck in Phase
+
+**Symptom:** Pipeline not advancing, same phase repeated.
+
+**Cause:** Phase retries exhausted → retreat to SCOUT. Or global ceiling hit → FAILED.
+
+**Debug:**
+```python
+from super_council.super_council import PipelineState
+ps = PipelineState.from_file("pipe-abc123")
+print(f"Phase: {ps.phase}")
+print(f"Status: {ps.status}")
+print(f"Global attempts: {ps.global_attempts}/{ps.max_global_attempts}")
+print(f"Phase attempts: {ps.phase_attempts}")
+print(f"History: {ps.history}")
 ```
 
 ### 4. Pipeline Stuck in Phase
@@ -104,58 +190,7 @@ print(f"History: {ps.history}")
 
 **Fix:** Reduce task size or use model with larger context.
 
-### 7. Server Flags Not Passed to Upstream
-
-**Symptom:** Model runs with wrong settings (no MTP, no flash attention, wrong sampling params). Performance significantly worse than debug server.
-
-**Cause:** `server_flags` not wired from config to `build_args()`. Or `upstream-config.json` not loaded.
-
-**Debug:**
-```bash
-# Check if supervisor is loading upstream config
-tail -5 /tmp/super-council.log | grep "Loaded"
-# Should show: "Loaded 14 models from .../upstream-config.json (subsystem config: .../config-subsystem.json)"
-
-# Verify server_flags are populated
-python3 -c "
-import sys; sys.path.insert(0, '.')
-from super_council.super_council import ModelRegistry
-reg = ModelRegistry('super_council/config-subsystem.json', 'super_council/upstream-config.json')
-cfg = reg.get_config('qwen-160k-UD-fast')
-print(f'server_flags keys: {len(cfg.server_flags)}')
-print(f'alias: {cfg.alias}')
-"
-# Should show: server_flags keys: 20, alias: qwen-160k-UD-fast
-```
-
-**Fix:** Ensure `--upstream-config` points to `upstream-config.json` (default). Verify `server_flags=extra` in `ModelRegistry.load()`.
-
-### 8. Config Hash Mismatch (Cold Starts)
-
-**Symptom:** Every request triggers a cold start (~165s prefill) instead of slot restore.
-
-**Cause:** Config hash changed (model path, ctx_size, ngl, ctk, ctv, upstream_bin). Existing slot bins from old config are incompatible.
-
-**Debug:**
-```bash
-# Check current config hash
-python3 -c "
-import sys; sys.path.insert(0, '.')
-from super_council.super_council import ModelRegistry
-reg = ModelRegistry('super_council/config-subsystem.json', 'super_council/upstream-config.json')
-cfg = reg.get_config('qwen-160k-UD-fast')
-print(f'Current hash: {cfg.config_hash()}')
-"
-# Check existing slot hashes
-ls ~/Coding-Projects/7-council/super_council/slots/Qwen3.6-27B-UD-Q4_K_XL/
-```
-
-**Fix:** Clear stale slot bins to force fresh save with new hash:
-```bash
-rm -rf ~/Coding-Projects/7-council/super_council/slots/<model>/<old-hash>/
-```
-
-### 9. Worktree Cleanup Failure
+### 7. Worktree Cleanup Failure
 
 **Symptom:** Stale worktrees in `~/.council-memory/worktrees/`.
 
@@ -174,10 +209,11 @@ git worktree remove ~/.council-memory/worktrees/<task_id> 2>/dev/null
 
 Trace backward through the call chain:
 
-1. Check supervisor log: `tail -100 /tmp/slot-supervisor.log`
-2. Check Tier 1 memory: `tail -50 ~/.council-memory/daily/YYYY-MM-DD.md`
-3. Check pipeline state: `cat ~/.council-memory/pipelines/<pipeline_id>.json`
-4. Check phase state: `cat ~/.council-memory/phase-state/<task_id>.json`
+1. Check llama-swap logs: `journalctl --user -u llama-swap.service --no-pager -n 100`
+2. Check memory service logs: `journalctl --user -u memory-service.service --no-pager -n 100`
+3. Check Tier 1 memory: `tail -50 ~/.council-memory/daily/YYYY-MM-DD.md`
+4. Check pipeline state: `cat ~/.council-memory/pipelines/<pipeline_id>.json`
+5. Check phase state: `cat ~/.council-memory/phase-state/<task_id>.json`
 
 ### Defense-in-Depth Validation
 
@@ -199,79 +235,65 @@ while not condition_met():
     time.sleep(0.2)  # 200ms poll interval
 ```
 
-## State Machine Linting
-
-```python
-from super_council.state_linter import StateMachineLinter
-from super_council.super_council import PipelineState
-
-linter = StateMachineLinter(
-    phases=list(PipelineState.ALL_PHASES),
-    transitions=dict(PipelineState.VALID_TRANSITIONS),
-    terminal_phases=set(PipelineState.TERMINAL_PHASES),
-)
-findings = linter.lint()
-
-# Check for critical issues
-critical = [f for f in findings if f['severity'] == 'CRITICAL']
-if critical:
-    print("CRITICAL issues found:")
-    for f in critical:
-        print(f"  {f['check']}: {f['message']}")
-```
-
 ## Recovery Procedures
 
-### Soft Recovery (Upstream Restart)
+### llama-swap Restart
 
 ```bash
-curl -X POST http://127.0.0.1:8090/v1/council/restart
+# Restart llama-swap (preserves slots if model is healthy)
+systemctl --user restart llama-swap.service
+
+# Check for OOM kills
+journalctl --user -u llama-swap.service --no-pager -n 50 | grep -i "oom\|kill\|memory"
 ```
 
-- Saves slot → stops llama-server → starts llama-server → waits for health → restores slot
-- Use after upstream crashes or model loading issues
-
-### Hard Recovery (Supervisor Restart)
+### Memory Service Restart
 
 ```bash
-curl -X POST http://127.0.0.1:8090/v1/council/supervisor-restart
+systemctl --user restart memory-service.service
 ```
 
-- Saves slot → stops upstream → `os.execv` replaces process in-place
-- Use after supervisor code changes, config changes, or persistent errors
+### Memsearch Rebuild
+
+```bash
+# If Milvus DB is corrupted
+mv ~/.memsearch/milvus.db ~/.memsearch/milvus.db.bak
+systemctl --user restart memsearch-watch.service
+```
 
 ### Emergency Recovery
 
 ```bash
-# Only if restart hooks fail:
+# Only if systemd restart fails:
 # 1. Check if llama-server is running
 ps aux | grep llama-server
 
-# 2. Check supervisor log for errors
-tail -200 /tmp/slot-supervisor.log | grep -i error
+# 2. Check llama-swap logs
+journalctl --user -u llama-swap.service --no-pager -n 200 | grep -i error
 
 # 3. Manual restart (LAST RESORT — loses in-flight KV cache)
 # Do NOT use kill -9. Use SIGTERM:
-kill $(pgrep -f slot-supervisor) 2>/dev/null
-kill $(pgrep -f llama-server) 2>/dev/null
+systemctl --user stop llama-swap.service
+systemctl --user start llama-swap.service
 ```
 
 ## Performance Tuning
 
 ### Swap Timing
 
-- **Cold start:** ~165s (full prefill)
-- **Slot restore:** ~5s (from tmpfs)
-- **Overlap swap:** ~3s savings (parallel VRAM wait + model load)
+- **Cold start:** ~165s (full prefill, no slot available)
+- **Slot restore:** ~5s (from tmpfs, slot available)
+- **First swap pays prefill:** Slot reuse pays off from 2nd visit onward
 
 ### Context Budget
 
 | Model | Context | Pre-send threshold (80%) |
 |-------|---------|--------------------------|
-| qwen3.6-27B-chair | 96K | 76.8K |
-| reviewer-logic | 131K | 104.8K |
-| builder | 120K | 96K |
-| specialist-coder | 100K | 80K |
+| qwen-160k-UD-fast | 110K | 88K |
+| qwen-uhn-fast | 98K | 78.4K |
+| gemma-4-26b | 98K | 78.4K |
+| nemotron-cascade | 98K | 78.4K |
+| mellum2-12b | 98K | 78.4K |
 
 ### WAL Checkpointing
 
@@ -281,16 +303,13 @@ kill $(pgrep -f llama-server) 2>/dev/null
 
 ## Log Analysis
 
-### Supervisor Log Patterns
+### llama-swap Log Patterns
 
 ```
-DELEGATION START: chair → reviewer-logic        # Delegation initiated
-DELEGATION: task length=2400 chars, timeout=300  # Task details
-Saved chair slot before delegation               # Slot saved
-DELEGATION: active recall injected (512 chars)   # Recall added
-DELEG-ROUND[0→reviewer-logic]: 2 msgs, 3200 chars  # Round start
-Pre-send budget exceeded (round 5, 96000/120000)  # Context budget hit
-=== DELEGATION END: reviewer-logic → chair ===   # Swap-back complete
+INFO slotstore hook configured models=11           # Slot persistence active
+INFO slotstore: restore triggered model=...        # Slot restore on startup
+INFO <qwen-160k-UD-fast> Health check passed       # Model ready
+INFO Request 127.0.0.1 "POST /v1/chat/completions"  # Active request
 ```
 
 ### Council Memory Patterns
@@ -298,9 +317,9 @@ Pre-send budget exceeded (round 5, 96000/120000)  # Context budget hit
 ```
 | Time | Event | Model | Detail | Status | Duration |
 |------|-------|-------|--------|--------|----------|
-| 14:23 | chat | qwen3.6-27B-chair | 12,400→12,847 (+447) [HIT] | 200 | 31200ms |
-| 14:24 | deleg | qwen3.6-27B-chair→reviewer-logic | task:2,400ch ✅ | 200 | 18400ms |
-| 14:25 | ⚠️ COMPACT | qwen3.6-27B-chair | 12,847→8,901 (-31%) | — | — |
+| 14:23 | chat | qwen-160k-UD-fast | 12,400→12,847 (+447) [HIT] | 200 | 31200ms |
+| 14:24 | deleg | qwen-160k-UD-fast→reviewer-logic | task:2,400ch ✅ | 200 | 18400ms |
+| 14:25 | ⚠️ COMPACT | qwen-160k-UD-fast | 12,847→8,901 (-31%) | — | — |
 ```
 
 **COMPACT warning:** Token count dropped >30% → KV cache compaction detected.

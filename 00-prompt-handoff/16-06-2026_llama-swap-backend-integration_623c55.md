@@ -6,10 +6,10 @@
 | Primary entity ID | `75a031-p1a` |
 | Entity type | `work_item` |
 | Short description | Wire `LlamaSwapClient` into `SlotSupervisor` as optional model management layer with graceful fallback to direct process management |
-| Status | `draft` |
+| Status | `done` |
 | Source references | `/home/chief/llm-wiki/00-prompt-handoff/16-06-2026_llama-swap-integration_75a031.md`, `/home/chief/llama-swap/`, `/home/chief/Coding-Projects/7-council/super_council/council_main.py` |
 | Generated | `16-06-2026` |
-| Next action / owner | Execute integration steps; replace `_swap_to`, `_save_current_slot`, `_restore_current_slot`, `_get_free_vram`, `_wait_for_vram` with llama-swap delegation |
+| Next action / owner | Phase 1A complete. Ready for end-to-end testing with llama-swap running on :9292 |
 
 ---
 

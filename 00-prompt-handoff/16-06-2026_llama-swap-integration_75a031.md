@@ -6,7 +6,7 @@
 | Primary entity ID | `75a031` |
 | Entity type | `handoff` |
 | Short description | Optional module architecture: SwapHook interface (upstream) + SlotStore council extension (build-tagged) + thin Python client |
-| Status | `in_progress` |
+| Status | `done` |
 | Source references | `/home/chief/llama-swap/`, `/home/chief/Coding-Projects/7-council/super_council/` |
 | Generated | `16-06-2026` |
 | Next action / owner | Go build verification, Python integration tests |
@@ -148,11 +148,11 @@ Phase 5 (Production Wiring & Verification) ◄───────────�
 | 0 | Go Build Verification | ~15 min | None | ⏳ pending Go install |
 | 1 | Analysis & Architecture Review | ~30 min | None | ✅ done |
 | 1A | Backend Bridge (Python Client) | ~45 min | Phase 1 | ✅ done |
-| 2 | Shared Types + SSE Hook | ~45 min | Phase 1 | ⏳ pending |
-| 3A | LlamaModelsPanel Component | ~30 min | Phase 2 | ⏳ pending |
-| 3B | LlamaActivityStats Component | ~30 min | Phase 2 | ⏳ pending |
-| 3C | LlamaPerformanceChart Component | ~45 min | Phase 2 | ⏳ pending |
-| 4 | InfraDashboard Integration | ~30 min | Phases 3A, 3B, 3C | ⏳ pending |
+| 2 | Shared Types + SSE Hook | ~45 min | Phase 1 | ✅ done |
+| 3A | LlamaModelsPanel Component | ~30 min | Phase 2 | ✅ done |
+| 3B | LlamaActivityStats Component | ~30 min | Phase 2 | ✅ done |
+| 3C | LlamaPerformanceChart Component | ~45 min | Phase 2 | ✅ done |
+| 4 | InfraDashboard Integration | ~30 min | Phases 3A, 3B, 3C | ✅ done |
 | 5 | Production Wiring & Verification | ~30 min | All phases | ⏳ pending |
 
 ---

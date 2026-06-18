@@ -6,7 +6,7 @@
 | Primary entity ID | `b653b6` |
 | Entity type | `handoff` |
 | Short description | Audit memory service codebase post-`session_lifecycle` migration, remove dead code, tighten pipeline alignment, and update the frontend pipeline dashboard to reflect the unified tracking architecture |
-| Status | `draft` |
+| Status | `in-progress` |
 | Source references | `18-06-2026_delegation-fix-test-rollup-outlier-investigation_6d5fc5.md`, `18-06-2026_final-findings-validation-corrected.md` |
 | Generated | `18-06-2026` |
 | Next action / owner | Execute Phase 1 (dead code audit) then proceed sequentially through Phases 2–4 |
@@ -323,3 +323,54 @@ All phases are sequential. Phase 3 depends on Phase 1's API response changes. Ph
 4. **API endpoint path:** The pipeline endpoint is `/v1/consolidation/pipeline`. Verify this is the correct path and that no other endpoints need updating.
 5. **Legacy rollups:** 180 rollups marked `parse_status='legacy'` still exist. They're not part of this handoff but should be noted as a future cleanup item.
 6. **`_RAW_SESSION_PART_MAX_CHARS` constant:** This is still actively used (100K char cap for session parts). Do NOT remove — it's unrelated to the table rename.
+
+## Execution Log
+
+### Phase 1: Dead Code Audit — COMPLETE (2026-06-18)
+
+**Executed by:** Session 2026-06-18 22:00–22:40
+
+**Changes:**
+- Removed `query_existing_rollup()` from `consolidation_store.py` (0 callers, dead code)
+- Removed `_is_consolidated()` from `session_watcher.py` (0 callers, dead code)
+- Renamed `query_raw_session_memories` → `query_session_lifecycle` across 3 files:
+  - `session_store.py`, `router.py`, `consolidation_status.py`
+- Renamed `_query_raw_session_memories` → `_query_session_lifecycle` in API
+- Renamed `_get_watcher_outliers` → `_get_unconsolidated_sessions` in API
+- Updated API response keys: `raw_sessions` → `session_lifecycle`, `watcher_outliers` → `unconsolidated_sessions`
+- Cleaned docstrings: removed "replaces raw_session_memories" references
+- Updated `migrations_pg/001_seed_from_pipelines.py` to reference `session_lifecycle`
+- Updated `tests/test_migration_seed.py` to reference `session_lifecycle`
+
+**Validation:**
+- Dead code scan: CLEAN (0 legacy references)
+- Schema: 14 columns, matches expected
+- All modified files compile cleanly
+
+### Phase 2: Pipeline Alignment — COMPLETE (2026-06-18)
+
+**Executed by:** Session 2026-06-18 22:00–22:40
+
+**Changes:**
+- Added `session_ended` column to `session_lifecycle` schema
+- Wired `finalize_trace_file()` to set `session_ended=1` on MD finalization
+- Added `_update_lifecycle_error()` helper in `pipeline.py`
+- Pipeline records errors on failure, clears on success
+- Tier writer clears `error=NULL` on successful consolidation
+- Pipeline now DB-first: queries `session_lifecycle WHERE md_written=1 AND rollup_id IS NULL`
+- Filesystem glob retained as fallback only (defense-in-depth)
+- Marked `query_existing_rollup` as deprecated (later removed in Phase 1)
+
+**Validation:**
+- Pipeline state: 77 total, 55 consolidated, 22 awaiting, 0 errors
+- No orphan `consolidated_at` (all have matching `rollup_id`)
+- No missing `consolidated_at` (all rollups have timestamp)
+- Memory service running, no startup errors
+- LLM processing 4/4 slots (consolidations in progress)
+
+### Remaining: Phase 3 (Frontend) + Phase 4 (Production Wiring)
+
+Phase 3 requires frontend TypeScript changes and PipelineView updates.
+Phase 4 requires full end-to-end verification after Phase 3.
+
+**Note:** API routes (`/v1/consolidation/pipeline`) are defined in `consolidation_status.py` but not mounted in the council API server. This is a pre-existing gap — the frontend uses `makeCouncilRequest` which may route through a different backend. Investigate before Phase 3.

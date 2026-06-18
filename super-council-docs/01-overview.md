@@ -12,14 +12,8 @@
                                  |
                                  v
 +------------------------------------------------------------------+
-|              Super-Council Supervisor                            |
-|              [listen_port:8090]                                  |
-|                                                                  |
-|  +----------+  +----------+  +----------+  +----------------+  |
-|  |Delegation |  |  Fanout  |  |  Chain   |  |   Pipeline    |  |
-|  |(reviews)  |  |(small    |  |(refactor)|  |  PRIMARY PATH |  |
-|  |           |  | models)  |  |          |  | for ALL WORK  |  |
-|  +----------+  +----------+  +----------+  +----------------+  |
+|              Memory Service (MCP SSE)                            |
+|              [port:18097 (SSE), 18098 (stream)]                  |
 |                                                                  |
 |  +--------------+  +--------------+  +----------------+        |
 |  |RelationalStore|  |ContextRouter |  |  MemoryLayer   |        |
@@ -37,18 +31,56 @@
 |  |  → Granite-4.1-3B on Arc A380 (:18095)                     |  |
 |  +------------------------------------------------------------+  |
 +--------------------------------+---------------------------------+
+                                 |
+                                 v
++------------------------------------------------------------------+
+|              llama-swap (model proxy)                            |
+|              [port:9292]                                         |
+|                                                                  |
+|  +------------------------------------------------------------+  |
+|  |  Slot Persistence (council build tag)                      |  |
+|  |  KV cache save/restore via tmpfs (48GB)                    |  |
+|  |  /home/chief/Coding-Projects/7-council/council-config/slots |
+|  +------------------------------------------------------------+  |
+|                                                                  |
+|  +----------+  +----------+  +----------+  +----------+        |
+|  |  qwen    |  |  gemma   |  | nemotron |  | gpt-oss  |        |
+|  |  27B MTP |  |  26B     |  | cascade  |  | 20B      |        |
+|  +----------+  +----------+  +----------+  +----------+        |
++--------------------------------+---------------------------------+
                                  | proxy
                                  v
 +------------------------------------------------------------------+
-|              llama-server                                        |
-|              [upstream_port:8091]                                |
+|              llama-server (per-model, dynamic ports)             |
+|              [ports: 10001+]                                     |
 |                                                                  |
-|  +----------+  +----------+  +----------+  +----------+        |
-|  |  chair   |  | co-chair |  | reviewer |  |  vice-   |        |
-|  |(default) |  |          |  |    x3    |  | granite  |        |
-|  +----------+  +----------+  +----------+  +----------+        |
+|  Single active model at a time (exclusive swap)                  |
+|  VRAM: RTX 3090 24GB, MTP speculative decoding                   |
 +------------------------------------------------------------------+
 ```
+
+## Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| llama-swap | 9292 | Model proxy, slot persistence, routing |
+| memory-service | 18097/18098 | MCP SSE server (RelationalStore, ContextRouter, MemoryLayer) |
+| memsearch-watch | 19530 | Vector index (Milvus Lite) |
+| arc-llm | 18095 | Arc A380 consolidation model (Granite-4.1-3B) |
+| frontend | 232821 | Web dashboard (Vite dev server) |
+
+## Slot Persistence
+
+llama-swap is built with `-tags council` to enable KV cache slot persistence:
+
+- **Slot directory:** `/home/chief/Coding-Projects/7-council/council-config/slots/` (48GB tmpfs)
+- **Max slots per model:** 48
+- **Binary group:** `llama-flash` (all models share same llama.cpp binary)
+- **Checksum validation:** SHA-256 before restore
+- **Orphan cleanup:** Stale slots removed on startup
+
+On model swap: `BeforeStop` saves outgoing model's KV cache → `AfterReady` restores into target.
+On OOM kill: slots are **not** saved (SIGKILL bypasses hooks). `MemoryMax=8G` prevents this.
 
 ## Usage Rules
 
@@ -97,9 +129,6 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `SlotSupervisor` | `super_council.py` | Proxy frontend, slot management, model swapping, delegation |
-| `PipelineState` | `super_council.py` | 6-phase state machine with retry/retreat/ceiling |
-| `ChairGateState` | `super_council.py` | 5-step TDD gate validation (RED→GREEN→REFACTOR) |
 | `MemoryService` | `memory_service/__init__.py` | Unified memory entry point (load → .store, .router, .layer, .review) |
 | `RelationalStore` | `memory_service/store.py` | SQLite-backed store with WAL, FK enforcement, schema seeding |
 | `ContextRouter` | `memory_service/router.py` | Structured queries: snapshots, events, similar runs, issues |
@@ -110,8 +139,6 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 | `FastMCP Server` | `memory_service/mcp_server.py` | MCP server: 18 tools + 7 resources (stdio + SSE transport) |
 | `MCPClient` | `mcp_client.py` | Sync MCP client for Pi agent (background event-loop thread) |
 | `MicroModelEnricher` | `micro_model.py` | Async semantic enrichment (ONNX embeddings, TF-IDF keywords) |
-| `StateMachineLinter` | `state_linter.py` | 8-check linter for transition graph validation |
-| `TinyCouncilManager` | `super_council.py` | Fanout coordinator (parallel/sequential mode selection) |
 | `ArcSummarizer` | `arc_summarizer/__init__.py` | Unified facade for consolidation, summarization, extraction |
 | `ArcClient` | `arc_summarizer/client.py` | HTTP client with retry + fallback to main upstream |
 | `ArcPipeline` | `arc_summarizer/pipeline.py` | Full consolidation pipeline (gather→call→write→cache→inject) |
@@ -121,7 +148,7 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 
 ## Key Design Decisions
 
-1. **Proxy architecture:** Stable frontend port survives swap churn. Clients never see upstream restarts.
+1. **Proxy architecture:** llama-swap (port 9292) is the stable frontend. Clients never see upstream restarts.
 2. **Per-model slot namespace:** `<alias>/<config_hash>/` prevents cross-model KV corruption.
 3. **Binary hash tracker:** Purges all slots on llama-server binary change.
 4. **SQLite + WAL:** Atomic transitions, FK enforcement, zero auto-checkpoint (manual only).
@@ -136,75 +163,102 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 
 ## Configuration
 
-### Dual-Config Architecture
+### llama-swap Config
 
-The supervisor uses **two config files** for clean separation of concerns:
+**Primary config:** `~/llama-swap/config.yaml`
 
-| File | Purpose | Loaded By |
-|------|---------|-----------|
-| `config-subsystem.json` | Subsystem settings: `default_alias`, `voice_pipeline`, `summarizer` | `ModelRegistry` (subsystem settings) |
-| `upstream-config.json` | Inference-upstream: model definitions, server flags, KV cache types | `ModelRegistry` (inference-upstream section) |
+Defines all models, routing groups, scheduler, and slot persistence. Built with `-tags council` for KV cache persistence.
 
-**Server flags flow:** `upstream-config.json` → `ModelInfo.extra` → `ModelConfig.server_flags` → `build_args()` → llama-server CLI.
+```yaml
+models:
+  "qwen-160k-UD-fast":
+    cmd: |        # llama-server CLI with ${PORT} macro
+    capabilities: # text in/out, context size
+    slotStore:    # KV cache persistence
+      enabled: true
+      slot_dir: /home/chief/Coding-Projects/7-council/council-config/slots
+      validate_checksum: true
+      cleanup_orphans: true
+      max_slots: 48
+      binary_group: llama-flash
 
-Every flag in `upstream-config.json` is passed to the upstream llama-server. Missing flags (e.g., `--flash-attn`, `--mlock`, `--cont-batching`, `--spec-type`, `--reasoning`) cause the upstream to run with defaults, resulting in degraded performance.
+routing:
+  router:
+    use: group
+    settings:
+      groups:
+        main:
+          swap: true
+          exclusive: true
+          members: [qwen-160k-UD-fast, qwen-uhn-fast, ...]
+
+  scheduler:
+    use: fifo
+    settings:
+      fifo:
+        priority:
+          mellum2-12b: 10
+          nemotron-nano: 5
+```
+
+### Memory Service Config
+
+**Subsystem config:** `~/Coding-Projects/7-council/super_council/config-subsystem.json`
+
+Defines subsystem settings: `default_alias`, `voice_pipeline`, `summarizer`.
 
 ### Startup
 
 ```bash
-# Default (auto-discovers sibling configs)
-python3 -m super_council \
-    --listen-port 8090 \
-    --upstream-port 8091
+# llama-swap (systemd user service)
+systemctl --user start llama-swap.service
 
-# Explicit paths
-python3 -m super_council \
-    --listen-port 8090 \
-    --upstream-port 8091 \
-    --config /home/chief/Coding-Projects/7-council/super_council/config-subsystem.json \
-    --upstream-config /home/chief/Coding-Projects/7-council/super_council/upstream-config.json \
-    --slot-dir /home/chief/Coding-Projects/7-council/council-config/slots
+# memory-service (systemd user service)
+systemctl --user start memory-service.service
+
+# memsearch-watch (systemd user service)
+systemctl --user start memsearch-watch.service
 ```
 
-### llama-server Binaries
+### llama-server Binary
 
-| Binary | Purpose | Models |
-|--------|---------|--------|
-| `llama-forks/llama-cpp-turboquant/build/bin/llama-server` | Default upstream (turboquant fork) | qwen3.6-27b, gemma-4-26b, nemotron-cascade, gpt-oss-20b, qwen3.6-35b-a3b, granite-8b |
-| `llama-forks/indras-mirror-fork/build/bin/llama-server` | MTP speculative decoding (fused TBQ4 FA) | qwen3.6-27b-flash, qwen3.6-27b-uhn, qwen3.6-uhn-q5-builder |
+| Binary | Purpose |
+|--------|---------|
+| `~/llama-cpp-latest/build/bin/llama-server` | Default upstream (main llama.cpp with MTP) |
 
-**Indras-Mirror fork features:**
-- Fused TBQ4 flash attention kernels (`GGML_CUDA_FA_ALL_QUANTS=ON`)
-- Native MTP speculative decoding (`--spec-type mtp --spec-draft-n-max 3`)
-- Slot persistence (upstream native, no cherry-picks)
-- KV cache format: `tbq4_0` (first swap rebuilds from `turbo4`)
-- Compiled for RTX 3090 (compute 8.6)
+**Current model config:**
+- MTP speculative decoding (`--spec-type draft-mtp --spec-draft-n-max 3`)
+- Flash attention (`--flash-attn on`)
+- KV cache: `q8_0` (K and V)
+- Context: 110K tokens (qwen-160k-UD-fast)
+- Threads: 16 / batch: 16
+- Cache RAM: 16GB
+- `--no-mmap --mlock` (weights in RAM, mlocked)
 
-### MTP Performance (Q4_K_M Heretic-v2, tbq4_0 KV)
+### MTP Performance (Q4_K_XL UD, q8_0 KV)
 
 | Generated Tokens | PP (t/s) | TG (t/s) | Draft Acceptance |
 |-----------------|----------|----------|------------------|
-| 100 | 291 | 66.8 | 93.6% |
-| 200 | 291 | 56.9 | 76.2% |
-| 500 | 210 | 49.5 | 62.0% |
-| 1000 | 245 | 47.3 | 58.6% |
+| 100 | ~290 | ~67 | ~94% |
+| 200 | ~290 | ~57 | ~76% |
+| 500 | ~210 | ~50 | ~62% |
+| 1000 | ~245 | ~47 | ~59% |
 
-*vs. vanilla decode (llama-bench): ~37 t/s TG at 64 tokens. MTP adds ~30 t/s boost at short lengths.*
+*vs. vanilla decode: ~37 t/s TG at 64 tokens. MTP adds ~30 t/s boost at short lengths.*
 
 ## File Locations
 
 | Resource | Path |
 |----------|------|
-| Supervisor source | `~/Coding-Projects/7-council/super_council/` |
-| Subsystem config | `~/Coding-Projects/7-council/super_council/config-subsystem.json` |
-| Upstream config | `~/Coding-Projects/7-council/super_council/upstream-config.json` |
-| Slots | `~/Coding-Projects/7-council/council-config/slots/` |
+| llama-swap source | `~/llama-swap/` |
+| llama-swap config | `~/llama-swap/config.yaml` |
+| llama-swap binary | `~/bin/llama-swap` (council build tag) |
+| llama-server binary | `~/llama-cpp-latest/build/bin/llama-server` |
+| Slots (tmpfs) | `~/Coding-Projects/7-council/council-config/slots/` (48GB) |
 | Models | `~/models/` |
 | Council memory | `~/.council-memory/` |
+| Memsearch DB | `~/.memsearch/milvus.db/` |
 | Phase state | `~/.council-memory/phase-state/` |
 | Pipeline state | `~/.council-memory/pipelines/` |
-| Supervisor log | `/tmp/super-council.log` |
 | Embedding model | `~/models/embedding/pplx-embed-v1-0.6b-int8/` |
-| MTP binary (indras-mirror-fork) | `~/Coding-Projects/7-council/llama-forks/indras-mirror-fork/build/bin/llama-server` |
-| Turboquant binary | `~/Coding-Projects/7-council/llama-forks/llama-cpp-turboquant/build/bin/llama-server` |
 | Bench results | `~/Coding-Projects/7-council/bench-results/` |
