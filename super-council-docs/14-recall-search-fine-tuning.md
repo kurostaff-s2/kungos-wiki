@@ -13,7 +13,7 @@ Implemented 5 units to fix operational weaknesses in search/recall: wrong model,
 | Component | Before | After |
 |-----------|--------|-------|
 | **Keyword search** | `LIKE '%query%'` (no stemming, no ranking) | FTS5 MATCH (stemming, ranking, multi-term) |
-| **Vector search** | Chat summaries only | session_diary + memory_rollups (2 entries) |
+| **Vector search** | Chat summaries only | memory_rollups (2 entries) |
 | **Project filtering** | Client-side (wasteful) | Server-side Milvus filter_expr |
 | **Analytics** | None | Structured JSON logs with latency/result tracking |
 | **ChromaDB** | Dead imports | Deprecation warnings, no crashes |
@@ -23,7 +23,7 @@ Implemented 5 units to fix operational weaknesses in search/recall: wrong model,
 ```
 Query: "embedding consolidation"
   │
-  ├─ FTS5 MATCH (keyword) ──→ session_diary_fts, artifacts_fts, event_log_fts
+  ├─ FTS5 MATCH (keyword) ──→ artifacts_fts, event_log_fts
   │    └─ 79 rows indexed, triggers sync on INSERT/UPDATE/DELETE
   │
   ├─ MemSearch (vector) ────→ pplx-embed-v1 on :18099 → Milvus-lite
@@ -40,7 +40,7 @@ Query: "embedding consolidation"
 **Files:** `migrations/10_fts5_indexes.sql`, `router.py`, `layer.py`
 
 **Changes:**
-- Created FTS5 virtual tables: `session_diary_fts`, `artifacts_fts`, `event_log_fts`
+- Created FTS5 virtual tables: `artifacts_fts`, `event_log_fts`
 - Sync triggers on INSERT/UPDATE/DELETE (no manual re-index)
 - Replaced `LIKE '%query%'` with `FTS5 MATCH 'query'` in router.py
 - 79 rows seeded from existing data
@@ -51,7 +51,7 @@ Query: "embedding consolidation"
 WHERE decisions LIKE '%decision%' OR open_items LIKE '%decision%'
 
 -- NEW:
-WHERE session_diary_fts MATCH 'decision'
+WHERE artifacts_fts MATCH 'decision'
 ```
 
 **Benefits:**
@@ -106,14 +106,14 @@ summary = analytics.get_analytics_summary(days_back=7)
 **Files:** `memory_service/vector_store.py` (new), `memory_service/__init__.py`
 
 **Changes:**
-- UnifiedVectorStore indexes session_diary + memory_rollups into Milvus
+- UnifiedVectorStore indexes memory_rollups into Milvus
 - Auto re-index on memory-service startup (13 entries indexed)
 - Uses pplx-embed-v1 on :18099 for embeddings
 
 **Indexing:**
 ```python
 store.index(
-    source="session_diary",
+    source="memory_rollups",
     source_id="summary-123",
     text="Decided to use FTS5 for search",
     project_id="council"
@@ -135,7 +135,7 @@ indexed = store.reindex_existing_data(db_connection)
 
 **Changes:**
 - Server-side `project_id` filtering via Milvus `filter_expr`
-- Optional `source` filtering (session_diary, memory_rollups, etc.)
+- Optional `source` filtering (memory_rollups, etc.)
 - Client no longer filters after retrieval
 
 **Query example:**
@@ -144,9 +144,9 @@ results = store.search(
     query="embedding consolidation",
     top_k=10,
     project_id="council",  # Server-side filter
-    source="session_diary"  # Optional source filter
+    source="memory_rollups"  # Optional source filter
 )
-# filter_expr: 'project_id == "council" and source == "session_diary"'
+# filter_expr: 'project_id == "council" and source == "memory_rollups"'
 ```
 
 **Benefits:**

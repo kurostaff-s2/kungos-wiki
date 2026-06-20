@@ -1,19 +1,19 @@
 # Arc Summarizer — Remaining Work
 
-> Items not yet live. Core arc summarizer (Units 1-5) is fully implemented and wired.
+> Core consolidation pipeline (ArcPipeline) is fully implemented and wired. Items below are not yet live.
 
 ## Not Yet Implemented
 
 ### 1. TTL Lifecycle Manager
 
-**What:** Transition `session_diary` entries through TTL phases: `active` → `aging` → `expired`
+**What:** Transition `memory_rollups` entries through TTL phases: `active` → `aging` → `expired`
 
-**Current state:** `ttl_phase` column exists with default `'active'`. No code transitions entries between phases or cleans up expired entries.
+**Current state:** `ttl_days` column exists with tier-specific defaults (14d daily, 30d short, 60d weekly, 90d bimonthly). No code transitions entries between phases or cleans up expired entries.
 
-**Why needed:** Graceful expiry prevents stale digests from polluting recall. Currently all entries stay `'active'` forever.
+**Why needed:** Graceful expiry prevents stale digests from polluting recall. Currently all entries stay active forever.
 
 **Options:**
-- **A.** Eager transitions: Scheduler checks TTL on each cycle, updates `ttl_phase` in DB
+- **A.** Eager transitions: Scheduler checks TTL on each cycle, updates phase in DB
 - **B.** Lazy transitions: Compute phase on-the-fly during queries (no DB write)
 - **C.** Hybrid: Lazy for reads, eager batch update during scheduler cycles
 
@@ -21,26 +21,9 @@
 
 ---
 
-### 2. Confidence-Calibrated Injection
+### 2. Auto-Tagging Rollups
 
-**What:** Gate knowledge card injection by confidence scores (`high`/`medium`/`low`)
-
-**Current state:** Prompt schemas emit confidence per decision/item. `inject_tier1()` loads all active cache entries indiscrimutately.
-
-**Why needed:** Prevent low-confidence items from polluting system prompt context.
-
-**Options:**
-- **A.** Hard gate: Only inject `confidence: high` items
-- **B.** Tiered injection: High → full card, medium → summarized, low → omitted
-- **C.** Config threshold: Let `config-subsystem.json` set cutoff
-
-**Caveat:** Confidence scores are in YAML response but flattened to text in DB. Need structural storage or re-parsing.
-
----
-
-### 3. Auto-Tagging Session Diary
-
-**What:** Automatically derive tags (topics, projects, domains) from session diary content
+**What:** Automatically derive tags (topics, projects, domains) from rollup content
 
 **Current state:** Not implemented. No tag column or taxonomy defined.
 
@@ -56,30 +39,50 @@
 
 ---
 
-### 4. Recall Backend First-Call Issue
+### 3. Legacy Data Cleanup
 
-**What:** `recall.unified()` returns `backend_unavailable` on first call, works on retry
+**What:** Archive or remove legacy duplicate rollups (pre-June 16, timestamp-based IDs)
 
-**Current state:** Happens every session. Second call succeeds.
+**Current state:** ~10 sessions with 2-6 duplicate rollups each. Deterministic ID scheme (`rollup-daily-{source_id}`) prevents new duplicates.
 
-**Suspected cause:** MemSearch/Milvus lock contention or cold start latency.
+**Options:**
+- **A.** Soft archive: Mark legacy duplicates as `archived` state, exclude from queries
+- **B.** Hard delete: Remove duplicates, keep only the latest per source_id
+- **C.** Merge: Consolidate duplicate content into single rollup
 
-**Investigation needed:** Check milvus_lite startup, lock acquisition timing, connection pooling.
+**Risk:** Hard delete is irreversible. Soft archive preserves data but adds query complexity.
+
+---
+
+### 4. Failed Session Retry
+
+**What:** Retry the ~24 sessions that failed with `partial failure: not all 1 parts succeeded`
+
+**Current state:** Sessions exist in DB but rollups are unlinked. Some have empty `summary_text`.
+
+**Options:**
+- **A.** Manual retry: Re-run consolidation for specific source_files
+- **B.** Automatic retry: Scheduler detects failed state, retries on next cycle
+- **C.** Investigate first: Root-cause the failures (context overflow? malformed input?) before retrying
 
 ---
 
 ## Deferred / Decided Against
 
-- **Health dashboard as dedicated MCP tool** — Rejected. Wired into `unified_log_recall` as `consolidation_metrics` section instead. Diagnostic, not model context.
-- **Confidence-calibrated injection as high priority** — Low value until confidence scores are stored structurally.
+- **ArcSummarizer facade** — Removed 2026-06-16. Never instantiated in production; `council_main.py` had `self._arc = None` and startup consolidation was dead code.
+- **Confidence-calibrated injection** — Low value until confidence scores are stored structurally.
+- **Health dashboard as dedicated MCP tool** — Rejected. Wired into `system_health` as consolidation metrics section instead.
+- **session_diary table** — Dropped 2026-06-12. Replaced by `memory_rollups` as single source of truth.
+- **consolidation_cache table** — Zombie table (exists but empty). All consolidation data lives in `memory_rollups`.
 
 ## Test Coverage
 
 | Feature | Tests | Status |
 |---------|-------|--------|
-| Tiered consolidation (Units 1-5) | 76 | ✅ All passing |
-| Consolidation metrics | 17 | ✅ All passing |
+| Consolidation pipeline (ArcPipeline) | ✅ | Passing |
+| ArcClient (HTTP + retry) | ✅ | Passing |
+| LLMRequestQueue | ✅ | Passing |
+| TierWriter | ✅ | Passing |
+| ConsolidationStore | ✅ | Passing |
 | TTL lifecycle | 0 | ❌ Not implemented |
-| Confidence injection | 0 | ❌ Not implemented |
 | Auto-tagging | 0 | ❌ Not implemented |
-| **Total** | **93** | **93 passing, 0 failing** |

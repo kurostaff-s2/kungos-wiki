@@ -27,9 +27,12 @@ raw_session_memories  -- Raw auto-detected assistant messages (raw_text, no stru
 memory_rollups        -- Arc A380 pipeline ONLY (replaces zombie consolidation_cache)
                       -- Provenance prefix: consol-*
                       -- Migration 2026-06-06: consolidation_cache → memory_rollups
-session_diary         -- Structured knowledge (Arc tier outputs + manual upserts)
-                      -- Provenance prefix: sess-* (manual), consol-* (Arc tier)
-                      -- Migration 04: created from split of consolidation_cache
+                      -- Flat schema (2026-06-12): decisions, work_completed, open_items as JSON arrays
+                      -- Columns: id, tier, window_start, window_end, summary_text, decisions, work_completed,
+                      --          open_items, carried_forward, deviations, key_files, key_functions, trace_id,
+                      --          source_file, vector_text, is_indexed, index_failures, parse_status, status
+session_diary         -- **DROPPED 2026-06-12**. Replaced by memory_rollups.
+                      -- Use get_memory_rollups() instead of query_session_diary()
 
 -- Reference tables
 workflow_definitions  -- Pipeline phase/transition definitions
@@ -39,15 +42,14 @@ event_types           -- Enum: transition, error, warning, info
 severity_levels       -- Enum: critical, error, warning, info
 ```
 
-### Table Separation: Three-Tier Memory Store
+### Table Separation: Two-Tier Memory Store
 
 **Design principle: Provenance traceability + structure separation.** Every entry carries a prefix that reveals its origin and table:
 
 | Prefix | Table | Source | Structure |
 |--------|-------|--------|-----------|
 | `trace-*` | `raw_session_memories` | Auto-detected (Pi extension) | raw_text only, no structure |
-| `consol-*` | `memory_rollups` | Arc A380 (Granite-4.1-3B) | tier, window_start/end, content, summary, status |
-| `sess-*` | `session_diary` | Manual upsert / test | decisions, open_items, work_completed, session_context |
+| `consol-*` | `memory_rollups` | Arc A380 (LFM2-2.6B/1.2B) | tier, window_start/end, summary_text, decisions, work_completed, open_items, carried_forward, deviations, key_files, key_functions, vector_text, parse_status |
 | `consol-{tier}-*` | `session_diary` | Arc tier pipeline | structured fields + consolidation_tier |
 
 **raw_session_memories** — Raw auto-detected assistant messages. Written by `RelationalStore.upsert_raw_session_memory()` when the Pi extension's `message_end` hook detects a high-scoring message. Stores full raw_text (1-4KB typical). Auto-indexed into memsearch on upsert for vector recall. Feeds the Arc tier pipeline (`_gather_tier_input()` reads this table for the 'daily' tier).

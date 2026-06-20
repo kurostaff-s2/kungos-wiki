@@ -38,7 +38,7 @@
 │                                                    │        │
 │  ┌─────────────────────────────────────────────────┐│        │
 │  │  HTTP Endpoints (http_endpoints.py)             ││        │
-│  │  - ToolRegistry: 22 tool handlers               ││        │
+│  │  - ToolRegistry: 21 tool handlers               ││        │
 │  │  - POST /v1/memory/tool/{tool_name}             ││        │
 │  │  - GET  /v1/memory/tools (discovery)            ││        │
 │  │  - GET  /v1/memory/health                       ││        │
@@ -46,21 +46,21 @@
 │                                                     │        │
 │  ┌──────────────────────────────────────────────────┐│       │
 │  │  FastMCP Server (mcp.server.FastMCP)            ││       │
-│  │  22 tools + 7 resources + stdio/SSE transport   ││       │
+│  │  21 tools + 7 resources + stdio/SSE transport   ││       │
 │  └──────────────────────────────────────────────────┘│       │
 └─────────────────────────────────────────────────────────────┘
                       │
                       ▼
-              ~/.council-memory/pipelines.db
+              ~/.council-memory/council_core.db
 ```
 
 ### Dependency Isolation
 
-**`super_council.py` has zero direct MemSearch dependency.** All vector indexing and search
+**`council_main.py` has zero direct MemSearch dependency.** All vector indexing and search
 route through `memory_service.indexer` (single source of truth).
 
 ```
-super_council.py
+council_main.py
   └── memory_service.indexer.*    (Python API)
         └── MemIndex              (owns lifecycle, config, locking)
               └── MemSearch       (external package, owned by memory service only)
@@ -336,7 +336,7 @@ service.health_check()
 ### RelationalStore (Canonical Write Path)
 
 - SQLite with WAL mode, FK enforcement, manual checkpoint
-- Schema from migrations `01_schema.sql` → `05_rename_to_session_diary.sql` (applied in order)
+- Schema from migrations (applied in order, latest includes `memory_rollups` as primary table)
 - All writes go through public methods (no raw SQL)
 - Seeded tables: `workflow_definitions`, `phase_names`, `outcome_types`, `event_types`, `severity_levels`
 
@@ -344,17 +344,15 @@ service.health_check()
 
 | Channel | Table | Method | Provenance |
 |---------|-------|--------|------------|
-| **Arc A380 pipeline** | `memory_rollups` | `upsert_memory_rollup()` | `consol-*` — Granite-4.1-3B output |
-| **Mechanical upsert** | `session_diary` | `upsert_session_diary()` | `sess-*` — auto-detected or manual |
-| **Todo reconciliation** | `session_diary` (read) | `reconcile_open_items()` | deduped open items across entries |
+| **Arc A380 pipeline** | `memory_rollups` | `upsert_memory_rollup()` | `consol-*` — LFM2-2.6B/1.2B router output |
+| **Mechanical upsert** | `memory_rollups` | `upsert_memory_rollup()` | `sess-*` — auto-detected or manual |
+| **Todo reconciliation** | `memory_rollups` (read) | `reconcile_open_items()` | deduped open items across entries |
 
-**`upsert_session_diary(summary_text, source_path, alias)`** — The mechanical upsert. Parses Markdown sections from the summary text (`##` or `###` Key Decisions, Topics Discussed, Work Completed, Open Items, Models Used) and stores structured fields. Matches both `##` and `###` headers via `#{1,3}` regex. Generates `sess-{timestamp}-{alias_hash}` ID. Sets 14-day TTL. Writes to `session_diary` (NOT `consolidation_cache`).
+> **Migration note (2026-06-12):** `session_diary` table dropped. All data unified under `memory_rollups`. `consolidation_cache` is a zombie table (exists but empty, never write to it).
 
-**`reconcile_open_items(days_back=14)`** — Deduplicates open items across all diary entries. Groups by normalized text (lowercase, stripped bullet/number prefixes), counts occurrences, tracks first/last seen dates. Returns `{items: [{text, count, first_seen, last_seen}], total_raw, total_unique}`.
+**`upsert_memory_rollup(...)`** — Single write path for all memory data. Arc pipeline writes `consol-*` prefixed IDs; mechanical upsert writes `sess-*` prefixed IDs. Both route through the same method. Parses Markdown sections from summary text (`##` or `###` headers) into structured fields (decisions, open_items, work_completed, session_context). Generates deterministic or timestamp-based IDs. Sets tier-specific TTL.
 
-**`upsert_memory_rollup(...)`** — Arc-only. Replaces `upsert_consolidation_cache()` (zombie table, 0 rows). Writes consolidation output from Granite-4.1-3B pipeline. Generates `consol-*` IDs. **Not fed by session_diary** — memory_rollups remains Arc-only for provenance traceability.
-
-> **Migration note (2026-06-06):** `consolidation_cache` is a zombie table (exists but empty). All consolidation data lives in `memory_rollups`. The `_query_consolidation_channel()` and `_get_consolidation_metrics()` methods were updated to query `memory_rollups` via `get_memory_rollups()`.
+**`reconcile_open_items(days_back=14)`** — Deduplicates open items across all rollup entries. Groups by normalized text (lowercase, stripped bullet/number prefixes), counts occurrences, tracks first/last seen dates. Returns `{items: [{text, count, first_seen, last_seen}], total_raw, total_unique}`.
 
 ### ContextRouter (Canonical Recall Path)
 
@@ -374,8 +372,8 @@ service.health_check()
 | `summarize_run_issues(run_id)` | state_executions + event_log | Failure correlation |
 | `find_similar_runs(query, project_id)` | pipelines + workflow_runs | Text-match on tasks |
 | `get_review_findings(project_id, limit)` | event_log + workflow_runs | Review findings/verdicts |
-| `query_session_diary(query, limit, days_back)` | session_diary | Auto-upserted summaries |
-| `get_startup_context(max_tokens)` | memory_rollups | Tier 1 knowledge card (replaces zombie consolidation_cache) |
+| `query_memory_rollups(query, limit, days_back)` | memory_rollups | Auto-upserted summaries |
+| `get_recent_knowledge(max_tokens, include_recent_sessions)` | memory_rollups | Recent sessions + digest |
 
 ### MemoryLayer (Artifact Management)
 
@@ -403,13 +401,13 @@ service.health_check()
 | **Text Memory** | memsearch (Milvus + pplx-embed-v1) | Vector search, threshold-gated (0.60) |
 | **Structural Graph** | CodeGraphStore.search_nodes() → codegraph.db | 20K+ code nodes, FTS5 MATCH |
 | **Execution History** | ContextRouter.find_similar_runs() | Runs from last N days (default 3) |
-| **Session Diary** | ContextRouter.query_session_diary() | Skips entries with no structured fields |
+| **Session Memory** | ContextRouter.query_memory_rollups() | Skips entries with no structured fields |
 | **Artifacts** | ContextRouter.get_artifacts() | Text-filtered recent artifacts (50 max) |
 | **Recent Context** | ContextRouter.query_raw_session_memories() | Last 3 days, 3KB budget |
 
 **Fixes applied 2026-06-06:**
 - Structural channel: queries codegraph.db (20K nodes) via CodeGraphStore, not council_core.db
-- Consolidation channel: queries `memory_rollups` (2 entries), not zombie `consolidation_cache` (0 rows)
+- Consolidation channel: queries `memory_rollups` (sole source, no zombie tables)
 - Artifacts: text filter for non-run-id queries (regex `prefix-hex` detection)
 - SSE path: passes `severity`, `days_back`, `threshold` to unified_recall()
 
@@ -491,12 +489,8 @@ python3 -m super_council.memory_service --drain
 
 ```bash
 # HTTP backend (used by memory_service proxy)
-# Runs on :18098 alongside existing SSE on :18096
+# Runs on :18098
 # Exposes: POST /v1/memory/tool/{name}, GET /v1/memory/tools, GET /v1/memory/health
-
-# Legacy SSE (direct connection, no retry queue)
-python3 -m super_council.memory_service --mcp-sse
-# Binds to :18096 (deprecated — use memory_service :18097 instead)
 
 # stdio (for Pi agent — subprocess per call)
 python3 -m super_council.memory_service --mcp-stdio
@@ -540,7 +534,7 @@ Extension                    memory_service                  memory_service
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/memory/tool/{tool_name}` | POST | Generic tool dispatcher (22 tools) |
+| `/v1/memory/tool/{tool_name}` | POST | Generic tool dispatcher (21 tools) |
 | `/v1/memory/tools` | GET | List available tools (discovery) |
 | `/v1/memory/health` | GET | Health check (status, components, tools_available) |
 
@@ -574,21 +568,21 @@ POST /v1/memory/tool/council-recall
 | `get_run_snapshot` | Full run snapshot | ContextRouter.get_run_snapshot() |
 | `summarize_run_issues` | Issue summary with severity | ContextRouter.summarize_run_issues() |
 | `get_review_findings` | Recent review findings | ContextRouter.get_review_findings() |
-| `query_session_diary` | Query auto-upserted session diary | ContextRouter.query_session_diary() |
+| `query_memory_rollups` | Query memory rollups | ContextRouter.query_memory_rollups() |
 | `reconcile_open_items` | Deduplicate todos across diary entries | RelationalStore.reconcile_open_items() |
 | `memsearch_index_file` | Index file into memsearch | MemIndex.index_file() |
 | `review.start` | Start new review run | ReviewService.start_review() |
 | `review.log` | Log review finding | ReviewService.log_finding() |
 | `review.verdict` | Finalize review verdict | ReviewService.record_verdict() |
 | `inspect_workflow_graph` | Workflow phase graph | RelationalStore.get_workflow_definitions() |
-| `recall_startup_context` | Tier 1 knowledge card | ContextRouter.get_startup_context() |
+| `recall_recent_knowledge` | Recent sessions + digest | ContextRouter.get_recent_knowledge() |
 | `council-query-pipelines` | Query pipelines with filters | RelationalStore.query_pipelines() |
 | `council-get-pipeline` | Get pipeline by ID | RelationalStore.get_pipeline() |
 | `get_phase_schemas` | Phase info from registry | RelationalStore.get_phase_info() |
 | `get_run_artifacts` | Artifacts for a run | ContextRouter.get_artifacts() |
 | `get_review_verdict` | Verdict for a run | ContextRouter.get_run_snapshot() → artifacts |
 | `lint_current_workflow` | Lint workflow transitions | StateMachineLinter.lint() (graceful degradation) |
-| `upsert_summary` | Mechanical session diary upsert + operation logging | RelationalStore.upsert_session_diary() |
+| `upsert_summary` | Mechanical memory upsert + operation logging | RelationalStore.upsert_memory_rollup() |
 
 #### `unified_log_recall` — Multi-Channel Log Recall
 
@@ -609,8 +603,8 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
 | Channel | Source | Parser |
 |---------|--------|-------|
 | `system_events` | event_log table | SQL LIKE match |
-| `session_diary` | session_diary table | ContextRouter.query_session_diary() |
-| `consolidation` | memory_rollups table | RelationalStore.get_memory_rollups() (replaces zombie consolidation_cache) |
+| `session_memory` | memory_rollups table | ContextRouter.query_memory_rollups() |
+| `consolidation` | memory_rollups table | RelationalStore.get_memory_rollups() |
 | `daily_logs` | `~/.council-memory/daily/*.md` | DailyLogParser (markdown tables) |
 | `chat_summaries` | `~/.council-memory/chat-summaries/*.md` | ChatSummaryQuery (sectioned markdown) |
 | `workflow_state` | workflow_runs table | SQL LIKE match |
@@ -637,7 +631,7 @@ Added 2026-05-30. Queries across all log sources with token budgeting and servic
         "tcp_status": "listening", "systemd": "active",
         "details": "SSE transport with retry and backoff"
       },
-      "arc_summarizer": {"status": "running", "port": 18095},
+      "arc_summarizer": {"status": "running", "port": 18093, "mode": "router"},
       "memsearch": {"status": "available"},
       "web_search": {"status": "available"},
       "sse_sessions": {
@@ -729,7 +723,7 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 
 **Operation flow:**
 1. Score ≥ 4 → triggers `upsert_summary` MCP tool
-2. Writes to `session_diary` table with `source: "auto-detected-assistant-message"`
+2. Writes to `memory_rollups` table with `source: "auto-detected-assistant-message"`
 3. Generates `sess-{timestamp}-{alias_hash}` ID
 4. Parses `##` and `###` headers into structured fields (decisions, open_items, work_completed, session_context)
 5. **No model involvement** — purely regex matching + DB insert
@@ -738,7 +732,7 @@ The Pi extension (`council-tools/index.ts`) installs a `message_end` hook that f
 
 This implements the "write → manage → read" memory loop: summaries are captured automatically during conversation, without the agent needing to explicitly call `memory.upsert_summary()`.
 
-**Session Diary in Recall:** Auto-upserted diary entries are surfaced via `ContextRouter.query_session_diary()` in the unified recall pipeline. Entries with no structured fields (all NULL decisions/open_items/work_completed) are skipped. Text search across all structured fields.
+**Session Memory in Recall:** Auto-upserted rollup entries are surfaced via `ContextRouter.query_memory_rollups()` in the unified recall pipeline. Entries with no structured fields (all NULL decisions/open_items/work_completed) are skipped. Text search across all structured fields.
 
 **Optional tools** (registered only if enricher available):
 - `summarize_artifact` — MicroModelEnricher.summarize_artifact()
@@ -808,7 +802,7 @@ client.disconnect()
 
 | Tool | Available | Notes |
 |------|-----------|-------|
-| All 22 tools above | ✅ | Via FastMCP stdio / SSE / streamable-http |
+| All 21 tools above | ✅ | Via FastMCP stdio / SSE / streamable-http |
 | All 7 resources | ✅ | Via FastMCP resource protocol |
 | Model swapping | ❌ | Supervisor-only |
 | Chat completions | ❌ | Supervisor-only |
@@ -824,7 +818,7 @@ client.disconnect()
 | SSE | `--mcp-sse` | Persistent connection (Pi extension, external clients) |
 | streamable-http | `--mcp-streamable-http` | Alternative HTTP transport |
 
-SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
+SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18097`).
 
 **The `memory_service` is purely the memory/recall/review layer.** It does NOT handle model swapping, chat completions, delegation, or pipeline state machine advancement. Those require the supervisor's proxy architecture and upstream llama-server management.
 
@@ -835,7 +829,7 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 ```json
 {
   "memory": {
-    "db_path": "~/.council-memory/pipelines.db",
+    "db_path": "~/.council-memory/council_core.db",
     "memory_base": "~/.council-memory",
     "memsearch": {
       "enabled": true,
@@ -870,7 +864,7 @@ SSE binds to `config.mcp.host:config.mcp.port` (default `127.0.0.1:18096`).
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `COUNCIL_DB_PATH` | Override database path | `~/.council-memory/pipelines.db` |
+| `COUNCIL_DB_PATH` | Override database path | `~/.council-memory/council_core.db` |
 | `COUNCIL_MCP_HOST` | memory_service SSE host | `127.0.0.1` |
 | `COUNCIL_MCP_PORT` | memory_service SSE port | `18097` |
 | `COUNCIL_MEMORY_HOST` | memory_service HTTP host | `127.0.0.1` |

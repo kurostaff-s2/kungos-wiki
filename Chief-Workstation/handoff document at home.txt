@@ -1,0 +1,197 @@
+handoff document at /home/chief/llama-swap/docs/handoff-slot-verification.md.                                                                                         
+                                                                                                                                                                                        
+ ### Summary of Corrections                                                                                                                                                             
+                                                                                                                                                                                        
+ The previous investigation was not thoroughly executed against the current codebase. It contained three major factual errors:                                                          
+ 1. Inflight Draining: The code already waits for inflight requests (waitForInflightZero) before saving. The "timing" issue is fixed.                                                   
+ 2. Metadata: The code does write metadata sidecars (WriteMeta), and logs confirm successful saves with checksums.                                                                      
+ 3. Checksums: The config does enable validate_checksum: true.                                                                                                                          
+                                                                                                                                                                                        
+ The current empty slot state is due to a binary hash purge (expected behavior after binary updates), not a save failure.                                                               
+                                                                                                                                                                                        
+ ### Next Steps                                                                                                                                                                         
+                                                                                                                                                                                        
+ The handoff document outlines a testing plan to verify the swap flow and the "hallucination/forgetting" issue:                                                                         
+ 1. Trace doSwap: Confirm the sequence of save/restore operations.                                                                                                                      
+ 2. Functional Test: Perform a mid-conversation swap and verify context retention.                                                                                                      
+ 3. Inspect Logs: Check for save/restore success/failure during swaps.
+ 
+ 
+ 
+ but in a anew session on the llama cpp this happened - 
+ 
+ 16.09.312.179 I slot print_timing: id  0 | task 4205 | draft acceptance = 0.69774 (  247 accepted /   354 generated), mean acceptance length =  3.09, acceptance rate per position = (0.907, 0.712, 0.475)
+16.09.312.191 I statistics        draft-mtp: #calls(b,g,a) =   52   4032   4032, #gen drafts =   4032, #acc drafts =  3408, #gen tokens =  12096, #acc tokens =  8354, #mean acc len = 3.07, #acc rate/pos = (0.845, 0.679, 0.547), dur(b,g,a) = 0.052, 33751.222, 5.084 ms
+16.09.313.673 I slot      release: id  0 | task 4205 | stop processing: n_tokens = 73636, truncated = 0
+16.09.313.757 I srv  update_slots: all slots are idle
+16.55.061.983 I srv    operator(): Chat format: peg-native
+16.55.076.807 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.167
+16.55.076.838 I srv  recurrent_sh: shrunk recurrent state to 1 cell for prompt cache
+16.55.076.840 I srv  get_availabl: updating prompt cache
+16.55.079.205 W srv   prompt_save:  - saving prompt with length 73636, total state size = 2885.021 MiB (draft: 289.045 MiB)
+16.55.079.243 W srv         alloc:  - removing obsolete cached prompt with length 73231
+17.01.754.454 I srv          load:  - looking for better prompt, base f_keep = 0.167, sim = 1.000
+17.01.754.472 I srv        update:  - cache state: 1 prompts, 15495.161 MiB (limits: 16192.000 MiB, 116224 tokens, 116224 est)
+17.01.754.473 I srv        update:    - prompt 0x7ec21450c9c0:   73636 tokens, checkpoints: 32, 15495.161 MiB
+17.01.754.488 I srv  recurrent_ex: expanded recurrent state to 1 cells after prompt cache
+17.01.754.488 I srv  get_availabl: prompt cache update took 6677.65 ms
+17.01.755.128 I reasoning-budget: activated, budget=8096 tokens
+17.01.755.218 I slot launch_slot_: id  0 | task 4326 | processing task, is_child = 0
+17.01.755.232 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,46298]->[0,12300], valid=12301 tokens, discarding 33997
+17.01.761.741 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,50988]->[0,12300], valid=12301 tokens, discarding 38687
+17.01.762.615 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,51496]->[0,12300], valid=12301 tokens, discarding 39195
+17.01.762.788 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,54155]->[0,12300], valid=12301 tokens, discarding 41854
+17.01.763.322 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,54663]->[0,12300], valid=12301 tokens, discarding 42362
+17.01.763.495 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,57711]->[0,12300], valid=12301 tokens, discarding 45410
+17.01.764.085 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,58219]->[0,12300], valid=12301 tokens, discarding 45918
+17.01.764.261 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,58977]->[0,12300], valid=12301 tokens, discarding 46676
+17.01.764.517 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,59261]->[0,12300], valid=12301 tokens, discarding 46960
+17.01.764.665 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,59616]->[0,12300], valid=12301 tokens, discarding 47315
+17.01.764.845 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,59913]->[0,12300], valid=12301 tokens, discarding 47612
+17.01.765.003 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,60256]->[0,12300], valid=12301 tokens, discarding 47955
+17.01.765.175 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,61933]->[0,12300], valid=12301 tokens, discarding 49632
+17.01.765.610 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,62460]->[0,12300], valid=12301 tokens, discarding 50159
+17.01.765.811 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,62891]->[0,12300], valid=12301 tokens, discarding 50590
+17.01.765.984 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,63148]->[0,12300], valid=12301 tokens, discarding 50847
+17.01.766.131 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,63669]->[0,12300], valid=12301 tokens, discarding 51368
+17.01.766.322 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,64114]->[0,12300], valid=12301 tokens, discarding 51813
+17.01.766.513 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,64375]->[0,12300], valid=12301 tokens, discarding 52074
+17.01.766.663 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,64657]->[0,12300], valid=12301 tokens, discarding 52356
+17.01.766.812 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,64921]->[0,12300], valid=12301 tokens, discarding 52620
+17.01.766.965 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,65344]->[0,12300], valid=12301 tokens, discarding 53043
+17.01.767.147 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,65682]->[0,12300], valid=12301 tokens, discarding 53381
+17.01.767.312 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,66112]->[0,12300], valid=12301 tokens, discarding 53811
+17.01.767.502 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,66387]->[0,12300], valid=12301 tokens, discarding 54086
+17.01.767.648 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,66895]->[0,12300], valid=12301 tokens, discarding 54594
+17.01.767.833 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,67744]->[0,12300], valid=12301 tokens, discarding 55443
+17.01.768.076 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,68252]->[0,12300], valid=12301 tokens, discarding 55951
+17.01.768.259 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,68737]->[0,12300], valid=12301 tokens, discarding 56436
+17.01.768.459 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,69247]->[0,12300], valid=12301 tokens, discarding 56946
+17.01.768.643 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,71345]->[0,12300], valid=12301 tokens, discarding 59044
+17.01.769.139 W slot update_slots: id  0 | task 4326 | Trimming checkpoint [0,73230]->[0,12300], valid=12301 tokens, discarding 60929
+17.01.769.593 W slot update_slots: id  0 | task 4326 | need to evaluate at least 1 token for each active slot (n_past = 12301, task.n_tokens() = 12301)
+17.01.769.594 W slot update_slots: id  0 | task 4326 | n_past was set to 12300
+17.04.897.096 I slot print_timing: id  0 | task 4326 | n_decoded =    107, tg =  35.64 t/s, tg_3s =  35.64 t/s
+17.07.919.979 I slot print_timing: id  0 | task 4326 | n_decoded =    249, tg =  41.33 t/s, tg_3s =  46.98 t/s
+17.10.964.139 I slot print_timing: id  0 | task 4326 | n_decoded =    414, tg =  45.65 t/s, tg_3s =  54.20 t/s
+17.14.033.047 I slot print_timing: id  0 | task 4326 | n_decoded =    564, tg =  46.47 t/s, tg_3s =  48.88 t/s
+17.14.443.719 I slot print_timing: id  0 | task 4326 | prompt eval time =     139.56 ms /     1 tokens (  139.56 ms per token,     7.17 tokens per second)
+17.14.443.722 I slot print_timing: id  0 | task 4326 |        eval time =   12548.82 ms /   580 tokens (   21.64 ms per token,    46.22 tokens per second)
+17.14.443.723 I slot print_timing: id  0 | task 4326 |       total time =   12688.38 ms /   581 tokens
+17.14.443.724 I slot print_timing: id  0 | task 4326 |    graphs reused =       4124
+17.14.443.726 I slot print_timing: id  0 | task 4326 | draft acceptance = 0.70789 (  395 accepted /   558 generated), mean acceptance length =  3.12, acceptance rate per position = (0.876, 0.699, 0.548)
+17.14.443.739 I statistics        draft-mtp: #calls(b,g,a) =   53   4218   4218, #gen drafts =   4218, #acc drafts =  3571, #gen tokens =  12654, #acc tokens =  8749, #mean acc len = 3.07, #acc rate/pos = (0.847, 0.680, 0.547), dur(b,g,a) = 0.053, 35050.408, 5.304 ms
+17.14.444.259 I slot      release: id  0 | task 4326 | stop processing: n_tokens = 12882, truncated = 0
+17.14.444.344 I srv  update_slots: all slots are idle
+17.58.509.008 I srv    operator(): Chat format: peg-native
+17.58.524.406 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.999 (> 0.100 thold), f_keep = 0.955
+17.58.524.454 I srv  recurrent_sh: shrunk recurrent state to 1 cell for prompt cache
+17.58.524.457 I srv  get_availabl: updating prompt cache
+17.58.525.217 W srv   prompt_save:  - saving prompt with length 12882, total state size = 628.161 MiB (draft: 50.566 MiB)
+18.03.543.839 I srv          load:  - looking for better prompt, base f_keep = 0.955, sim = 0.999
+18.03.543.865 W srv        update:  - cache size limit reached, removing oldest entry (size = 15495.161 MiB)
+18.04.274.997 I srv        update:  - cache state: 1 prompts, 13238.300 MiB (limits: 16192.000 MiB, 116224 tokens, 116224 est)
+18.04.275.001 I srv        update:    - prompt 0x7ec1cc01b9c0:   12882 tokens, checkpoints: 32, 13238.300 MiB
+18.04.275.038 I srv  recurrent_ex: expanded recurrent state to 1 cells after prompt cache
+18.04.275.040 I srv  get_availabl: prompt cache update took 5750.58 ms
+18.04.275.635 I reasoning-budget: activated, budget=8096 tokens
+18.04.275.730 I slot launch_slot_: id  0 | task 4514 | processing task, is_child = 0
+18.04.275.745 W slot update_slots: id  0 | task 4514 | clearing stale recurrent state beyond n_past = 12297 (recr_pos_max = 12881)
+18.04.275.870 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.275.965 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.054 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.143 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.242 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.331 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.420 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.509 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.598 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.687 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.776 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.865 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.276.954 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.043 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.132 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.232 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.321 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.409 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.498 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.587 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.677 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.765 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.854 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.277.943 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.032 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.121 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.218 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.308 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.396 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.485 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.574 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.04.278.663 W slot update_slots: id  0 | task 4514 | Trimming checkpoint [0,12300]->[0,12296], valid=12297 tokens, discarding 3
+18.07.547.033 I slot print_timing: id  0 | task 4514 | n_decoded =    169, tg =  55.36 t/s, tg_3s =  55.35 t/s
+18.10.558.799 I slot print_timing: id  0 | task 4514 | n_decoded =    312, tg =  51.44 t/s, tg_3s =  47.48 t/s
+18.12.374.304 W srv          stop: cancel task, id_task = 4514
+18.12.441.819 I slot      release: id  0 | task 4514 | stop processing: n_tokens = 12708, truncated = 0
+18.12.441.912 I srv  update_slots: all slots are idle
+
+
+
+while the model/ assistant responded like this - 
+
+hi                                                                                                                                                                                     
+                                                                                                                                                                                        
+
+ 1. 前言                                                                                                                                                                                
+     在上一篇文章中，我们详细讲解了如何配置一个基本的 Spring Security 项目，并实现了用户的登录和退出功能。                                                                              
+     但是，如果用户没有登录就访问一个需要登录的页面，那么 Spring Security 会直接返回一个 403 错误，这显然不太友好。                                                                     
+     所以，在本篇文章中，我们将实现一个自定义的登录页面，并在用户未登录时自动跳转到该页面。                                                                                             
+ 2. 项目环境                                                                                                                                                                            
+     Spring Boot 2.7.7                                                                                                                                                                  
+    Spring Security 5.7.4                                                                                                                                                               
+    Thymeleaf 3.0.15                                                                                                                                                                    
+ 3. 实现步骤                                                                                                                                                                            
+     3.1. 创建登录页面                                                                                                                                                                  
+     首先，我们需要创建一个登录页面。在 src/main/resources/templates 目录下创建一个 login.html 文件，内容如下：                                                                         
+    <!DOCTYPE html>                                                                                                                                                                     
+ <html lang="en" xmlns:th="http://www.thymeleaf.org">                                                                                                                                   
+ <head>                                                                                                                                                                                 
+     <meta charset="UTF-8">                                                                                                                                                             
+     <title>登录</title>                                                                                                                                                                
+ </head>                                                                                                                                                                                
+ <body>                                                                                                                                                                                 
+     <h1>登录</h1>                                                                                                                                                                      
+     <form th:action="@{/login}" method="post">                                                                                                                                         
+         <div>                                                                                                                                                                          
+             <label>用户名：</label>                                                                                                                                                    
+             <input type="text" name="username"/>                                                                                                                                       
+         </div>                                                                                                                                                                         
+         <div>                                                                                                                                                                          
+             <label>密码：</label>                                                                                                                                                      
+             <input type="password" name="password"/>                                                                                                                                   
+         </div>                                                                                                                                                                         
+         <div>                                                                                                                                                                          
+             <input type="submit" value="登录"/>                                                                                                                                        
+         </div>                                                                                                                                                                         
+     </form>                                                                                                                                                                            
+ </body>                                                                                                                                                                                
+ </html>                                                                                                                                                                                
+  3.2. 配置登录页面                                                                                                                                                                     
+  接下来，我们需要配置 Spring Security，使其在用户未登录时自动跳转到登录页面。                                                                                                          
+  在 SecurityConfig.java 文件中，添加以下代码：                                                                                                                                         
+  @Override                                                                                                                                                                             
+ protected void configure(HttpSecurity http) throws Exception {                                                                                                                         
+     http                                                                                                                                                                               
+         .authorizeRequests()                                                                                                                                                           
+             .antMatchers("/login").permitAll()  // 允许所有用户访问登录页面                                                                                                            
+             .anyRequest().authenticated()  // 其他请求需要认证                                                                                                                         
+             .and()                                                                                                                                                                     
+         .formLogin()                                                                                                                                                                   
+             .loginPage("/login")  // 指定登录页面                                                                                                                                      
+             .permitAll();  // 允许所有用户访问登录页面                                                                                                                                 
+ }                                                                                                                                                                                      
+  3.3. 测试                                                                                                                                                                             
+  启动项目，访问 http://localhost:8080/hello，由于用户未登录，所以会自动跳转到登录页面。                                                                                                
+  输入用户名和密码，点击登录，如果成功，则会跳转到 /hello 页面。                                                                                                                        
+  4. 总结                                                                                                                                                                               
+  通过本文，我们学习了如何在 Spring Security 中配置自定义登录页面，并在用户未登录时自动跳转到该页面。   

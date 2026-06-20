@@ -26,9 +26,10 @@
 |  +------------------------------------------------------------+  |
 |                                                                  |
 |  +------------------------------------------------------------+  |
-|  |              Arc Summarizer                                 |  |
-|  |  consolidation | session summary | knowledge extraction     |  |
-|  |  → Granite-4.1-3B on Arc A380 (:18095)                     |  |
+|  |              Arc Consolidation Pipeline                     |  |
+|  |  tiered memory rollups via ArcPipeline                      |  |
+|  |  → LFM2-2.6B (daily) + LFM2.5-1.2B (short/weekly/bimonthly) |  |
+|  |  → Router mode on Arc A380 (:18093, --models-max 1)         |  |
 |  +------------------------------------------------------------+  |
 +--------------------------------+---------------------------------+
                                  |
@@ -64,10 +65,11 @@
 | Service | Port | Purpose |
 |---------|------|---------|
 | llama-swap | 9292 | Model proxy, slot persistence, routing |
-| memory-service | 18097/18098 | MCP SSE server (RelationalStore, ContextRouter, MemoryLayer) |
+| memory-service | 18097/18098 | MCP server (RelationalStore, ContextRouter, MemoryLayer) |
+| council-backend | TBD | Council Core API (consolidation status, council API) |
+| council-supervisor | TBD | Subagent delegation, chain, chair-gate, summarize |
 | memsearch-watch | 19530 | Vector index (Milvus Lite) |
-| arc-llm | 18095 | Arc A380 consolidation model (Granite-4.1-3B) |
-| frontend | 232821 | Web dashboard (Vite dev server) |
+| arc-summarizer | 18093 | Arc A380 consolidation router (LFM2-2.6B/1.2B, --models-max 1) |
 
 ## Slot Persistence
 
@@ -100,7 +102,7 @@ The pipeline provides:
 **All memory operations route through `memory_service/`** — the memory layer is
 architecturally independent and can run standalone via `--mcp-sse`.
 
-`super_council.py` has **zero direct MemSearch dependency**. All vector indexing
+`council_main.py` has **zero direct MemSearch dependency**. All vector indexing
 and search go through `memory_service.indexer` (MemIndex). This enforces:
 - One config source (`config-subsystem.json`)
 - One Milvus connection owner (MCP server or in-process indexer)
@@ -139,12 +141,15 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 | `FastMCP Server` | `memory_service/mcp_server.py` | MCP server: 18 tools + 7 resources (stdio + SSE transport) |
 | `MCPClient` | `mcp_client.py` | Sync MCP client for Pi agent (background event-loop thread) |
 | `MicroModelEnricher` | `micro_model.py` | Async semantic enrichment (ONNX embeddings, TF-IDF keywords) |
-| `ArcSummarizer` | `arc_summarizer/__init__.py` | Unified facade for consolidation, summarization, extraction |
-| `ArcClient` | `arc_summarizer/client.py` | HTTP client with retry + fallback to main upstream |
-| `ArcPipeline` | `arc_summarizer/pipeline.py` | Full consolidation pipeline (gather→call→write→cache→inject) |
-| `ArcConfig` | `arc_summarizer/config.py` | Loads from `config-subsystem.json["consolidation"]` |
+| `ArcPipeline` | `memory_service/consolidate/pipeline.py` | Consolidation pipeline (gather→call→write→index) |
+| `ArcClient` | `memory_service/consolidate/client.py` | HTTP client with retry + fallback to main upstream |
+| `LLMRequestQueue` | `memory_service/consolidate/llm_queue.py` | Request queue with priority scheduling + perf tracking |
+| `TierWriter` | `memory_service/consolidate/tier_writer.py` | Writes rollups to `memory_rollups` table |
+| `Scheduler` | `memory_service/consolidate/scheduler.py` | Identifies sessions needing consolidation |
 
 **Backward compat shims** (re-export from `memory_service/`): `relational_store.py`, `context_router.py`, `memory_layer.py`, `review_service.py`
+
+**Removed 2026-06-16:** `ArcSummarizer` facade class — never instantiated in production. `council_main.py` startup consolidation block (`self._arc = None`) stripped entirely.
 
 ## Key Design Decisions
 
@@ -158,8 +163,8 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 8. **MemoryService single source of truth:** Supervisor uses direct Python API (`MemoryService.load()`). No MCP subprocess spawning, no JSON-RPC serialization for in-process calls. External consumers use `memory_service --mcp-stdio` (FastMCP).
 9. **FastMCP for external MCP:** Full protocol compliance (tools with auto-schema, resources, stdio + SSE transport, proper error codes). `mcp>=1.0.0` declared dependency.
 10. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
-11. **Arc A380 consolidation:** Memory consolidation routes to Granite-4.1-3B on Arc A380 (separate from main GPU). Health-gated startup with fallback to main upstream.
-12. **Session memory separation:** `memory_rollups` (Arc A380 pipeline, `consol-*` prefix, replaces zombie `consolidation_cache`) is strictly separate from `session_diary` (mechanical upsert, `sess-*` prefix). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. All recall routes through ContextRouter (canonical recall path). Provenance traceability: `consol-*` = Arc, `sess-*` = mechanical, `test-*` = tests.
+11. **Arc A380 consolidation:** Memory consolidation routes to LFM2-2.6B-Transcript (daily) + LFM2.5-1.2B-Instruct (short/weekly/bimonthly) via router mode on Arc A380. Health-gated startup with fallback to main upstream. Single-slot execution (`--models-max 1`).
+12. **Single consolidation table:** `memory_rollups` is the sole table for all memory data. `session_diary` was dropped 2026-06-12 and merged into `memory_rollups`. `consolidation_cache` is a zombie table (exists but empty). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. All recall routes through ContextRouter (canonical recall path). Provenance traceability: `consol-*` = Arc pipeline, `sess-*` = mechanical upsert, `test-*` = tests.
 
 ## Configuration
 
@@ -205,7 +210,7 @@ routing:
 
 **Subsystem config:** `~/Coding-Projects/7-council/super_council/config-subsystem.json`
 
-Defines subsystem settings: `default_alias`, `voice_pipeline`, `summarizer`.
+Defines subsystem settings: `default_alias`, `voice_pipeline`, `consolidation`.
 
 ### Startup
 
@@ -253,7 +258,7 @@ systemctl --user start memsearch-watch.service
 | llama-swap source | `~/llama-swap/` |
 | llama-swap config | `~/llama-swap/config.yaml` |
 | llama-swap binary | `~/bin/llama-swap` (council build tag) |
-| llama-server binary | `~/llama-cpp-latest/build/bin/llama-server` |
+| llama-server binary (A380/SYCL) | `~/Coding-Projects/7-council/llama-forks/llama-vulkan-a380/build-sycl-prod/bin/llama-server` |
 | Slots (tmpfs) | `~/Coding-Projects/7-council/council-config/slots/` (48GB) |
 | Models | `~/models/` |
 | Council memory | `~/.council-memory/` |

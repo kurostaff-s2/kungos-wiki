@@ -15,7 +15,39 @@ http://127.0.0.1:8090
 ```json
 {
   "ok": true,
-  "supported_features": ["function_calling", "tool_use", "delegation", "fanout", "allowed_tools"]
+  "restarting": false,
+  "system_error": false,
+  "pid": { "current_pid": 385672, "pid_match": true },
+  "mcp": {
+    "healthy": true,
+    "components": { "store": true, "router": true, "layer": true, "review": true, "cg_store": true, "pipeline": true, "scheduler": true },
+    "arc_server": { "healthy": true, "latency_ms": 0.5 },
+    "memsearch": { "status": "external" },
+    "reconciliation": { "mode": "inline", "task_reconciliation": "wired", "deviation_reconciliation": "wired" },
+    "session_analyzer": { "available": true, "live_mode": "code" },
+    "adaptive_triggers": { "idle_detection": "active", "thread_alive": true },
+    "event_hints": { "wake_method": "live", "handlers": ["chat_summary_saved", "daily_summary_saved"] },
+    "errors": []
+  },
+  "memsearch": { "available": false, "error": "..." },
+  "supervisor": {
+    "start_time": 1781990415.97,
+    "total_requests": 0,
+    "swaps": 1,
+    "uptime_seconds": 716.9,
+    "current_alias": "qwen-160k-UD-fast",
+    "current_signature": "871e020e64e59ddfdfaddc3f803abe318f70e914f68ba6e55e18097b33ce54a8"
+  },
+  "supported_features": {
+    "function_calling": true,
+    "tool_use": true,
+    "delegation": true,
+    "fanout": true,
+    "chair_gate": true,
+    "recall": false,
+    "index": false,
+    "allowed_tools": ["pipeline.query", "find", "recall.unified", "subagent", ...]
+  }
 }
 ```
 

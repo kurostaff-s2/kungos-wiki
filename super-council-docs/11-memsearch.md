@@ -300,7 +300,7 @@ Both are **INT8 quantized** — not fine-tunable as-is (quantization destroys gr
 bge-m3 (FP16, ~2GB) → fine-tune on our corpus → export ONNX INT8 → replace model
 ```
 
-- **Training data:** Our own corpus (raw_session_memories, session_diary, review_findings, artifacts, docs)
+- **Training data:** Our own corpus (raw_session_memories, memory_rollups, review_findings, artifacts, docs)
 - **Approach:** Contrastive learning (`MultipleNegativesRankingLoss`) — positive pairs: same-domain text; negative pairs: random
 - **Tool:** `sentence-transformers` library
 - **Cost:** ~4-8 hours on GPU
@@ -404,7 +404,7 @@ Assistant message (auto-detected, scored >= 4)
 
 ## UnifiedVectorStore (Added 2026-06-05, Updated 2026-06-06)
 
-> Project-scoped vector indexing with server-side filtering. Indexes session_diary + memory_rollups into Milvus.
+> Project-scoped vector indexing with server-side filtering. Indexes memory_rollups into Milvus.
 > Dedup via `_source_exists()` — skips already-indexed (source, source_id) pairs.
 
 **Location:** `memory_service/vector_store.py`
@@ -412,7 +412,7 @@ Assistant message (auto-detected, scored >= 4)
 
 ### Why UnifiedVectorStore?
 
-MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (session_diary entries, memory_rollups) that doesn't exist as files.
+MemSearch indexes files (markdown, code). UnifiedVectorStore indexes **database content** (memory_rollups) that doesn't exist as files.
 
 | Feature | MemSearch | SqliteIndexer | UnifiedVectorStore |
 |---------|-----------|---------------|-------------------|
@@ -435,7 +435,7 @@ store = UnifiedVectorStore(
 
 # Index a document
 store.index(
-    source="session_diary",
+    source="memory_rollups",
     source_id="summary-123",
     text="Decided to use FTS5 for search",
     project_id="council"
@@ -446,7 +446,7 @@ results = store.search(
     query="embedding consolidation",
     top_k=10,
     project_id="council",  # Server-side filter
-    source="session_diary"  # Optional source filter
+    source="memory_rollups"  # Optional source filter
 )
 
 # Re-index existing data

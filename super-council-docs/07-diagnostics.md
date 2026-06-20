@@ -54,8 +54,8 @@ ls -la ~/.memsearch/milvus.db/
 ### Arc LLM Status
 
 ```bash
-# Service status (port 18095)
-curl http://127.0.0.1:18095/health
+# Service status (port 18093, router mode)
+curl http://127.0.0.1:18093/health
 ```
 
 ## Common Issues
