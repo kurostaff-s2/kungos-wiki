@@ -1,6 +1,6 @@
-# Arc Summarizer — Tiered Memory Consolidation on Intel Arc A380
+# ARC Summarizer — Tiered Memory Consolidation on Intel Arc A380
 
-> Memory consolidation, session summarization, and knowledge extraction routed to Granite-4.1-3B on the Arc A380 via SYCL llama-server. Implements a **Temporal Memory Pyramid** with four consolidation tiers (daily → 3-day → weekly → bi-weekly), each producing progressively abstract summaries.
+> Memory consolidation routed through llama.cpp router mode on the Arc A380 via SYCL. Single-owner pipeline: only `memory-service` submits consolidation requests. Tier-specific model routing: 2.6B for daily, 1.2B for higher tiers.
 
 ## Architecture
 
@@ -11,381 +11,439 @@
 │  Bi-Weekly Overview (15d)    ← digests weekly reviews                      │
 │  ┌─────────────────────────┐   window=15d, ttl=60d, source=weekly          │
 │  │ memory_rollups          │   prompt: strategic themes, corrections        │
-│  │ (consol-bimonthly-*)    │   output: executive summary, knowledge base    │
-│  └────────────┬────────────┘                                                │
+│  │ (rollup-bimonthly-*)    │   output: executive summary, knowledge base    │
+│  │ Model: LFM2.5-1.2B      │   (router hot-swaps from daily model)         │
+│  └─────────────────────────┘                                                │
 │               │                                                             │
 │  Weekly Review (7d)        ← digests 3-day digests                         │
 │  ┌─────────────────────────┐   window=7d, ttl=30d, source=short            │
-│  │ session_diary           │   prompt: milestones, velocity, lessons       │
-│  │ (consol-weekly-*)       │   output: milestones, projects, risks          │
-│  └────────────┬────────────┘                                                │
+│  │ memory_rollups          │   prompt: milestones, velocity, lessons       │
+│  │ (rollup-weekly-*)       │   output: milestones, projects, risks          │
+│  │ Model: LFM2.5-1.2B      │                                               │
+│  └─────────────────────────┘                                                │
 │               │                                                             │
 │  3-Day Digest (3d)           ← digests daily summaries                     │
 │  ┌─────────────────────────┐   window=3d, ttl=14d, source=daily            │
-│  │ session_diary           │   prompt: narrative, threads, blockers        │
-│  │ (consol-short-*)        │   output: work threads, carried-forward        │
-│  └────────────┬────────────┘                                                │
+│  │ memory_rollups          │   prompt: narrative, threads, blockers        │
+│  │ (rollup-short-*)        │   output: work threads, carried-forward        │
+│  │ Model: LFM2.5-1.2B      │                                               │
+│  └─────────────────────────┘                                                │
 │               │                                                             │
-│  24-Hour Diary (1d)            ← reads raw session_diary entries           │
-│  ┌─────────────────────────┐   window=1d, ttl=7d, source=raw               │
-│  │ session_diary           │   prompt: decisions, completed, open items    │
-│  │ (consol-daily-*)        │   output: tasks, files, errors                │
-│  └────────────┬────────────┘                                                │
+│  Daily Rollup (per session)    ← reads canonical raw MD files              │
+│  ┌─────────────────────────┐   source=raw, deterministic ID                │
+│  │ memory_rollups          │   prompt: v2 Team Leader format              │
+│  │ (rollup-daily-{src_id}) │   output: summary, decisions, work, open items │
+│  │ Model: LFM2-2.6B        │   (Transcript specialist)                     │
+│  └─────────────────────────┘                                                │
 │               │                                                             │
-│  Raw Material                                              │                │
-│  ┌─────────────────────────┐                                │                │
-│  │ session_diary (sess-*)  │ ← Pi extension hook            │                │
-│  │ chat-summaries/         │ ← chat session endings         │                │
-│  │ daily/                  │ ← council daily logs           │                │
-│  └─────────────────────────┘                                │                │
-└─────────────────────────────────────────────────────────────┘                │
+│  Raw MD Files                      ← canonical source of truth             │
+│  ┌─────────────────────────┐   ~/.council-memory/canonical-raw-session-data/│
+│  │ canonical-raw-.../      │   Deterministic naming:                       │
+│  │                         │   trace-{hash}.md                             │
+│  └─────────────────────────┘                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Provenance Separation
+## Hardware
 
-Every entry carries a prefix that reveals its origin:
+| Component | Spec |
+|-----------|------|
+| GPU | Intel Arc A380 (5.7 GB VRAM) |
+| Daily Model | LFM2-2.6B-Transcript-Q8_0 (2.6 GB) |
+| Higher-Tier Model | LFM2.5-1.2B-Instruct-Q8_0 (1.2 GB) |
+| Backend | SYCL (oneAPI) via llama.cpp router |
+| Port | 18093 (router) |
+| Service | `arc-router.service` (systemd user) |
+| Router Mode | `--models-max 1` (hot-swap, single model in VRAM) |
 
-| Prefix | Table | Source | Mechanism |
-|--------|-------|--------|------------|
-| `consol-daily-*` | `session_diary` | Arc A380 | Tiered consolidation (daily) |
-| `consol-short-*` | `session_diary` | Arc A380 | Tiered consolidation (3-day) |
-| `consol-weekly-*` | `session_diary` | Arc A380 | Tiered consolidation (weekly) |
-| `consol-bimonthly-*` | `memory_rollups` | Arc A380 | Tiered consolidation (bi-weekly) |
-| `consol-*` | `memory_rollups` | Arc A380 | Legacy startup consolidation |
-| `sess-*` | `session_diary` | Mechanical | Pi extension hook or `memory.upsert_summary` |
+**Model selection rationale (2026-06-20):**
+- **LFM2-2.6B-Transcript** for daily tier: Optimized for transcript/meeting summarization. Produces structured narratives with decision attribution and intent tracking. ~52s per session.
+- **LFM2.5-1.2B-Instruct** for short/weekly/bimonthly: Faster synthesis of upstream rollups. ~50s per tier.
+- **Router mode** (`--models-max 1`): Automatic hot-swapping between models on limited VRAM. Single endpoint (127.0.0.1:18093).
+- **Q8_0 quantization**: Required for context fidelity (lower precision degrades output).
+- **Context window**: 32K tokens (accommodates 82K char max daily input ~20K tokens + output).
 
-**Design principle:** `memory_rollups` = Arc A380 only (replaces zombie `consolidation_cache`). `session_diary` = mechanical upsert + tiered daily/short/weekly. Provenance is traceable from prefix alone.
+### Performance
 
-## Module Structure
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Daily (2.6B) PP | ~25 t/s | Steady-state on A380 |
+| Daily (2.6B) TG | ~476 t/s | Token generation |
+| Daily duration | ~52s | End-to-end per session |
+| Higher-tier (1.2B) PP | ~24 t/s | Steady-state on A380 |
+| Higher-tier (1.2B) TG | ~463 t/s | Token generation |
+| Higher-tier duration | ~50s | End-to-end per tier |
+| Typical output | 4-6K chars | Varies with session length |
+| Router hot-swap | <1s | Automatic model swap |
 
-| File | Purpose |
-|------|---------|
-| `arc_summarizer/__init__.py` | `ArcSummarizer` facade — unified entry point |
-| `arc_summarizer/config.py` | `ArcConfig` — loads from `config-subsystem.json["consolidation"]` |
-| `arc_summarizer/client.py` | `ArcClient` — HTTP client with retry + fallback |
-| `arc_summarizer/pipeline.py` | `ArcPipeline` — consolidation pipeline + tiered execution |
-| `arc_summarizer/prompts.py` | Prompt templates (legacy + tier-specific) for Granite-4.1-3B |
-| `arc_summarizer/scheduler.py` | `IdleWindowScheduler` — adaptive, CPU-aware background scheduling |
-| `arc_summarizer/start.sh` | systemd wrapper — sources oneAPI, starts llama-server |
+**Legacy (2026-06-14):** LFM2.5-8B-A1B-UD-Q4_K_XL on port 18095. Replaced by router mode (2026-06-20) for tier-specific routing and reduced latency.
 
-## Tier Configuration
+## Pipeline Components
+
+### ArcPipeline (`memory_service/consolidate/pipeline.py`)
+
+Single entry point for all consolidation. Instantiated by `memory_service/__init__.py`.
+
+**Flow:**
+1. **Scheduler** (`scheduler.py`) — Identifies sessions needing consolidation (daily, short, weekly, bimonthly windows)
+2. **Gather** — Reads raw MD files or upstream rollups via `source_rollup_ids`
+3. **Prompt** — Constructs tier-specific prompt with system prompt + context
+4. **Call** — Sends to ArcClient (HTTP to llama.cpp router on :18093)
+5. **Parse** — Extracts structured fields from Markdown response
+6. **Write** — Upserts to `memory_rollups` via `RelationalStore.upsert_memory_rollup()`
+7. **Index** — Triggers SqliteIndexer to embed new rollup
+
+**Key methods:**
+- `process_consolidation_request(request)` — Main entry point
+- `_build_prompt(tier, context)` — Tier-specific prompt construction
+- `_call_arc(context, prompt)` — HTTP call via ArcClient
+- `_parse_response(response)` — Markdown extraction → structured dict
+- `_write_rollup(rollup_data)` — DB upsert via RelationalStore
+
+### ArcClient (`memory_service/consolidate/client.py`)
+
+HTTP client with retry logic. Talks to llama.cpp router on :18093.
+
+**Features:**
+- Exponential backoff retry (3 attempts, 1s base)
+- Timeout: 600s (10 min) for long consolidation prompts
+- Fallback to main upstream (Qwen on RTX 3090) if router is down
+- Health check: `GET /v1/health` before submission
+- Model-aware routing: selects model per tier via `config.get_model_for_tier()`
+- `cache_prompt: False` in payload to clear KV cache between requests
+
+### LLMRequestQueue (`memory_service/consolidate/llm_queue.py`)
+
+Request queue with priority scheduling and performance tracking.
+
+**Features:**
+- Priority queue: daily > short > weekly > bimonthly
+- Performance logging: TG (tokens/sec generation), PP (tokens/sec prompt processing)
+- Queue depth monitoring
+- Backpressure: blocks new requests when queue is full
+- Router mode: each request specifies model, router handles hot-swap
+- KV cache clearing: `cache_prompt: False` prevents context bleed
+
+### TierWriter (`memory_service/consolidate/tier_writer.py`)
+
+Writes consolidation output to `memory_rollups` table.
+
+**Key responsibilities:**
+- Generates deterministic rollup IDs: `rollup-{tier}-{source_id}`
+- `INSERT OR REPLACE` for daily tier (prevents duplicates)
+- Populates `source_rollup_ids` for higher-tier lineage
+- Sets TTL based on tier (14d daily, 30d short, 60d weekly, 90d bimonthly)
+- Embeds `summary_text` as primary vector target
+- Tracks `model_used` in DB for auditability
+
+### ConsolidationStore (`memory_service/store/consolidation_store.py`)
+
+Database operations for `memory_rollups` table.
+
+**Key methods:**
+- `upsert_memory_rollup(...)` — Insert or replace rollup
+- `get_memory_rollups(...)` — Query with filters (tier, source, date, project)
+- `get_rollup_by_id(id)` — Single rollup lookup
+- `get_rollups_by_source(source_id)` — All rollups for a source
+
+### SessionStore (`memory_service/store/session_store.py`)
+
+Session lifecycle tracking. `session_diary` table dropped 2026-06-12, replaced by `memory_rollups`.
+
+**Key methods:**
+- `upsert_session_lifecycle(...)` — Track session state
+- `get_sessions_needing_consolidation(...)` — Pipeline input
+- `link_rollup_to_session(...)` — Connect rollup to session
+
+## Router Mode
+
+### Configuration
+
+```ini
+# /home/chief/models/arc-router/models.ini
+# Uses absolute paths (router resolves working directory differently)
+
+[main]
+models = /home/chief/models/LFM2-2.6B-Transcript-Q8_0.gguf,/home/chief/models/LFM2.5-1.2B-Instruct-Q8_0.gguf
+models_max = 1
+```
+
+**Key settings:**
+- `--models-max 1`: Only one model loaded in VRAM at a time (hot-swap)
+- `--models-autoload`: Loads models from `models.ini`
+- Absolute paths in `models.ini`: Required due to router working directory resolution
+- Single endpoint: `http://127.0.0.1:18093` handles all tiers
+
+### Tier-to-Model Routing
 
 ```python
-TIER_CONFIGS = {
-    "daily":     {"window_days": 1,  "ttl_days": 7,  "input_source": "raw",     "max_input_chars": 30_000},
-    "short":     {"window_days": 3,  "ttl_days": 14, "input_source": "daily",   "max_input_chars": 20_000},
-    "weekly":    {"window_days": 7,  "ttl_days": 30, "input_source": "short",   "max_input_chars": 15_000},
-    "bimonthly": {"window_days": 15, "ttl_days": 60, "input_source": "weekly",  "max_input_chars": 10_000},
+# config.py
+TIER_MODEL = {
+    "daily": "LFM2-2.6B-Transcript-Q8_0",
+    "short": "LFM2.5-1.2B-Instruct-Q8_0",
+    "weekly": "LFM2.5-1.2B-Instruct-Q8_0",
+    "bimonthly": "LFM2.5-1.2B-Instruct-Q8_0",
 }
 ```
 
-## Scheduler: IdleWindowScheduler
+Router automatically unloads current model and loads requested model. Swap latency: <1s.
 
-Replaces fixed cron with adaptive, workstation-aware scheduling. Three mechanisms:
+### KV Cache Clearing
 
-### Primary: Idle-Window Background Thread
+`cache_prompt: False` in every request payload. Prevents KV cache reuse across requests, ensuring fresh generation and consistent testing. Without this, context bleed causes output degradation.
 
-```
-IdleWindowScheduler (daemon thread)
-  → wakes every CHECK_INTERVAL (30 min default)
-  → gate: Arc healthy? → health_check() latency < 2s
-  → gate: System idle? → CPU < 60% (psutil)
-  → find overdue tiers → last_run_at vs window_days
-  → run due tiers in pyramid order (daily → short → weekly → bimonthly)
-  → MAX_RUNS_PER_CYCLE = 2 (spread across wake cycles)
-  → CASCADE_DELAY = 2s between tiers (DB settle time)
-```
+## Prompt Strategy
 
-### Fallback A: Startup Catch-Up
-
-On service start, `_run_startup_catch_up()` finds overdue tiers and runs them in a background thread. Non-blocking — never delays HTTP listener startup. Skips if Arc unhealthy.
-
-### Fallback B: Lazy-on-Recall
-
-`ContextRouter.get_recent_diary(days=N)` triggers on-demand consolidation when no fresh digest exists. Falls back to raw entry aggregation if consolidation fails or Arc is down.
-
-## Tiered Consolidation Flow
+### Daily Tier — v2 Team Leader Format
 
 ```
-run_tiered_consolidation(tier_id)
-  → _gather_tier_input(tier_id)   # raw material or lower-tier digests
-  → build_tier_consolidation_prompt(input, tier_id)  # tier-specific template
-  → ArcClient.consolidate_tiered() # POST to Arc server :18095
-  → _write_tier_output()           # session_diary with consolidation_tier=tier_id
-  → update_tier_last_run()         # consolidation_tiers.last_run_at
+This is a software development session transcript. USER is the team lead who sets goals
+and direction. ASSISTANT is a team member who executes tasks and provides
+recommendations. ACTION lines show file edits and commands executed. FLAG lines
+mark destructive operations.
+
+Provide a detailed chronological summary of the session for historical archives
+and retrieval. Cover the sequence of events: what was attempted, what succeeded
+or failed, and what was decided. Include only the important and relevant file
+names, function names, error messages, and config values.
+
+List the key decisions that were made. For each, attribute it clearly:
+- Driver (USER): The team lead directed this decision
+- Recommended (ASSISTANT): The team member proposed this, team lead accepted
+- Conflict (USER vs ASSISTANT): Team lead overrode a recommendation or vice versa
+
+List the action items and unresolved items. For each, note who initiated it:
+- Requested by USER: Team lead explicitly asked for this
+- Identified by ASSISTANT: Team member flagged this as needed
+- Unresolved: Still pending with no clear owner
+
+List the main topics and technical subjects discussed. Be specific about what
+was explored, tested, or evaluated.
+
+Critically assess execution vs. user intent. This is the most important section.
+Flag where:
+- The team lead's goal was achieved as stated (success)
+- The execution deviated from what the team lead wanted (and why)
+- The team lead overlooked something or made an incorrect assumption
+- The team member misunderstood the team lead's direction
+- The team lead changed direction mid-session (note the shift and trigger)
+
+Be accurate. Only include what is explicitly stated or clearly implied. If unsure,
+mark confidence as low and note the ambiguity.
 ```
 
-## Tier-Specific Prompts
+**Rationale (2026-06-20):**
+- LFM2-2.6B-Transcript is optimized for meeting/transcript summarization
+- Model produces `**Bold:**` headers natively (not `##` Markdown)
+- Parser handles both formats via regex
+- v2 format produces 4-6K chars with structured output
+- Better than v3 (disambiguation rules) which triggers technical documentation mode
+- Better than v1 (strict schema) which causes hallucinations
 
-Each tier has a prompt template in `TIER_PROMPT_TEMPLATES` dict (`prompts.py`):
+### Higher Tiers — User Intent Tracking
 
-| Tier | Abstraction | Key Output Fields |
-|------|-------------|-------------------|
-| `daily` | Concrete (files, functions, errors) | summary, decisions, work_completed, open_items, key_files, key_functions |
-| `short` | Narrative (work threads, progress) | narrative, work_threads[], carried_forward[], new_open_items[] |
-| `weekly` | Thematic (milestones, velocity) | theme, completed_milestones[], active_projects[], lessons_learned[], risks[] |
-| `bimonthly` | Strategic (direction, corrections) | executive_summary, major_achievements[], course_corrections[], knowledge_base[] |
+Short, weekly, and bimonthly tiers include:
+- **User Intent** section: What the user wanted to achieve
+- **matched_intent** field: `yes|partial|no` on milestones/achievements
+- **Goal shift tracking**: Where goals shifted or were abandoned
 
-Each prompt includes a **"Previously Captured"** section to prevent cross-tier duplication.
+## Single Consolidation Owner
 
-## API Reference
+**Only `memory-service` submits consolidation requests.** No other process calls the Arc pipeline directly.
 
-### ArcClient (HTTP)
-
-| Method | Purpose |
-|--------|---------|
-| `consolidate(input_material)` | POST legacy consolidation prompt → YAML |
-| `consolidate_tiered(input_material, tier_id)` | POST tier-specific prompt → YAML |
-| `summarize_session(turns, max_tokens)` | POST session turns → summary |
-| `extract_knowledge(text, schema)` | POST text + schema → parsed dict |
-| `health_check()` | GET /v1/models → health status |
-
-### ArcPipeline (orchestration)
-
-| Method | Purpose |
-|--------|---------|
-| `run_consolidation()` | Legacy pipeline: gather → call → write → cache → activate → inject |
-| `run_tiered_consolidation(tier_id)` | Tiered pipeline: gather → call → write → update timestamp |
-| `_gather_tier_input(tier_id)` | Read source material within window_days |
-| `_write_tier_output(tier_id, output)` | Write to session_diary with tier prefix |
-| `inject_tier1()` | Query cache → format knowledge card |
-
-### IdleWindowScheduler (adaptive scheduling)
-
-| Method | Purpose |
-|--------|---------|
-| `start()` | Launch daemon thread (idempotent) |
-| `stop()` | Signal thread to stop |
-| `_check_cycle()` | One wake: gates → run due tiers |
-| `_arc_healthy()` | Gate: Arc server responds |
-| `_system_idle()` | Gate: CPU < threshold (psutil) |
-| `_find_due_tiers()` | Overdue: `last_run_at` vs `window_days`, pyramid order |
-| `_run_startup_catch_up()` | Fallback A: run overdue tiers on service start |
-
-### ContextRouter (recall)
-
-| Method | Purpose |
-|--------|---------|
-| `get_recent_diary(days, max_tokens)` | Lazy recall: digest → consolidate → raw fallback |
-| `_format_digest_entry(entry)` | Format tier digest as readable text |
-| `_aggregate_raw_entries(days)` | Fallback: combine raw entries by section |
-
-### RelationalStore (tier methods)
-
-| Method | Purpose |
-|--------|---------|
-| `query_consolidation_tiers()` | All tier definitions from registry |
-| `update_tier_last_run(tier_id, timestamp)` | Mark tier as run |
-| `query_session_diary(consolidation_tier=...)` | Filter by tier |
-
-## Schema
-
-### `consolidation_tiers` Table (Migration 06)
-
-```sql
-CREATE TABLE consolidation_tiers (
-    tier_id TEXT PRIMARY KEY,
-    label TEXT NOT NULL,
-    window_days INTEGER NOT NULL,
-    ttl_days INTEGER NOT NULL,
-    schedule_cron TEXT,
-    input_source TEXT NOT NULL,
-    output_target TEXT NOT NULL,
-    last_run_at TEXT,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%fZ', 'now'))
-);
-
--- Seeded with 4 tiers: daily, short, weekly, bimonthly
+```
+ArcPipeline (memory_service)
+  └── ArcClient
+        └── LLMRequestQueue
+              └── llama.cpp router (:18093, --models-max 1)
+                    ├── LFM2-2.6B-Transcript-Q8_0 (daily)
+                    └── LFM2.5-1.2B-Instruct-Q8_0 (short/weekly/bimonthly)
 ```
 
-### `session_diary` Extensions
+The `ArcSummarizer` facade class was removed (2026-06-16). It was never instantiated in production — `council_main.py` had `self._arc = None` and the startup consolidation block was dead code.
 
-```sql
-ALTER TABLE session_diary ADD COLUMN consolidation_tier TEXT DEFAULT NULL;
-ALTER TABLE session_diary ADD COLUMN ttl_phase TEXT DEFAULT 'active';
-CREATE INDEX idx_session_diary_tier ON session_diary(consolidation_tier);
+## Deduplication
+
+### Daily Tier: Deterministic IDs
+
+Daily rollups use `f"rollup-daily-{source_id}"` as the rollup ID. Combined with `INSERT OR REPLACE`, this guarantees one rollup per session. No new duplicates can form.
+
+### Source File as Canonical Key
+
+`source_file` is the canonical primary key across:
+- `session_lifecycle` — tracks session state
+- `consolidation_requests` — tracks consolidation status
+- `memory_rollups` — stores consolidation output
+
+Pipeline checks `rollup_id IS NOT NULL` in `session_lifecycle` to skip already-consolidated sessions.
+
+### Legacy Duplicates
+
+Pre-June 16 rollups used timestamp-based IDs (`rollup-daily-{timestamp}-{uuid}`), creating 2-6 duplicates per session for ~10 sessions (June 12-14). These are frozen legacy artifacts; the deterministic ID scheme prevents recurrence.
+
+## Higher-Tier Lineage
+
+Tiers above daily track upstream sources via `source_rollup_ids` (JSON array of MD filenames). This ensures:
+- Weekly rollups know which daily rollups they digest
+- Bi-weekly rollups know which weekly rollups they digest
+- Full lineage traceability from any rollup back to raw MD files
+
+## MD File Naming
+
 ```
+~/.council-memory/canonical-raw-session-data/trace-{hash}.md
+```
+
+Hash is content-based (SHA-256 prefix). Files are deduplicated at the filesystem level before pipeline processing.
 
 ## Configuration
+
+### arc-router.service
+
+```ini
+# ~/.config/systemd/user/arc-router.service
+[Unit]
+Description=ARC Router (llama.cpp router mode)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/chief/llama-cpp-latest/build/bin/llama-server \
+  --host 127.0.0.1 \
+  --port 18093 \
+  --models /home/chief/models/arc-router/models.ini \
+  --models-max 1 \
+  --models-autoload \
+  --threads 4 \
+  --ubatch-size 2048 \
+  --batch-size 4096 \
+  --ctx-size 32768 \
+  --gpu-split 1 \
+  -ngl 999 \
+  -ctk q8_0 \
+  -ctv q8_0 \
+  --mlock \
+  --no-mmap
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+**Key settings:**
+- `--models-max 1`: Hot-swap mode (one model in VRAM)
+- `--models-autoload`: Loads from models.ini
+- `-ctk q8_0 -ctv q8_0`: Q8_0 KV cache (required for fidelity)
+- `--ctx-size 32768`: 32K context window
 
 ### config-subsystem.json
 
 ```json
 {
   "consolidation": {
-    "model": "granite-4.1-3b",
-    "server_url": "http://127.0.0.1:18095",
-    "timeout_seconds": 120,
-    "max_retries": 3,
-    "fallback_to_main": true,
-    "roles": ["memory-consolidation", "session-summarization", "knowledge-extraction"]
+    "enabled": true,
+    "arc_server": "http://127.0.0.1:18093",
+    "model": "LFM2-2.6B-Transcript-Q8_0",
+    "tier_model": {
+      "daily": "LFM2-2.6B-Transcript-Q8_0",
+      "short": "LFM2.5-1.2B-Instruct-Q8_0",
+      "weekly": "LFM2.5-1.2B-Instruct-Q8_0",
+      "bimonthly": "LFM2.5-1.2B-Instruct-Q8_0"
+    },
+    "daily_window_hours": 24,
+    "short_window_days": 3,
+    "weekly_window_days": 7,
+    "bimonthly_window_days": 15,
+    "scheduler_interval_seconds": 300,
+    "max_queue_depth": 5,
+    "timeout_seconds": 600
   }
 }
 ```
 
-### systemd Service
+## Database
 
-```
-~/.config/systemd/user/arc-summarizer.service
-```
+### memory_rollups Table
 
-- **ExecStart:** `arc_summarizer/start.sh` (sources oneAPI, starts llama-server)
-- **Model:** `~/Coding-Projects/chief-s2s/models/granite-4.1-3b-Q4_K_M.gguf`
-- **Port:** 18095
-- **Memory limit:** 8G
-- **Restart:** on-failure, 10s delay
+Primary table for all consolidation output. Replaced `consolidation_cache` (zombie, 0 rows) and `session_diary` (dropped 2026-06-12).
 
-## MemoryService Integration
+| Column | Type | Purpose |
+|--------|------|---------|
+| `id` | TEXT PK | Rollup ID (`rollup-{tier}-{source_id}`) |
+| `tier` | TEXT | `daily`, `short`, `weekly`, `bimonthly` |
+| `source_file` | TEXT | Canonical source file path |
+| `source_id` | TEXT | Source session ID |
+| `source_rollup_ids` | TEXT | JSON array of upstream rollup MD filenames |
+| `summary_text` | TEXT | Primary consolidation output (vector embedding target) |
+| `vector_text` | TEXT | Structured fields as YAML/JSON |
+| `decisions` | TEXT | Extracted key decisions |
+| `work_completed` | TEXT | Completed work items |
+| `open_items` | TEXT | Open/carry-forward items |
+| `session_context` | TEXT | Session context/narrative |
+| `model_used` | TEXT | Model alias that produced this rollup |
+| `ttl_days` | INTEGER | Time-to-live in days |
+| `created_at` | TIMESTAMP | Creation time |
+| `updated_at` | TIMESTAMP | Last update time |
 
-ArcPipeline and IdleWindowScheduler are wired into `MemoryService` as canonical components:
+### consolidation_requests Table
 
-```python
-service = MemoryService.load()
-service.pipeline        # ArcPipeline — tiered consolidation
-service.scheduler       # IdleWindowScheduler — background scheduling
-service.router._consolidation_pipeline  # Lazy-on-recall reference
-```
+Tracks consolidation pipeline requests and status.
 
-On init: ArcPipeline created from config, wired to ContextRouter for lazy-on-recall. IdleWindowScheduler started as daemon thread. Startup catch-up runs in background thread.
+| Column | Type | Purpose |
+|--------|------|---------|
+| `id` | TEXT PK | Request ID |
+| `source_file` | TEXT | Canonical source file |
+| `tier` | TEXT | Target tier |
+| `status` | TEXT | `pending`, `processing`, `completed`, `failed` |
+| `model_used` | TEXT | Model that processed this request |
+| `error` | TEXT | Error message on failure |
+| `rollup_id` | TEXT | Resulting rollup ID |
+| `created_at` | TIMESTAMP | Request time |
+| `completed_at` | TIMESTAMP | Completion time |
 
-## Consolidation Metrics
+### session_lifecycle Table
 
-`MemoryLayer._get_consolidation_metrics()` queries DB state and returns structured dict:
+Tracks session state and consolidation linkage.
 
-```python
-{
-    "tiers": {"daily": {"last_run_at": ..., "overdue": bool, "entries_count": int}, ...},
-    "ttl_distribution": {"active": int, "aging": int, "expired": int, "total": int, "expiring_within_24h": int},
-    "consolidation_cache": {"note": "memory_rollups (replaces consolidation_cache)", "total_entries": int, "active": int, "indexed": int, "expired": int},
-    "injection_blacklist": {"active_patterns": int, "total_patterns": int},
-}
-```
+| Column | Type | Purpose |
+|--------|------|---------|
+| `source_file` | TEXT PK | Canonical source file path |
+| `rollup_id` | TEXT | Linked rollup ID (NULL = not consolidated) |
+| `state` | TEXT | `new`, `consolidated`, `failed` |
+| `updated_at` | TIMESTAMP | Last state change |
 
-Wired into `unified_log_recall()` as always-included section (like `service_health`). Fused context includes `## Consolidation Metrics` summary.
+## Failure Modes
 
-Also available via `MemoryService.health_check()` → `arc_server` section.
+| Scenario | Behavior |
+|----------|----------|
+| Router down | Fallback to main upstream (Qwen on RTX 3090) |
+| LLM output failure | `partial failure: not all 1 parts succeeded` — logged, session marked failed |
+| Queue full | Backpressure: blocks new requests until queue drains |
+| Empty summary_text | Rollup created but no content — typically LLM generation failure |
+| Duplicate detection | `INSERT OR REPLACE` on deterministic IDs prevents new duplicates |
+| Model swap failure | Router logs error, request fails, retry with fallback |
 
-## Test Coverage
+## Known Issues
 
-| Test File | Tests | Coverage |
-|-----------|-------|----------|
-| `test_tiered_consolidation.py` | 24 | Schema, store methods, prompts, pipeline, client |
-| `test_idle_scheduler.py` | 20 | Due detection, CPU gating, cycle logic, lifecycle, catch-up |
-| `test_lazy_recall.py` | 12 | Tier mapping, fresh digest, on-demand, fallback, aggregation |
-| `test_consolidation_metrics.py` | 17 | Metrics queries, overdue detection, TTL, cache, blacklist, integration |
-| **Total** | **93** | All passing |
-
-## Reconciliation Framework
-
-Memory consolidation and reconciliation are **separate processes** with different goals:
-
-| Aspect | Memory Consolidation | Reconciliation |
-|--------|---------------------|----------------|
-| **Goal** | Preserve running narrative memory that evolves | Track workflow, mistakes, deviations |
-| **LLM** | ARC LLM (Granite-4.1-3B) | Mechanical extraction (no LLM) |
-| **Input** | Raw session data, annotated conversation | Consolidation outputs from `arc-memory/` |
-| **Output** | `arc-memory/daily/` (structured MD) | `arc-reconcile/daily/` (tasks.md, deviations.md, carry_forward.md) |
-| **Frequency** | Per session, tiered (daily→short→weekly→bimonthly) | After consolidation, scheduled |
-
-### Why Split?
-
-The ARC LLM isn't powerful enough to do both simultaneously. Consolidation focuses on narrative preservation. Reconciliation focuses on workflow tracking. Separate processes avoid overloading the model.
-
-### Raw Session Data Format (Path B)
-
-Canonical raw session files in `~/.council-memory/canonical-raw-session-data/` use an **annotated conversation format**:
-
-```
-## Annotated Conversation
-
-USER: check the CPU usage on pplx-embed
-
-ASSISTANT: Found it — server.py on port 18099. [file:server.py]
-
-ACTION [edit]: /path/to/db_poller.py (1 edit(s))
-
-ASSISTANT: Fixed the poll interval. Got a ValueError. [error:ValueError]
-```
-
-**Inline annotations preserve positional context:**
-- `[file:path]` — file references at the turn where they appear
-- `[func:name]` — function/method references
-- `[error:type]` — error/exception references
-- `[read:path]`, `[edit:path]`, `[write:path]` — tool actions
-- `[bash:cmd] [files:...]` — shell commands with file context
-- `FLAG[label]` — destructive operation warnings
-
-**No hardcoded sections.** The ARC LLM extracts structured data (decisions, work completed, deviations) from the annotated conversation with full positional traceability.
-
-### Reconciliation Pipeline
-
-```
-arc-memory/daily/ (consolidation outputs)
-       ↓
-  ArcReconciler (mechanical extraction)
-       ↓
-  arc-reconcile/daily/ (tasks.md, deviations.md, carry_forward.md)
-```
-
-**ArcReconciler** (`arc_summarizer/reconcile.py`):
-- Reads latest consolidation MD from `arc-memory/{tier_id}/`
-- Extracts tasks, deviations, carry_forward items
-- Preserves structured fields (position, evidence, files, functions)
-- Filters noise items ("None identified", "none", "N/A")
-- Every item includes source tag for traceability
-
-### Reconciliation Output Format
-
-```
-# Reconciliation: tasks
-date: 2026-06-09T00:00:00+0530
-tier: daily
-items: 3
-
-## Completed
-- Fixed schema count inconsistency [source:consolidation-20260608-233513.md]
-  - position: after investigating CPU usage
-  - files: session_summarization.md
-  - functions: trim_session
-
-## Open
-- Clarify upsert mechanism [source:consolidation-20260608-233513.md]
-  - position: end of session
-  - evidence: Reviewing memory_service pipelines
-```
-
-### Known Limitations
-
-1. **Reconciliation is purely reactive** — only extracts what ARC LLM already produced
-2. **No independent workflow analysis** — can't detect mistakes/deviations that consolidation missed
-3. **Deviations rarely produced** — ARC LLM only produces deviations when explicitly stated
-
-**Fix options documented:** `/home/chief/llm-wiki/00-prompt-handoff/09-06-2026_arc-reconciliation-framework-fix_cd2902.md`
-
-## What Does NOT Change
-
-- **`memory_rollups` / `session_diary` separation** — Provenance traceability preserved (replaces zombie consolidation_cache)
-- **Arc A380 routing** — Health gate + fallback pattern unchanged
-- **Pi extension `message_end` hook** — Mechanical upsert to `session_diary` unchanged
-- **Legacy `run_consolidation()`** — Kept for backward compatibility
+1. **~24 unlinked sessions** — Failed with `partial failure` during initial consolidations. Rollups exist but not linked to sessions.
+2. **~12 empty `summary_text` rollups** — Mostly legacy; 1 recent has populated `vector_text`. LLM output generation failures.
+3. **~10 sessions with legacy duplicate rollups** — Pre-June 16, timestamp-based IDs. Frozen artifacts.
+4. **Reconciliation status error** — `Invalid status: 'completed'. Must be one of frozenset({'open', 'superseded', 'proposed', 'in_progress', 'done', 'blocked', 'wont_do'})`. Pre-existing bug unrelated to 2.6B model.
 
 ## File Locations
 
-| Resource | Path |
-|----------|------|
-| Module source | `~/Coding-Projects/7-council/super_council/arc_summarizer/` |
-| Scheduler | `~/Coding-Projects/7-council/super_council/arc_summarizer/scheduler.py` |
-| Router | `~/Coding-Projects/7-council/super_council/memory_service/router.py` |
-| Store | `~/Coding-Projects/7-council/super_council/memory_service/store.py` |
-| MemoryService | `~/Coding-Projects/7-council/super_council/memory_service/__init__.py` |
-| Config | `~/Coding-Projects/7-council/super_council/config-subsystem.json` |
-| Memory config | `~/Coding-Projects/7-council/super_council/memory-config.json` |
-| systemd service | `~/.config/systemd/user/arc-summarizer.service` |
-| Start script | `~/Coding-Projects/7-council/super_council/arc_summarizer/start.sh` |
-| Model file | `~/Coding-Projects/chief-s2s/models/granite-4.1-3b-Q4_K_M.gguf` |
-| Semantic memory | `~/.council-memory/semantic-memory/` |
-| Chat summaries | `~/.council-memory/chat-summaries/` |
-| Database | `~/.council-memory/pipelines.db` |
-| Migrations | `~/Coding-Projects/7-council/migrations/` |
-| Tests | `~/Coding-Projects/7-council/super_council/tests/` |
+| Component | Path |
+|-----------|------|
+| ArcPipeline | `memory_service/consolidate/pipeline.py` |
+| ArcClient | `memory_service/consolidate/client.py` |
+| LLMRequestQueue | `memory_service/consolidate/llm_queue.py` |
+| TierWriter | `memory_service/consolidate/tier_writer.py` |
+| Scheduler | `memory_service/consolidate/scheduler.py` |
+| Prompts | `memory_service/consolidate/prompts.py` |
+| ConsolidationStore | `memory_service/store/consolidation_store.py` |
+| SessionStore | `memory_service/store/session_store.py` |
+| Router Config | `/home/chief/models/arc-router/models.ini` |
+| Router Service | `~/.config/systemd/user/arc-router.service` |
+| Database | `~/.council-memory/council_core.db` |
+| Raw MD files | `~/.council-memory/canonical-raw-session-data/` |
