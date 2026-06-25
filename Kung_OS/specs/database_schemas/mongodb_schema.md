@@ -12,7 +12,7 @@
 | Aspect | Value |
 |---|---|
 | **Database name** | `KungOS_Mongo_One` |
-| **Total collections** | 31 LIVE + 12 gaming (deferred to Phase 3b) |
+| **Total collections** | 31 LIVE + 12 e-commerce product (deferred to Phase 3b) |
 | **Total documents** | 68,443 |
 | **Tenant scoping** | 100% — all 31 collections have `(bgcode, division, branch)` fields |
 | **Tenant indexes** | 31/31 collections have `(bgcode, division)` compound index |
@@ -118,9 +118,9 @@
 
 ---
 
-## 4. Gaming Collections — TARGET (Phase 3b, Deferred)
+## 4. E-Commerce Product Collections — TARGET (Phase 3b, Deferred)
 
-12 collections from `kuro-gaming-dj-backend`:
+12 collections from `kuro-gaming-dj-backend` (legacy e-commerce backend):
 
 | Collection | Purpose | Notes |
 |---|---|---|
@@ -138,7 +138,7 @@
 | `lists` | Preset lists | |
 | `presets` | Preset configurations | |
 
-**Note:** These collections are MISSING from `KungOS_Mongo_One`. They exist in the gaming backend's separate database. Integration deferred to Phase 3b.
+**Note:** These collections are MISSING from `KungOS_Mongo_One`. They exist in the legacy e-commerce backend's separate database. Integration deferred to Phase 3b.
 
 ---
 
@@ -307,4 +307,4 @@ python manage.py mongo_field_migration --validate
 
 ---
 
-> **Implementation state:** All 31 collections are LIVE with legacy field names (`bgcode`, `division`). Phase 5.7 migration renames to canonical fields (`bg_code`, `div_code`). Gaming collections (12) deferred to Phase 3b. Identity collections (5) deprecated in favor of PostgreSQL `users_identity` + extensions.
+> **Implementation state:** All 31 collections are LIVE with legacy field names (`bgcode`, `division`). Phase 5.7 migration renames to canonical fields (`bg_code`, `div_code`). E-commerce product collections (12) deferred to Phase 3b. Identity collections (5) deprecated in favor of PostgreSQL `users_identity` + extensions.

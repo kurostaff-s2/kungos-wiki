@@ -2,7 +2,7 @@
 
 **Status:** Spec — TARGET  
 **Date:** 2026-05-17  
-**Source:** `eshop_legacy_review.md`, `KungOS_Endpoint_Design.md`, `KungOS_v2.md`  
+**Source:** `eshop_legacy_review.md`, `KungOS_v2.md`  
 **Purpose:** Authoritative spec for e-commerce domain (package: `eshop`) — cart, orders, payment, fulfillment, procurement
 
 ---
@@ -36,7 +36,7 @@ The e-commerce domain (package: `eshop`) handles online retail operations: produ
 
 ## 2. Product Catalog
 
-### 2.1 MongoDB Collections (Gaming, Phase 3b)
+### 2.1 MongoDB Collections (E-Commerce Products, Phase 3b)
 
 | Collection | Purpose | Notes |
 |---|---|---|
@@ -429,10 +429,10 @@ All Cashfree webhooks must verify HMAC-SHA256 signature before processing.
 | `custombuilds` (Mongo) | `custombuilds` (Mongo) + outbox event | Outbox integration |
 | `orderconversion` (direct Mongo) | `orderconversion` (outbox event) | Outbox integration |
 
-### 11.2 Phase 3b Gaming Collections
+### 11.2 Phase 3b E-Commerce Product Collections
 
-12 gaming collections from `kuro-gaming-dj-backend` deferred to Phase 3b. See `migration_spec.md` (M5).
+12 e-commerce product collections from `kuro-gaming-dj-backend` deferred to Phase 3b. See `migration_spec.md` (M5).
 
 ---
 
-> **Implementation state:** Target architecture only. Legacy e-shop codebase in `kuro-gaming-dj-backend`. Integration deferred to Phase 3b (gaming) and Phase 8 (orders). Outbox integration required for transaction integrity.
+> **Implementation state:** Target architecture only. Legacy e-shop codebase in `kuro-gaming-dj-backend`. Integration deferred to Phase 3b (e-commerce products) and Phase 8 (orders). Outbox integration required for transaction integrity.

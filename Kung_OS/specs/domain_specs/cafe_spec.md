@@ -2,7 +2,7 @@
 
 **Status:** Spec — TARGET  
 **Date:** 2026-05-17  
-**Source:** `KungOS_Endpoint_Design.md`, `cafe-council-review.md`, `platform_primitives.md`  
+**Source:** `cafe-council-review.md`, `platform_primitives.md`  
 **Purpose:** Authoritative spec for cafe platform domain — sessions, stations, F&B orders, wallet, pricing
 **Packages:** `domains/cafe_arcade/` (sessions, stations, wallet, pricing) + `domains/cafe_fnb/` (F&B orders, menu)
 

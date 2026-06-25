@@ -1,8 +1,8 @@
-# Gaming Domain Specification
+# Tournaments Domain Specification
 
 **Status:** Spec — ACTIVE (Phase 3b, Partial)  
 **Date:** 2026-05-17  
-**Source:** `KungOS_v2.md`, `KungOS_Endpoint_Design.md`, `kungos_v2_db.md`  
+**Source:** `KungOS_v2.md`, `kungos_v2_db.md`  
 **Purpose:** Authoritative spec for tournaments domain — tournaments, players, teams, esports integration
 **Package:** `domains/tournaments/` (canonical, not brand-locked)
 
@@ -13,7 +13,6 @@
 | Basic endpoints (tournaments, players, teams, registration) | ✅ Implemented | `domains/tournaments/views.py` |
 | URL routing (`/api/v1/tournaments/`) | ✅ Implemented | Generic namespace, not brand-locked |
 | Tenant scoping (`bg_code`/`div_code`) | ✅ Implemented | Via `get_collection()` wrapper |
-| Gaming backend integration (products, builds, games) | ⏳ Deferred (Phase 3b) | Requires djongo removal, tenant fields |
 | Protocol interfaces (`protocols.py`) | ⏳ Planned | Target pattern, not yet implemented |
 | PostgreSQL migration (players, teams) | ⏳ Planned | Currently MongoDB collections |
 
@@ -21,7 +20,7 @@
 
 ## 1. Domain Overview
 
-The tournaments domain manages esports operations: tournaments, players, teams, rankings, and esports backend integration.
+The tournaments domain manages esports operations: tournaments, players, teams, rankings, and match brackets.
 
 ### 1.1 Domain Boundaries
 
@@ -32,26 +31,9 @@ The tournaments domain manages esports operations: tournaments, players, teams, 
 | **Players** | Player profiles, rankings, stats | Customer profiles, employee profiles |
 | **Teams** | Team rosters, coach info, tournament history | Vendor management, organization registry |
 
-### 1.2 Gaming Backend Integration (Phase 3b)
+### 1.2 E-Commerce Backend Integration (Phase 3b)
 
-The `kuro-gaming-dj-backend` codebase provides e-commerce functionality for custom/prebuilt PC sales. Integration adds:
-
-| Component | Count | Notes |
-|---|---|---|
-| **Django apps** | 5 | `accounts`, `products`, `orders`, `payment`, `games` |
-| **MongoDB collections** | 12 | `prods`, `builds`, `kgbuilds`, `custombuilds`, `components`, `accessories`, `monitors`, `networking`, `external`, `games`, `kurodata`, `lists`, `presets` |
-| **API endpoints** | 25 | Product catalog, cart, wishlist, addresses, orders, payments, game catalog |
-
-### 1.3 Gaming Backend Issues (from `KungOS_v2.md`)
-
-| Issue | Severity | Notes |
-|---|---|---|
-| Hardcoded credentials | 9+ | Critical security risk |
-| Django 4.1.13 (EOL) | HIGH | Upgrade to 5.2.x |
-| `djongo` (deprecated) | HIGH | Replace with PyMongo |
-| No multi-tenant support | HIGH | Add `bg_code`/`div_code` to all collections |
-| No DRF serializers | MEDIUM | Add serializers for products/games |
-| No auth on admin endpoints | HIGH | Add JWT authentication |
+The legacy `kuro-gaming-dj-backend` codebase (e-commerce backend) provides product catalog, cart, and payment functionality. That integration is owned by the [E-Commerce spec](./ecommerce_spec.md) — not this domain. The tournaments domain has no dependency on those collections.
 
 ---
 
@@ -188,40 +170,7 @@ Tournament Archived (historical record)
 
 ---
 
-## 5. Gaming Backend Collections (MongoDB, Phase 3b)
-
-### 5.1 Collection Inventory
-
-| Collection | Purpose | Notes |
-|---|---|---|
-| `prods` | Product catalog | |
-| `builds` | Pre-built PC builds | |
-| `kgbuilds` | Kuro Gaming builds | |
-| `custombuilds` | Custom PC builds (ordered) | Immutable copies |
-| `components` | Hardware components | |
-| `accessories` | PC accessories | |
-| `monitors` | Monitor catalog | |
-| `networking` | Networking equipment | |
-| `external` | External products | |
-| `games` | Game catalog | |
-| `kurodata` | CMS content (hero banners) | |
-| `lists` | Preset lists | |
-| `presets` | Preset configurations | |
-
-### 5.2 Integration Requirements
-
-1. **Add tenant fields** — `bg_code`, `div_code`, `branch_code` to all documents
-2. **Create tenant indexes** — `(bg_code, div_code)` compound indexes
-3. **Enable schema validation** — JSON Schema requires tenant fields
-4. **Deploy TenantCollection wrapper** — all queries through tenant-isolated wrapper
-5. **Migrate from djongo** — replace with PyMongo + `TenantCollection`
-6. **Add DRF serializers** — for products, games, builds
-7. **Add JWT authentication** — on all admin endpoints
-8. **Remove hardcoded credentials** — use environment variables + secrets manager
-
----
-
-## 6. API Contract
+## 5. API Contract
 
 ### 6.1 Current Endpoints (Implemented)
 
@@ -242,12 +191,10 @@ Tournament Archived (historical record)
 | `GET` | `/api/v1/tournaments/players/{id}` | Player detail | JWT |
 | `GET` | `/api/v1/tournaments/teams/{id}` | Team detail | Public |
 | `GET` | `/api/v1/tournaments/games` | Game catalog | Public |
-| `GET` | `/api/v1/tournaments/products` | Product catalog | Public |
-| `GET` | `/api/v1/tournaments/builds` | PC builds | Public |
 
 ---
 
-## 7. Guardrails
+## 6. Guardrails
 
 ### 7.1 Tenant Isolation
 
@@ -286,6 +233,4 @@ class TournamentsService:
 
 ---
 
-> **Implementation state:** Basic endpoints (tournaments, players, teams, registration) are implemented in `domains/tournaments/views.py`. Player/team data currently in MongoDB (`players`, `teams` collections). Gaming backend integration (products, builds, games) is deferred to Phase 3b and requires djongo removal, tenant field addition, and DRF serializer creation. Security remediation (hardcoded credentials, EOL Django) is critical prerequisite.
-| `created_at` | timestamptz | |
-| `updated_at` | timestamptz | |
+> **Implementation state:** Basic endpoints (tournaments, players, teams, registration) are implemented in `domains/tournaments/views.py`. Player/team data currently in MongoDB (`players`, `teams` collections). E-commerce backend integration (products, builds, game catalog) is owned by the [E-Commerce spec](./ecommerce_spec.md) and deferred to Phase 3b.

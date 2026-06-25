@@ -15,7 +15,7 @@
 | **M2: Cafe schema alignment** | 4 | Walk-in → identity FK, wallet → identity FK | **MEDIUM** | Migrations 0001-0003 unapplied |
 | **M3: MongoDB field rename** | 5.7 | `bgcode` → `bg_code`, `division` → `div_code` | **HIGH** | Not started |
 | **M4: Orders to PostgreSQL** | 8 | 4 Mongo collections → `orders_core` + 6 detail tables | **HIGH** | Not started |
-| **M5: Gaming collections** | 3b | 12 gaming collections → `KungOS_Mongo_One` | **MEDIUM** | Not started |
+| **M5: E-Commerce product collections** | 3b | 12 e-commerce product collections → `KungOS_Mongo_One` | **MEDIUM** | Not started |
 
 ---
 
@@ -344,11 +344,11 @@ python manage.py migrate_orders --validate
 
 ---
 
-## 6. M5: Gaming Collections (Phase 3b)
+## 6. M5: E-Commerce Product Collections (Phase 3b)
 
 ### 6.1 Scope
 
-Integrate 12 gaming collections from `kuro-gaming-dj-backend` into `KungOS_Mongo_One`.
+Integrate 12 e-commerce product collections from `kuro-gaming-dj-backend` into `KungOS_Mongo_One`.
 
 | Collection | Purpose | Notes |
 |---|---|---|
@@ -368,12 +368,12 @@ Integrate 12 gaming collections from `kuro-gaming-dj-backend` into `KungOS_Mongo
 
 ### 6.2 Migration Strategy
 
-1. **Export gaming collections** from `kuro-gaming-dj-backend` database
+1. **Export e-commerce product collections** from `kuro-gaming-dj-backend` database
 2. **Add tenant fields** (`bg_code`, `div_code`, `branch_code`) to all documents
 3. **Import into `KungOS_Mongo_One`** (batch processing)
 4. **Create indexes** (tenant compound indexes, query indexes)
 5. **Enable schema validation** (JSON Schema requires tenant fields)
-6. **Deploy application code** (gaming views use `TenantCollection` wrapper)
+6. **Deploy application code** (e-commerce views use `TenantCollection` wrapper)
 7. **Verify** (row count reconciliation, tenant field coverage)
 
 ---
@@ -384,7 +384,7 @@ Integrate 12 gaming collections from `kuro-gaming-dj-backend` into `KungOS_Mongo
 M1: Identity consolidation (Phase 4)
 ├── Required before: M2 (Cafe schema alignment)
 ├── Required before: M4 (Orders to PostgreSQL)
-└── Independent of: M3 (MongoDB field rename), M5 (Gaming collections)
+└── Independent of: M3 (MongoDB field rename), M5 (E-Commerce product collections)
 
 M2: Cafe schema alignment (Phase 4)
 ├── Depends on: M1 (Identity consolidation)
@@ -398,7 +398,7 @@ M4: Orders to PostgreSQL (Phase 8)
 ├── Depends on: M1 (Identity consolidation) — for customer_id linkage
 └── Independent of: M2, M3, M5
 
-M5: Gaming collections (Phase 3b)
+M5: E-Commerce product collections (Phase 3b)
 ├── Depends on: Phase 1 (tenant context, MongoDB consolidation)
 └── Independent of: M1, M2, M3, M4
 ```
@@ -422,7 +422,7 @@ M5: Gaming collections (Phase 3b)
 | M2: Cafe | `python manage.py rollback_cafe` | Restore walk-in phone uniqueness, wallet FK |
 | M3: MongoDB | `python manage.py rollback_mongo_fields` | Restore legacy field names |
 | M4: Orders | `python manage.py rollback_orders` | Drop new tables, restore Mongo collections |
-| M5: Gaming | `python manage.py rollback_gaming` | Remove gaming collections from `KungOS_Mongo_One` |
+| M5: E-Commerce | `python manage.py rollback_ecommerce_products` | Remove e-commerce product collections from `KungOS_Mongo_One` |
 
 ---
 

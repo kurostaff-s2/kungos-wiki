@@ -1,15 +1,15 @@
-# Auth API Target Alignment — CMB Review, Spec Tightening, Legacy Removal
+# Auth API Target Alignment — CBM Review, Spec Tightening, Legacy Removal
 
 | Field | Value |
 |-------|-------|
 | Project ID | `kteam-dj-chief` |
 | Primary entity ID | `9152b4` |
 | Entity type | `handoff` |
-| Short description | CMB-based review of auth API against Kung_OS target architecture, spec/naming tightening, migration to target spec, and legacy endpoint/code removal |
+| Short description | CBM-based review of auth API against Kung_OS target architecture, spec/naming tightening, migration to target spec, and legacy endpoint/code removal |
 | Status | `draft` |
 | Source references | `llm-wiki/Kung_OS/architecture/identity_layer.md`, `llm-wiki/Kung_OS/architecture/identity_spec.md`, `llm-wiki/Kung_OS/architecture/multi_tenancy.md`, `llm-wiki/Kung_OS/architecture/rbac_system.md`, `llm-wiki/Kung_OS/architecture/alignment_audit.md`, `llm-wiki/Kung_OS/specs/database_schemas/migration_spec.md`, `llm-wiki/Kung_OS/specs/database_schemas/postgresql_schema.md` |
 | Generated | `25-06-2026` |
-| Next action / owner | Execute Phase 1 (CMB graph audit + spec tightening) — owner: agent with CMB + code-edit access |
+| Next action / owner | Execute Phase 1 (CBM graph audit + spec tightening) — owner: agent with CBM + code-edit access |
 
 ---
 
@@ -31,7 +31,7 @@
 
 ---
 
-## CMB Graph Audit Findings
+## CBM Graph Audit Findings
 
 ### 1. Indexed Route Nodes (9 total)
 
@@ -84,7 +84,7 @@
 
 **Total legacy paths to remove: 12**
 
-### 3. SIMILAR_TO Duplicates (CMB verified)
+### 3. SIMILAR_TO Duplicates (CBM verified)
 
 | Function | Location A | Location B | Action |
 |----------|-----------|------------|--------|
@@ -92,7 +92,7 @@
 | `has_write_access` | `backend/auth_utils.py:226` | `backend/utils.py` | **DELETE** utils.py copy |
 | `get_branch_fallback` | `backend/auth_utils.py` | `backend/utils.py` | **DELETE** utils.py copy |
 
-### 4. Dead Code (CMB verified)
+### 4. Dead Code (CBM verified)
 
 | Function | File | Evidence |
 |----------|------|----------|
@@ -294,7 +294,7 @@ path('auth/monitoring/401', ...),
 
 ## Phase 3: Duplicate & Dead Code Removal
 
-**What:** Remove SIMILAR_TO duplicates and dead code identified by CMB.
+**What:** Remove SIMILAR_TO duplicates and dead code identified by CBM.
 
 **Dependencies:** None (independent of Phases 1-2).
 
@@ -302,9 +302,9 @@ path('auth/monitoring/401', ...),
 
 | Function | Delete From | Keep In | Evidence |
 |----------|------------|---------|----------|
-| `has_read_access` | `backend/utils.py` | `backend/auth_utils.py` | CMB SIMILAR_TO edge |
-| `has_write_access` | `backend/utils.py` | `backend/auth_utils.py` | CMB SIMILAR_TO edge |
-| `get_branch_fallback` | `backend/utils.py` | `backend/auth_utils.py` | CMB SIMILAR_TO edge |
+| `has_read_access` | `backend/utils.py` | `backend/auth_utils.py` | CBM SIMILAR_TO edge |
+| `has_write_access` | `backend/utils.py` | `backend/auth_utils.py` | CBM SIMILAR_TO edge |
+| `get_branch_fallback` | `backend/utils.py` | `backend/auth_utils.py` | CBM SIMILAR_TO edge |
 
 **Steps:**
 1. Verify all callers of `backend/utils.py` copies import from `utils` (not `auth_utils`).
@@ -315,10 +315,10 @@ path('auth/monitoring/401', ...),
 
 | Function | File | Evidence |
 |----------|------|----------|
-| `close_mongo_client` | `backend/` | CMB: 0 callers, 0 callees |
+| `close_mongo_client` | `backend/` | CBM: 0 callers, 0 callees |
 
 **Steps:**
-1. Verify `close_mongo_client` has 0 callers via CMB (`codebase_trace`).
+1. Verify `close_mongo_client` has 0 callers via CBM (`codebase_trace`).
 2. Delete function.
 
 **Completion gate:**
@@ -411,7 +411,7 @@ ALTER TABLE users_employee ADD CONSTRAINT fk_employee_identity FOREIGN KEY (iden
 - [ ] All existing tests pass (no regression)
 - [ ] Frontend login flow works on `http://localhost:3001`
 
-### 5C. CMB Re-index
+### 5C. CBM Re-index
 
 After all changes:
 ```bash
@@ -448,7 +448,7 @@ Verify:
 - [ ] `migrate_identity` management command exists
 - [ ] All existing tests pass
 - [ ] Frontend login flow verified
-- [ ] CMB re-index shows no new duplicates or dead code
+- [ ] CBM re-index shows no new duplicates or dead code
 
 ---
 
