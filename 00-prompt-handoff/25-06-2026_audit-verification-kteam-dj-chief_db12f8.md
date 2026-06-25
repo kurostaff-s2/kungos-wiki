@@ -208,31 +208,39 @@ Audit claims 4 layers (entry/api/core/internal). **No layer metadata in either i
 
 **Target architecture:** Django REST API, PostgreSQL + MongoDB, tenant-scoped via `bg_code`/`div_code`/`branch_code`, protocol interfaces per domain, outbox pattern for async, JWT auth.
 
-### Key divergence: Protocol placement
+### ✅ RESOLVED: Protocol placement + brand lock
 
-| What exists | What spec says |
-|-------------|----------------|
-| `core/tournaments/protocols.py` (ITournamentsService) | `gaming/protocols.py` (IGamingTournamentService) |
-| `core/commerce/protocols.py` (IOrderService, IWalletService) | `eshop/protocols.py` (per ecommerce_spec) |
-| `core/cafe_arcade/protocols.py` | `cafe/protocols.py` (ICafeFnbService) |
-| `brands/kurogaming/eshop/services.py` — implements core protocols | Brand logic via `div_code` tenant scope, not code packages |
-| `brands/rebellion/cafe_arcade/services.py` — implements core protocols | Generic cafe code in `cafe/` domain, not under brand name |
+| What was | What is now |
+|----------|-------------|
+| `core/tournaments/protocols.py` (ITournamentsService) | Deleted — protocols will live in `domains/tournaments/` per spec |
+| `core/commerce/protocols.py` (IOrderService, IWalletService) | Deleted — protocols will live in `domains/eshop/` per spec |
+| `core/cafe_arcade/protocols.py` | Deleted — protocols will live in `domains/cafe_fnb/` per spec |
+| `brands/kurogaming/eshop/services.py` | Deleted — brand logic via `div_code` tenant scope |
+| `brands/rebellion/cafe_arcade/services.py` | Deleted — generic cafe code in `domains/cafe_fnb/` |
+| `rebellion/` Django app | Deleted — was just a URL router |
+| `/api/v1/rebellion/tournaments` | `/api/v1/tournaments/` (generic, not brand-locked) |
+| `/api/v1/rebellion/reborders` | `/api/v1/cafe-fnb/legacy/orders` |
+| `PROJ_REB_ORDER`, `PROJ_RB_PACKAGES` | `PROJ_FNB_ORDER`, `PROJ_FNB_PACKAGES` |
 
-**The brands/core structure is a speculative plugin model that was never wired in.** Delete it. When domains are built, place protocols per spec.
+**The brands/core structure was a speculative plugin model that was never wired in (0 imports).** Deleted. When domains are built, place protocols per spec.
 
 ## Changes Needed
 
 ### Phase 1: Safe Deletions (zero risk, ~560 lines)
 
-| # | Action | Files | Prerequisite |
-|---|--------|-------|-------------|
-| 1 | Delete dead modules | `backend/views_diagnostic.py`, `backend/cron.py` | None |
-| 2 | Delete superseded scripts | `backend/backup_kuropurchase.py`, `backend/restore_kuropurchase.py` | None (replaced by management commands) |
-| 3 | Delete dead function | `close_mongo_client` in `backend/utils.py:37` | None |
-| 4 | Fix import, delete duplicates | Switch `careers/views.py:9` to `from backend.auth_utils import check_access`, then delete 3 functions from `backend/utils.py` | Do import switch first |
-| 5 | Delete speculative packages | `brands/` (entire), `core/` (entire) | None — 0 imports |
+| # | Action | Files | Status |
+|---|--------|-------|--------|
+| 1 | Delete dead modules | `backend/views_diagnostic.py`, `backend/cron.py` | ✅ Done |
+| 2 | Delete superseded scripts | `backend/backup_kuropurchase.py`, `backend/restore_kuropurchase.py` | ✅ Done |
+| 3 | Delete dead function | `close_mongo_client` in `backend/utils.py:37` | ✅ Done |
+| 4 | Fix import, delete duplicates | Switch `careers/views.py:9` to `from backend.auth_utils import check_access`, then delete 3 functions from `backend/utils.py` | ✅ Done |
+| 5 | Delete speculative packages | `brands/` (entire), `core/` (entire) | ✅ Done |
+| 6 | Delete `rebellion/` Django app | Replace with direct domain mounts | ✅ Done |
+| 7 | Move F&B legacy views to `cafe_fnb/` | Split from `cafe_arcade/` | ✅ Done |
+| 8 | Rename projection constants | `PROJ_REB_*` → `PROJ_FNB_*` | ✅ Done |
+| 9 | Rename brand-specific functions | `getreborders` → `get_orders`, etc. | ✅ Done |
 
-**Order:** 1-3 in any order. 4 must do import switch before deletion. 5 independent.
+**All Phase 1 deletions complete.**
 
 ### Phase 2: Spec-Aligned Protocol Placement (future, when building domains)
 

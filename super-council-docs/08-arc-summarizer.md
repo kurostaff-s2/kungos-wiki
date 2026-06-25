@@ -54,12 +54,12 @@
 | Backend | SYCL (oneAPI) via llama.cpp router |
 | Port | 18093 (router) |
 | Service | `arc-router.service` (systemd user) |
-| Router Mode | `--models-max 1` (hot-swap, single model in VRAM) |
+| Router Mode | `--models-max 2` (both models loaded, per-model slot) |
 
 **Model selection rationale (2026-06-20):**
 - **LFM2-2.6B-Transcript** for daily tier: Optimized for transcript/meeting summarization. Produces structured narratives with decision attribution and intent tracking. ~52s per session.
 - **LFM2.5-1.2B-Instruct** for short/weekly/bimonthly: Faster synthesis of upstream rollups. ~50s per tier.
-- **Router mode** (`--models-max 1`): Automatic hot-swapping between models on limited VRAM. Single endpoint (127.0.0.1:18093).
+- **Router mode** (`--models-max 2`): Both models loaded simultaneously. Each child process has its own slot. Queue waits per-model slot before sending — a busy 2.6B doesn't block idle 1.2B.
 - **Q8_0 quantization**: Required for context fidelity (lower precision degrades output).
 - **Context window**: 32K tokens (accommodates 82K char max daily input ~20K tokens + output).
 
@@ -104,7 +104,7 @@ Single entry point for all consolidation. Instantiated by `memory_service/__init
 
 ### ArcClient (`memory_service/consolidate/client.py`)
 
-HTTP client with retry logic and multi-parser fallback chain. Talks to llama.cpp router on :18093.
+HTTP client with retry logic and multi-parser fallback chain. ALL requests route through `LLMRequestQueue` — the single pipeline feeding the ARC LLM. No direct HTTP calls to the router outside `LLMRequestQueue`.
 
 **Features:**
 - Exponential backoff retry (3 attempts, 1s base)
@@ -112,16 +112,30 @@ HTTP client with retry logic and multi-parser fallback chain. Talks to llama.cpp
 - Fallback to main upstream (Qwen on RTX 3090) if router is down
 - Health check: `GET /v1/health` before submission
 - Model-aware routing: selects model per tier via `config.get_model_for_tier()`
+- Reconciliation always uses Instruct model (`LFM2.5-1.2B-Instruct-Q8_0`) regardless of tier — it receives parsed consolidation dicts and must produce structured YAML actions. The Instruct model follows output schemas reliably; the Transcript model does not.
 - `cache_prompt: False` in payload to clear KV cache between requests
 - **5-parser fallback chain** (2026-06-21): `_parse_yaml_strict()` → `_parse_yaml_fallback()` → `_extract_sections_regex()` → `_extract_minimal()` → returns `None`
 - When parser returns `None`, raw MD is upserted to DB with `parse_status="failed"` (safety net)
 
 ### LLMRequestQueue (`memory_service/consolidate/llm_queue.py`)
 
-Request queue with priority scheduling and performance tracking.
+**THE SINGLE PIPELINE.** All LLM requests to the ARC router route through this queue. No other code path calls the ARC LLM directly — no `/v1/chat/completions`, no `/slots`, no `/v1/models` from outside this module.
+
+**Contract:** Scheduler decides *what* to run. Queue is the single pipeline that feeds the ARC LLM. Queue handles:
+- Model routing (per-request model selection via llama.cpp router)
+- Slot waiting (per-model, respects `parallel=1` per child process)
+- Serialization (single worker thread, priority ordering)
+- Health gating (pre-submit check, fail fast on dead LLM)
+- KV cache clearing (`cache_prompt: False` prevents context bleed)
 
 **Features:**
 - Priority queue: daily > short > weekly > bimonthly
+- Per-model slot waiting: `_wait_for_slot_idle(model)` polls child process `/slots` before sending
+- Performance logging: TG (tokens/sec generation), PP (tokens/sec prompt processing)
+- Queue depth monitoring
+- Backpressure: blocks new requests when queue is full
+- Router mode: each request specifies model, router handles hot-swap
+- Pre-submit health check: `GET /v1/models` with 3s timeout, fail fast if LLM is dead
 - Performance logging: TG (tokens/sec generation), PP (tokens/sec prompt processing)
 - Queue depth monitoring
 - Backpressure: blocks new requests when queue is full
@@ -178,19 +192,20 @@ Session lifecycle tracking. `session_diary` table dropped 2026-06-12, replaced b
 
 [main]
 models = /home/chief/models/LFM2-2.6B-Transcript-Q8_0.gguf,/home/chief/models/LFM2.5-1.2B-Instruct-Q8_0.gguf
-models_max = 1
+models_max = 2
 ```
 
 **Key settings:**
-- `--models-max 1`: Only one model loaded in VRAM at a time (hot-swap)
+- `--models-max 2`: Both models loaded simultaneously, each with its own slot
 - `--models-autoload`: Loads models from `models.ini`
 - Absolute paths in `models.ini`: Required due to router working directory resolution
 - Single endpoint: `http://127.0.0.1:18093` handles all tiers
+- Per-model slot: queue waits for the specific model's slot before sending
 
 ### Tier-to-Model Routing
 
 ```python
-# config.py
+# config.py — consolidation model routing
 TIER_MODEL = {
     "daily": "LFM2-2.6B-Transcript-Q8_0",
     "short": "LFM2.5-1.2B-Instruct-Q8_0",
@@ -199,7 +214,15 @@ TIER_MODEL = {
 }
 ```
 
-Router automatically unloads current model and loads requested model. Swap latency: <1s.
+**Reconciliation model** (2026-06-25): Always `LFM2.5-1.2B-Instruct-Q8_0`, independent of tier.
+
+| Pipeline Step | Model | Rationale |
+|---------------|-------|----------|
+| Consolidation (daily) | `LFM2-2.6B-Transcript-Q8_0` | Transcript specialist — raw session extraction |
+| Consolidation (short/weekly/bimonthly) | `LFM2.5-1.2B-Instruct-Q8_0` | Faster synthesis of upstream rollups |
+| **Reconciliation** (all tiers) | `LFM2.5-1.2B-Instruct-Q8_0` | Must produce structured YAML actions; Instruct follows schemas |
+
+Router routes requests to the correct child process by model name. Both models loaded simultaneously — no hot-swap needed.
 
 ### KV Cache Clearing
 
@@ -264,11 +287,18 @@ Short, weekly, and bimonthly tiers include:
 
 **Only `memory-service` submits consolidation requests.** No other process calls the Arc pipeline directly.
 
+**Queue-only routing (2026-06-24):** ALL LLM requests route through `LLMRequestQueue`. The scheduler decides *what* to run; the queue is the single pipeline that feeds the ARC LLM. No direct HTTP calls from scheduler or client outside the queue.
+
 ```
-ArcPipeline (memory_service)
-  └── ArcClient
-        └── LLMRequestQueue
-              └── llama.cpp router (:18093, --models-max 1)
+Scheduler (decides WHAT to run)
+  └── ArcPipeline (gathers, prompts)
+        └── ArcClient (routes through queue)
+              └── LLMRequestQueue (THE SINGLE PIPELINE)
+                    ├── model routing (per-request)
+                    ├── slot waiting (per-model)
+                    ├── serialization (single thread)
+                    └── health gating (pre-submit)
+              └── llama.cpp router (:18093, --models-max 2)
                     ├── LFM2-2.6B-Transcript-Q8_0 (daily)
                     └── LFM2.5-1.2B-Instruct-Q8_0 (short/weekly/bimonthly)
 ```
@@ -316,7 +346,7 @@ Hash is content-based (SHA-256 prefix). Files are deduplicated at the filesystem
 ```ini
 # ~/.config/systemd/user/arc-router.service
 [Unit]
-Description=ARC Router - llama.cpp router mode (2.6B + 1.2B hot-swap)
+Description=ARC Router - llama.cpp router mode (2.6B + 1.2B simultaneous)
 Documentation=file:///home/chief/llm-wiki/super-council-docs/08-arc-summarizer.md
 After=network.target
 
@@ -325,7 +355,7 @@ Type=simple
 ExecStart=/home/chief/Coding-Projects/7-council/llama-forks/llama-vulkan-a380/build-sycl-prod/bin/llama-server \
     --models-dir /home/chief/models/arc-router \
     --models-preset /home/chief/models/arc-router/models.ini \
-    --models-max 1 \
+    --models-max 2 \
     --models-autoload \
     --host 127.0.0.1 \
     --port 18093 \
@@ -344,7 +374,7 @@ WantedBy=default.target
 ```
 
 **Key settings:**
-- `--models-max 1`: Hot-swap mode (one model in VRAM)
+- `--models-max 2`: Both models loaded simultaneously, per-model slots
 - `--models-autoload`: Loads from models.ini
 - `-ctk q8_0 -ctv q8_0`: Q8_0 KV cache (required for fidelity)
 - `-b 512`: Batch size 512
@@ -450,6 +480,44 @@ Tracks session state and consolidation linkage. **Note:** This table is referenc
 | `updated_at` | TEXT | Last update timestamp |
 
 **Pipeline usage:** Query for `md_written=1 AND rollup_id IS NULL AND ingested_at >= cutoff` to find sessions needing consolidation.
+
+## Queue-Only Routing
+
+**Architectural constraint (2026-06-24):** ALL LLM requests route through `LLMRequestQueue`. No other code path may call the ARC LLM directly.
+
+### What changed
+
+| Before | After |
+|--------|-------|
+| Scheduler called `/slots` directly via `_llm_capacity_available()` | Removed — queue waits per-model slot |n| Scheduler sent warm-up requests via `_ensure_model_loaded()` | Removed — router auto-loads on first real request |
+| Client had `_call_direct()` bypassing queue | Removed — all calls go through queue |
+
+### Why
+
+The queue is the single pipeline feeding the ARC LLM. It handles:
+1. **Model routing** — per-request model selection
+2. **Slot waiting** — per-model, respects `parallel=1` per child process
+3. **Serialization** — single worker thread with priority ordering
+4. **Health gating** — pre-submit check, fail fast on dead LLM
+
+Direct calls from scheduler or client bypass these guarantees, causing:
+- Race conditions (scheduler thinks slot is free, queue also sends)
+- Model loading outside queue control (warm-up requests not serialized)
+- Hard-to-debug timing issues (multiple concurrent callers)
+
+### Flow
+
+```
+Scheduler → Pipeline → ArcClient._call_with_fallback() → LLMRequestQueue.submit()
+                                                          ↓
+                                                    _worker_loop()
+                                                          ↓
+                                                    _wait_for_slot_idle(model)
+                                                          ↓
+                                                    _process_request() → POST /v1/chat/completions
+```
+
+**Scheduler boundary:** Scheduler decides *what* tiers to run and *when*. It must NOT call the ARC LLM directly (no `/slots`, no `/v1/chat/completions`, no `/v1/models`). All LLM interaction routes through `ArcClient → LLMRequestQueue`.
 
 ## Failure Modes
 

@@ -29,7 +29,7 @@
 |  |              Arc Consolidation Pipeline                     |  |
 |  |  tiered memory rollups via ArcPipeline                      |  |
 |  |  → LFM2-2.6B (daily) + LFM2.5-1.2B (short/weekly/bimonthly) |  |
-|  |  → Router mode on Arc A380 (:18093, --models-max 1)         |  |
+|  |  → Router mode on Arc A380 (:18093, --models-max 2)         |  |
 |  +------------------------------------------------------------+  |
 +--------------------------------+---------------------------------+
                                  |
@@ -69,7 +69,7 @@
 | council-backend | TBD | Council Core API (consolidation status, council API) |
 | council-supervisor | TBD | Subagent delegation, chain, chair-gate, summarize |
 | memsearch-watch | 19530 | Vector index (Milvus Lite) |
-| arc-summarizer | 18093 | Arc A380 consolidation router (LFM2-2.6B/1.2B, --models-max 1) |
+| arc-summarizer | 18093 | Arc A380 consolidation router (LFM2-2.6B/1.2B, --models-max 2) |
 
 ## Slot Persistence
 
@@ -143,7 +143,7 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 | `MicroModelEnricher` | `micro_model.py` | Async semantic enrichment (ONNX embeddings, TF-IDF keywords) |
 | `ArcPipeline` | `memory_service/consolidate/pipeline.py` | Consolidation pipeline (gather→call→write→index) |
 | `ArcClient` | `memory_service/consolidate/client.py` | HTTP client with retry + fallback to main upstream |
-| `LLMRequestQueue` | `memory_service/consolidate/llm_queue.py` | Request queue with priority scheduling + perf tracking |
+| `LLMRequestQueue` | `memory_service/consolidate/llm_queue.py` | Single pipeline: all LLM requests route here. Priority scheduling + per-model slot waiting |
 | `TierWriter` | `memory_service/consolidate/tier_writer.py` | Writes rollups to `memory_rollups` table |
 | `Scheduler` | `memory_service/consolidate/scheduler.py` | Identifies sessions needing consolidation |
 
@@ -163,7 +163,7 @@ and search go through `memory_service.indexer` (MemIndex). This enforces:
 8. **MemoryService single source of truth:** Supervisor uses direct Python API (`MemoryService.load()`). No MCP subprocess spawning, no JSON-RPC serialization for in-process calls. External consumers use `memory_service --mcp-stdio` (FastMCP).
 9. **FastMCP for external MCP:** Full protocol compliance (tools with auto-schema, resources, stdio + SSE transport, proper error codes). `mcp>=1.0.0` declared dependency.
 10. **Heuristic fallback:** MicroModelEnricher works without ONNX model (TF-IDF keywords, pattern matching).
-11. **Arc A380 consolidation:** Memory consolidation routes to LFM2-2.6B-Transcript (daily) + LFM2.5-1.2B-Instruct (short/weekly/bimonthly) via router mode on Arc A380. Health-gated startup with fallback to main upstream. Single-slot execution (`--models-max 1`).
+11. **Arc A380 consolidation:** Memory consolidation routes to LFM2-2.6B-Transcript (daily) + LFM2.5-1.2B-Instruct (short/weekly/bimonthly) via router mode on Arc A380. Health-gated startup with fallback to main upstream. Both models loaded simultaneously (`--models-max 2`), queue waits per-model slot.
 12. **Single consolidation table:** `memory_rollups` is the sole table for all memory data. `session_diary` was dropped 2026-06-12 and merged into `memory_rollups`. `consolidation_cache` is a zombie table (exists but empty). Pi extension `message_end` hook uses a multi-signal scorer (high/medium headers, structural signals, anti-noise vetoes, threshold=4) to auto-detect summaries and upsert mechanically — no model involvement. All recall routes through ContextRouter (canonical recall path). Provenance traceability: `consol-*` = Arc pipeline, `sess-*` = mechanical upsert, `test-*` = tests.
 
 ## Configuration

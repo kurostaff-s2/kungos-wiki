@@ -83,8 +83,9 @@ SCOUT → PLAN → BUILD → COHESIVENESS_REVIEW → AGENT_VALIDATE
 ### Arc Summarizer (Memory Consolidation)
 - Server: `127.0.0.1:18093` (llama.cpp router mode on Arc A380)
 - Models: `LFM2-2.6B-Transcript-Q8_0` (daily), `LFM2.5-1.2B-Instruct-Q8_0` (short/weekly/bimonthly)
-- Pipeline: ArcPipeline → ArcClient → TierGatherer → TierWriter
-- Router mode: `--models-max 1` (hot-swap)
+- Pipeline: Scheduler → ArcPipeline → ArcClient → LLMRequestQueue → router
+- Router mode: `--models-max 2` (both models loaded, per-model slot)
+- Queue: single pipeline — all LLM requests route through LLMRequestQueue
 - Health: `GET http://127.0.0.1:18093/v1/models`
 
 ### File Locations

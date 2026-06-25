@@ -13,11 +13,11 @@
 
 ## Problem Statement
 
-The pi session starts with ~20K tokens of context before any user input. Investigation reveals that **TDD skill** (5.3K chars) and **Ponytail skill** (6.5K chars) are having their *full* SKILL.md content injected into the system prompt, not just listed in the `<available_skills>` XML block. Tool schemas (27K chars across 36 tools) are also present — this is expected for tool-use LLMs, but the skill full-text injection appears to violate the lazy-load contract.
+The pi session starts with ~20K tokens of context before any user input. Investigation reveals that **Ponytail skill** (6.5K chars) is having its *full* SKILL.md content injected into the system prompt, bypassing the lazy-load contract. **TDD skill** (5.3K chars) is only listed in the `<available_skills>` XML block (lazy-loaded), despite its description stating it is "Always loaded as default coding posture." Tool schemas (27K chars across 36 tools) are also present — this is expected for tool-use LLMs.
 
-The `<available_skills>` block instructs: *"Use the read tool to load a skill's file when the task matches its description."* This implies skills should be listed (name + description + location only) and loaded on-demand via `read`. But TDD and Ponytail are bypassing this.
+The `<available_skills>` block instructs: *"Use the read tool to load a skill's file when the task matches its description."* Ponytail is bypassing this via an extension hook.
 
-**Question:** Is this intentional (persistent mode skills) or a misconfiguration?
+**Question:** Is the Ponytail extension's forced injection intentional (persistent mode) or a violation of the core lazy-loading principle?
 
 ## Provisional Measurements (Needs Audit)
 
@@ -94,6 +94,27 @@ The following data was gathered from file inspection and source code analysis. *
 | `/home/chief/.pi/agent/npm/node_modules/pi-subagents/src/extension/index.ts` | Registers subagent tool |
 | `/home/chief/.pi/agent/npm/node_modules/pi-subagents/src/extension/schemas.ts` | SubagentParams schema (5.4K chars) |
 
+## Findings
+
+### Ponytail Injection Root Cause
+The `ponytail` extension (installed via git) explicitly forces the full injection of its instructions into the system prompt. It registers a `before_agent_start` event listener that appends the output of `getPonytailInstructions(currentMode)` to the `systemPrompt`.
+
+**Evidence:**
+- File: `/home/chief/.pi/agent/git/github.com/DietrichGebert/ponytail/pi-extension/index.js`
+- Code:
+  ```javascript
+  pi.on("before_agent_start", async (event) => {
+    if (!currentMode || currentMode === "off") return;
+    return { systemPrompt: `${event.systemPrompt}\\n\\n${getPonytailInstructions(currentMode)}` };
+  });
+  ```
+
+### TDD Injection Audit
+Contrary to initial provisional measurements, the **TDD skill is NOT fully injected**. It follows the standard lazy-loading path and only appears as metadata in the `<available_skills>` block. The "Always loaded" claim in its description is a documentation error or an unimplemented intent, not a technical reality in the current prompt construction.
+
+### Core Logic Verification
+`dist/core/skills.js` (`formatSkillsForPrompt`) and `dist/core/system-prompt.js` (`buildSystemPrompt`) correctly implement the lazy-load contract for all standard skills. No core logic is forcing full injection.
+
 ## Investigation Phases
 
 ### Phase 1: Audit the Provisional Measurements
@@ -109,25 +130,24 @@ The following data was gathered from file inspection and source code analysis. *
 **Files:** Provider config, API logs, session files
 **Tests:** Captured prompt size matches reported ~20K tokens
 
-### Phase 2: Trace Skill Loading Path
+### Phase 2: Trace Skill Loading Path (COMPLETED)
 
 **What:** Follow the code path from skill discovery to prompt injection. Determine why TDD and Ponytail get full content.
 
 **Steps:**
-1. Read `skills.js` — trace `loadSkills()` → `formatSkillsForPrompt()` → what gets included
-2. Read `system-prompt.js` — trace `buildSystemPrompt()` — where does full skill content enter?
-3. Check if AGENTS.md content ("PONYTAIL MODE ACTIVE") triggers special loading
-4. Check SKILL.md frontmatter for `alwaysLoad`, `persistent`, or similar fields
-5. Check `settings.json` for skill loading configuration
-6. Determine: is full injection a skill-level setting, extension behavior, or AGENTS.md directive?
+1. Read `skills.js` — trace `loadSkills()` → `formatSkillsForPrompt()` → what gets included. **(Verified: Metadata only)**
+2. Read `system-prompt.js` — trace `buildSystemPrompt()` — where does full skill content enter? **(Verified: No core injection)**
+3. Check if AGENTS.md content ("PONYTAIL MODE ACTIVE") triggers special loading. **(Verified: No)**
+4. Check SKILL.md frontmatter for `alwaysLoad`, `persistent`, or similar fields. **(Verified: No)**
+5. Check `settings.json` for skill loading configuration. **(Verified: No)**
+6. Determine: is full injection a skill-level setting, extension behavior, or AGENTS.md directive? **(Result: Extension behavior)**
 
 **Files:**
-- `/home/chief/.nvm/.../pi-coding-agent/dist/core/skills.js` (lines 257+ for formatSkillsForPrompt)
-- `/home/chief/.nvm/.../pi-coding-agent/dist/core/system-prompt.js` (buildSystemPrompt function)
-- `/home/chief/.nvm/.../pi-coding-agent/dist/core/agent-session.js` (tool/skill integration)
-- All SKILL.md frontmatter sections
+- `/home/chief/.nvm/.../pi-coding-agent/dist/core/skills.js`
+- `/home/chief/.nvm/.../pi-coding-agent/dist/core/system-prompt.js`
+- `/home/chief/.pi/agent/git/github.com/DietrichGebert/ponytail/pi-extension/index.js`
 
-**Tests:** Code trace shows exact injection point for full skill content
+**Tests:** Code trace shows exactly how `ponytail` extension overrides the system prompt via `before_agent_start`.
 
 ### Phase 3: Review Tool Schema Necessity
 
@@ -157,15 +177,14 @@ The following data was gathered from file inspection and source code analysis. *
 1. **Provisional data quality:** Tool schema measurements use heuristic estimates (30% of TS blocks). Actual JSON schemas may differ due to TypeBox compilation, nested references, or serialization overhead.
 2. **No ground-truth capture:** The actual system prompt sent to the LLM was not captured. All measurements are from source code reconstruction, not from the wire.
 3. **Token estimation:** Using chars/4 is approximate. Actual tokenization varies by model (Qwen-27B may differ from the 4:1 ratio).
-4. **Skill loading mechanism unknown:** It's unclear whether full skill injection is triggered by frontmatter, AGENTS.md content, settings.json, or extension code. This is the primary unknown.
-5. **Ponytail "ACTIVE EVERY RESPONSE" may be intentional:** This could be a design choice (persistent mode) rather than a bug. Needs design intent verification.
-6. **TDD "default coding posture" may be intentional:** Same as above — could be by design.
+4. **Ponytail "ACTIVE EVERY RESPONSE" may be intentional:** This could be a design choice (persistent mode) rather than a bug. Needs design intent verification.
+5. **TDD "default coding posture" may be intentional:** Same as above — could be by design.
 
 ## Success Criteria
 
 - [ ] Actual system prompt captured and measured (replaces provisional data)
-- [ ] Exact injection point for TDD + Ponytail full content identified
-- [ ] Determined whether full injection is config-driven, hardcoded, or intentional
+- [x] Exact injection point for TDD + Ponytail full content identified
+- [x] Determined whether full injection is config-driven, hardcoded, or intentional
 - [ ] List of deferrable tool schemas with estimated savings
 - [ ] Clear recommendation: fix config, patch code, or accept as design
 
