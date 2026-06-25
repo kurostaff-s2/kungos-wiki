@@ -6,10 +6,79 @@
 | Primary entity ID | `9152b4` |
 | Entity type | `handoff` |
 | Short description | CBM-based review of auth API against Kung_OS target architecture, spec/naming tightening, migration to target spec, and legacy endpoint/code removal |
-| Status | `draft` |
-| Source references | `llm-wiki/Kung_OS/architecture/identity_layer.md`, `llm-wiki/Kung_OS/architecture/identity_spec.md`, `llm-wiki/Kung_OS/architecture/multi_tenancy.md`, `llm-wiki/Kung_OS/architecture/rbac_system.md`, `llm-wiki/Kung_OS/architecture/alignment_audit.md`, `llm-wiki/Kung_OS/specs/database_schemas/migration_spec.md`, `llm-wiki/Kung_OS/specs/database_schemas/postgresql_schema.md` |
+| Status | `proposed` (pre-dev QC) |
+| Source references | `llm-wiki/Kung_OS/architecture/identity_layer.md`, `llm-wiki/Kung_OS/architecture/identity_spec.md`, `llm-wiki/Kung_OS/architecture/multi_tenancy.md`, `llm-wiki/Kung_OS/architecture/rbac_system.md`, `llm-wiki/Kung_OS/architecture/alignment_audit.md`, `llm-wiki/Kung_OS/specs/database_schemas/migration_spec.md`, `llm-wiki/Kung_OS/specs/database_schemas/postgresql_schema.md`, `llm-wiki/Kung_OS/specs/endpoint_contract_spec.md`, `llm-wiki/Kung_OS/specs/domain_specs/identity_spec.md`, `llm-wiki/Kung_OS/specs/domain_specs/tournaments_spec.md`, `llm-wiki/Kung_OS/specs/domain_specs/ecommerce_spec.md`, `llm-wiki/Kung_OS/specs/domain_specs/cafe_spec.md` |
 | Generated | `25-06-2026` |
-| Next action / owner | Execute Phase 1 (CBM graph audit + spec tightening) — owner: agent with CBM + code-edit access |
+| Next action / owner | Pre-dev QC → Execute Phase 1 (CBM graph audit + spec tightening) — owner: agent with CBM + code-edit access |
+
+---
+
+## Pre-Development QC
+
+**Purpose:** Validate spec completeness and consistency before execution begins. All gates must pass before Phase 1 starts.
+
+### QC-1: Spec Consistency
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Domain naming consistent across all specs | ✅ | `tournaments_spec.md` (renamed from `gaming_spec.md`), no "Gaming Backend" references |
+| API prefix consistent | ✅ | `eshop/` for e-commerce, `tournaments/` for tournaments, `cafe/` + `cafe-fnb/` for cafe |
+| Legacy source links removed | ✅ | `KungOS_Endpoint_Design.md` removed from all spec Source lines |
+| Endpoint contract spec complete | ✅ | `endpoint_contract_spec.md` covers routing, contracts, migration mapping, errors, pagination, versioning |
+| Tenant field naming canonical | ✅ | `bg_code`, `div_code`, `branch_code` — no `division[]`, `branches[]`, `bgcode` |
+| Identity model aligned across specs | ✅ | `postgresql_schema.md` + `identity_spec.md` + `endpoint_contract_spec.md` agree on `users_identity` + extensions |
+
+### QC-2: CBM Audit Completeness
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| All 9 route nodes indexed | ✅ | §CBM Graph Audit Findings §1 |
+| 12 legacy paths identified for removal | ✅ | §CBM Graph Audit Findings §2 |
+| 3 SIMILAR_TO duplicates identified | ✅ | §CBM Graph Audit Findings §3 |
+| Dead code identified | ✅ | `close_mongo_client` — 0 callers, 0 callees |
+| Auth flow traced end-to-end | ✅ | §CBM Graph Audit Findings §5 |
+
+### QC-3: Phase Dependency Validation
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| Phase 1 has no unlisted dependencies | ✅ | Only spec alignment + naming — no model changes |
+| Phase 2 depends on Phase 1 (naming) | ✅ | Legacy paths removed after canonical names in place |
+| Phase 3 independent | ✅ | Duplicate/dead code removal is orthogonal |
+| Phase 4 depends on Phase 1 (naming) | ✅ | M1 scaffolding uses canonical field names |
+| Phase 5 depends on all | ✅ | Wiring + verification after all changes |
+
+### QC-4: Risk Assessment
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Frontend breaks on login response change | HIGH | Dual-response mode with deprecation header (see Constraints) |
+| Phone normalization breaks existing users | MEDIUM | Normalize on input only; existing `CustomUser.phone` untouched (M1 scope) |
+| Legacy path removal breaks external consumers | MEDIUM | Verify no non-FE callers before removal (CBM trace) |
+| JWT claim rename breaks auth middleware | HIGH | Update all JWT consumers in same deployment |
+| M1 scaffolding creates tables but no data | LOW | Expected — tables empty until M1 migration executes |
+
+### QC-5: Target Spec Alignment
+
+| Spec Document | Aligned To | Notes |
+|---------------|------------|-------|
+| `endpoint_contract_spec.md` | Target architecture | Full routing, contracts, migration mapping |
+| `identity_spec.md` | `postgresql_schema.md` TARGET | `users_identity` + extensions |
+| `multi_tenancy.md` | Canonical field names | `bg_code`, `div_code`, `branch_code` |
+| `rbac_system.md` | RBAC over Accesslevel | `rbac_*` tables replace `users_accesslevel` |
+| `tournaments_spec.md` | Tournaments domain only | E-commerce backend integration owned by `ecommerce_spec.md` |
+| `ecommerce_spec.md` | `eshop/` prefix | Product catalog, cart, orders, payments |
+| `cafe_spec.md` | `cafe/` + `cafe-fnb/` split | Arcade (sessions) + F&B (orders) |
+
+### QC Gates (must pass before execution)
+
+- [ ] All QC-1 checks pass (spec consistency)
+- [ ] All QC-2 checks pass (CBM audit completeness)
+- [ ] Phase dependency DAG validated (QC-3)
+- [ ] Risk mitigations documented (QC-4)
+- [ ] Target spec alignment confirmed (QC-5)
+- [ ] `phonenumbers` library in `requirements.txt` (or added)
+- [ ] Frontend team notified of login response shape change
 
 ---
 
@@ -145,9 +214,9 @@ AuthViewSet.login (L254-332)
 | Modify | `users/serializers.py` | `UserSerializer`: output `div_code`, `branch_code` |
 | Modify | `backend/auth_utils.py` | `resolve_access`: use canonical names |
 
-### 1B. Response Shape Alignment (spec §7.2)
+### 1B. Response Shape Alignment (`endpoint_contract_spec.md` §4.2)
 
-**Current `login` response:**
+**Current `login` response:
 ```json
 {
   "user": {
