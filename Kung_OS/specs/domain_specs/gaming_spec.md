@@ -3,13 +3,14 @@
 **Status:** Spec — TARGET (Phase 3b, Deferred)  
 **Date:** 2026-05-17  
 **Source:** `KungOS_v2.md`, `KungOS_Endpoint_Design.md`, `kungos_v2_db.md`  
-**Purpose:** Authoritative spec for gaming domain — tournaments, players, teams, esports integration
+**Purpose:** Authoritative spec for tournaments domain — tournaments, players, teams, esports integration
+**Package:** `domains/tournaments/` (canonical, not brand-locked)
 
 ---
 
 ## 1. Domain Overview
 
-The gaming domain manages esports operations: tournaments, players, teams, rankings, and gaming backend integration.
+The tournaments domain manages esports operations: tournaments, players, teams, rankings, and esports backend integration.
 
 ### 1.1 Domain Boundaries
 
@@ -211,20 +212,20 @@ Tournament Archived (historical record)
 
 ## 6. API Contract
 
-### 6.1 Gaming Endpoints
+### 6.1 Tournaments Endpoints
 
 | Method | Endpoint | Description | Auth |
 |---|---|---|---|
-| `GET` | `/api/v1/gaming/tournaments` | List tournaments | Public |
-| `GET` | `/api/v1/gaming/tournaments/{id}` | Tournament detail | Public |
-| `POST` | `/api/v1/gaming/tournaments/{id}/register` | Team registration | JWT |
-| `GET` | `/api/v1/gaming/players` | List players | JWT |
-| `GET` | `/api/v1/gaming/players/{id}` | Player detail | JWT |
-| `GET` | `/api/v1/gaming/teams` | List teams | Public |
-| `GET` | `/api/v1/gaming/teams/{id}` | Team detail | Public |
-| `GET` | `/api/v1/gaming/games` | Game catalog | Public |
-| `GET` | `/api/v1/gaming/products` | Product catalog | Public |
-| `GET` | `/api/v1/gaming/builds` | PC builds | Public |
+| `GET` | `/api/v1/tournaments/` | List tournaments | Public |
+| `GET` | `/api/v1/tournaments/{id}` | Tournament detail | Public |
+| `POST` | `/api/v1/tournaments/{id}/register` | Team registration | JWT |
+| `GET` | `/api/v1/tournaments/players` | List players | JWT |
+| `GET` | `/api/v1/tournaments/players/{id}` | Player detail | JWT |
+| `GET` | `/api/v1/tournaments/teams` | List teams | Public |
+| `GET` | `/api/v1/tournaments/teams/{id}` | Team detail | Public |
+| `GET` | `/api/v1/tournaments/games` | Game catalog | Public |
+| `GET` | `/api/v1/tournaments/products` | Product catalog | Public |
+| `GET` | `/api/v1/tournaments/builds` | PC builds | Public |
 
 ---
 
@@ -232,7 +233,7 @@ Tournament Archived (historical record)
 
 ### 7.1 Tenant Isolation
 
-All gaming queries must include tenant context (`bg_code`, `div_code`):
+All tournaments queries must include tenant context (`bg_code`, `div_code`):
 
 ```python
 # Via TenantCollection wrapper
@@ -245,9 +246,10 @@ games = collection.find({})  # bg_code auto-injected
 All domains must use protocol interfaces, not direct DB queries:
 
 ```python
-from gaming.protocols import IGamingTournamentService
+# Protocol enforcement: use domain protocols, not direct DB queries
+# Package: domains/tournaments/
 
-class GamingTournamentService(IGamingTournamentService):
+class TournamentsService:
     def create_tournament(self, name: str, game: str, format: str) -> Tournament:
         # Implementation
         pass
