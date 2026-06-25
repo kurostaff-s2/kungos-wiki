@@ -6,10 +6,11 @@
 | Primary entity ID | `dce6ae` |
 | Entity type | `handoff` |
 | Short description | Remove brand-specific code, align all domains with spec naming, prepare for second QC pass |
-| Status | `draft` |
-| Source references | `cbm-mcp-audit-kteam-dj-chief.md`, `chief-review.md`, `gaming_spec.md`, `cafe_spec.md`, `ecommerce_spec.md` |
+| Status | `in_progress` |
+| Source references | `cbm-mcp-audit-kteam-dj-chief.md`, `chief-review.md`, `gaming_spec.md`, `cafe_spec.md`, `ecommerce_spec.md`, `KungOS_Endpoint_Design.md` |
 | Generated | 25-06-2026 |
-| Next action / owner | Reviewer: verify spec alignment, run second QC pass |
+| Updated | 25-06-2026 (tournaments active, legacy removal note, README updated) |
+| Next action / owner | Reviewer: verify spec alignment, run second QC pass, execute legacy package removal |
 
 ## Project Context
 
@@ -80,6 +81,29 @@
 **Tournaments (`domains/tournaments/`):**
 - `views.py` — tournaments, players, teams, registration
 - `urls.py` — mounted at `/api/v1/tournaments/`
+- **Status:** Active (4 endpoints implemented, 9 target after Phase 3b)
+
+### Phase 5: Legacy Package Removal (Pending)
+
+**`kuroadmin/` (8,406 lines) — TO BE REMOVED:**
+- Functionality migrated to: `domains/accounts/`, `domains/orders/`, `domains/products/`, `domains/teams/`, `domains/vendors/`, `domains/search/`
+- **Action:** Delete package + remove URLs from `backend/urls.py`
+
+**`kurostaff/` (2,935 lines) — TO BE REMOVED:**
+- Functionality migrated to: `domains/products/`, `domains/orders/`, `domains/accounts/`, `domains/teams/`
+- **Action:** Delete package + remove URLs from `backend/urls.py`
+
+**Domain modules replacing legacy packages:**
+
+| Domain | Lines | Status |
+|--------|-------|--------|
+| `domains/accounts/` | 1,714 | ✅ Active |
+| `domains/orders/` | 816 | ✅ Active |
+| `domains/products/` | 1,318 | ✅ Active |
+| `domains/teams/` | 371 | ✅ Active |
+| `domains/vendors/` | 236 | ✅ Active |
+| `domains/search/` | 249 | ✅ Active |
+| `domains/shared/` | 607 | ✅ Active |
 
 ---
 
@@ -91,9 +115,12 @@
 |------------------|------------|--------|
 | Package: `domains/tournaments/` | `domains/tournaments/` | ✅ |
 | URLs: `/api/v1/tournaments/` | `/api/v1/tournaments/` | ✅ |
-| Protocols in domain package | Not yet implemented (core/ deleted) | ⏳ Phase 2 |
+| Basic endpoints (tournaments, players, teams, registration) | `views.py` (12 functions) | ✅ |
 | Tenant scoping via `bg_code`/`div_code` | All queries use `get_collection(bg_code=...)` | ✅ |
 | No brand-specific code | `rebellion/` deleted | ✅ |
+| Protocols in domain package | Not yet implemented | ⏳ Phase 2 |
+| Gaming backend integration (products, builds, games) | Not yet implemented | ⏳ Phase 3b |
+| PostgreSQL migration (players, teams) | Not yet implemented | ⏳ Phase 3b |
 
 ### Cafe Spec (`cafe_spec.md`)
 
@@ -164,6 +191,7 @@
 |------|----------|------------|
 | `reb_users` collection not renamed in DB | HIGH | Create MongoDB migration or alias |
 | `rbpackages` collection still has brand name | MEDIUM | Rename to `packages` or `fnb_packages` |
+| `kuroadmin/` + `kurostaff/` not yet deleted | HIGH | Delete packages + URLs during execution |
 | Legacy function names in comments/docs | LOW | Update comments in next pass |
 | `PROJ_REB_*` constants in other files | LOW | Verified: 0 remaining references |
 | `rebellion/` app referenced in tests | LOW | Run full test suite to verify |
@@ -211,6 +239,7 @@
 - [ ] All Python files compile without errors
 - [ ] Spec alignment checklist: all ✅ or ⏳ (no ❌)
 - [ ] Collection rename migration planned (`reb_users` → `users_legacy`)
+- [ ] `kuroadmin/` + `kurostaff/` packages deleted + URLs removed
 - [ ] Handoff document committed and pushed
 
 ---
@@ -222,6 +251,7 @@
 3. **Protocol implementation deferred:** `core/` deleted but protocols not yet implemented in domain packages. This is Phase 2 (future).
 4. **Test suite not run:** Syntax checks pass but full test suite not executed. Run before deployment.
 5. **Legacy function names in comments:** Some docstrings still reference "rebellion" — cosmetic only, no functional impact.
+6. **`kuroadmin/` + `kurostaff/` not yet deleted:** Functionality migrated to domain modules but legacy packages remain. Must be deleted during execution (see Phase 5).
 
 ---
 
@@ -229,6 +259,7 @@
 
 1. **Reviewer:** Verify spec alignment checklist against actual code
 2. **QC Pass:** Run full test suite, verify URL routing, check for regressions
-3. **DB Migration:** Create MongoDB migration for `reb_users` → `users_legacy`
-4. **Deployment:** Push to staging, verify all routes resolve correctly
-5. **Phase 2:** Implement protocols in domain packages per spec
+3. **Legacy Removal:** Delete `kuroadmin/` + `kurostaff/` packages + remove URLs from `backend/urls.py`
+4. **DB Migration:** Create MongoDB migration for `reb_users` → `users_legacy`
+5. **Deployment:** Push to staging, verify all routes resolve correctly
+6. **Phase 2:** Implement protocols in domain packages per spec
