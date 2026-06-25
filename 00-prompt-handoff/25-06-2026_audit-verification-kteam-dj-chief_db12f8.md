@@ -5,16 +5,18 @@
 | Project ID | `kteam-dj-chief` |
 | Primary entity ID | `db12f8` |
 | Entity type | `session` |
-| Short description | Cross-index verification of CBM-MCP audit claims against both CBM and codegraph indexes |
+| Short description | Cross-index verification of CBM-MCP audit claims against target spec — actionable change plan |
 | Status | `complete` |
-| Source references | `/home/chief/llm-wiki/cbm-mcp-audit-kteam-dj-chief.md` |
+| Source references | `/home/chief/llm-wiki/cbm-mcp-audit-kteam-dj-chief.md` (audit), `/home/chief/llm-wiki/Kung_OS/specs/` (target spec), `/home/chief/llm-wiki/Kung_OS/architecture/` (arch docs) |
 | Generated | 25-06-2026 |
-| Next action / owner | Human review — decide which audit findings to act on |
+| Next action / owner | Execute Phase 1 (safe deletions), then Phase 2 (spec-aligned protocol placement) |
 
 ## Project Context
 
 **Project root:** `/home/chief/Coding-Projects/kteam-dj-chief`
-**Reference docs:** `/home/chief/llm-wiki/cbm-mcp-audit-kteam-dj-chief.md` (source audit), `/home/chief/llm-wiki/Kung_OS/` (architecture specs)
+**Reference docs:** `/home/chief/llm-wiki/cbm-mcp-audit-kteam-dj-chief.md` (source audit)
+**Target spec:** `/home/chief/llm-wiki/Kung_OS/specs/domain_specs/` (identity, cafe, gaming, ecommerce)
+**Architecture:** `/home/chief/llm-wiki/Kung_OS/architecture/` (multi_tenancy, rbac, identity_layer, platform_primitives)
 **Key files for this task:** None created or modified — read-only verification
 
 ---
@@ -56,7 +58,11 @@ CBM indexes Django templates and has structural analysis (SIMILAR_TO, SEMANTICAL
 | `brands/` (6 files) | 0 imports from outside `brands/` (grep confirmed) | **Safe to delete** |
 | `core/` (10 files) | Only imported by `brands/`; 0 imports from active code (grep confirmed) | **Safe to delete** |
 
-`brands/` implements Protocol interfaces defined in `core/`. Neither is imported by any active code. Classic YAGNI — infrastructure for a brand-tenancy model never shipped.
+`brands/` implements Protocol interfaces defined in `core/`. Neither is imported by any active code.
+
+**Spec alignment analysis:** The specs *do* require protocol interfaces (gaming_spec §7.2, cafe_spec §1.2). But they specify protocols live in **domain packages** (`gaming.protocols`, `cafe.protocols`), not a separate `core/` package. Brand-specific logic is handled via **Division tenant scope** (`div_code`), not separate code packages. The cafe_spec explicitly says: **"Rename `rebellion/cafe/` — Brand name on generic code is misleading"** (meaning the code IS generic, just misnamed under a brand).
+
+**Verdict:** The *concept* (protocol-based architecture) is spec-aligned. The *structure* (`core/` + `brands/` packages) diverges from spec. Safe to delete — the protocol pattern will be implemented correctly when domains are built per spec.
 
 ### ✅ ACCURATE — Dead Function
 
@@ -181,7 +187,81 @@ Audit claims 4 layers (entry/api/core/internal). **No layer metadata in either i
 
 **Consolidation prerequisite:** Switch `careers/views.py:9` from `from backend.utils import check_access` to `from backend.auth_utils import check_access` before deleting the 3 duplicate functions from `backend/utils.py`.
 
+**Spec note:** The `core/` + `brands/` deletion is safe because the spec defines a different structure (protocols in domain packages, brand logic via tenant scope). The protocol *concept* is preserved; the *packages* are not.
+
 ---
+
+## Target Spec vs Current State
+
+### What the spec says (4 domain specs + architecture docs)
+
+| Spec | Status | What It Defines |
+|------|--------|-----------------|
+| `identity_spec.md` | ~60% done | Unified identity, extension tables, phone lookup, auth linkage |
+| `cafe_spec.md` | ~30% done | Separate cafe-fnb domain, OrderGateway, protocol chain, session-attached orders |
+| `gaming_spec.md` | ~20% done | Tournament service, protocol enforcement, tenant-scoped queries |
+| `ecommerce_spec.md` | ~10% done | E-commerce domain (eshop) |
+| `multi_tenancy.md` | ~70% done | BG → Division → Branch hierarchy, cascade-code PKs, shared DB |
+| `rbac_system.md` | ~50% done | Role-based access control |
+| `identity_layer.md` | ~40% done | Identity layer design |
+| `platform_primitives.md` | ~50% done | Platform primitives |
+
+**Target architecture:** Django REST API, PostgreSQL + MongoDB, tenant-scoped via `bg_code`/`div_code`/`branch_code`, protocol interfaces per domain, outbox pattern for async, JWT auth.
+
+### Key divergence: Protocol placement
+
+| What exists | What spec says |
+|-------------|----------------|
+| `core/tournaments/protocols.py` (ITournamentsService) | `gaming/protocols.py` (IGamingTournamentService) |
+| `core/commerce/protocols.py` (IOrderService, IWalletService) | `ecommerce/protocols.py` |
+| `core/cafe_arcade/protocols.py` | `cafe/protocols.py` (ICafeFnbService) |
+| `brands/kurogaming/eshop/services.py` — implements core protocols | Brand logic via `div_code` tenant scope, not code packages |
+| `brands/rebellion/cafe_arcade/services.py` — implements core protocols | Generic cafe code in `cafe/` domain, not under brand name |
+
+**The brands/core structure is a speculative plugin model that was never wired in.** Delete it. When domains are built, place protocols per spec.
+
+## Changes Needed
+
+### Phase 1: Safe Deletions (zero risk, ~560 lines)
+
+| # | Action | Files | Prerequisite |
+|---|--------|-------|-------------|
+| 1 | Delete dead modules | `backend/views_diagnostic.py`, `backend/cron.py` | None |
+| 2 | Delete superseded scripts | `backend/backup_kuropurchase.py`, `backend/restore_kuropurchase.py` | None (replaced by management commands) |
+| 3 | Delete dead function | `close_mongo_client` in `backend/utils.py:37` | None |
+| 4 | Fix import, delete duplicates | Switch `careers/views.py:9` to `from backend.auth_utils import check_access`, then delete 3 functions from `backend/utils.py` | Do import switch first |
+| 5 | Delete speculative packages | `brands/` (entire), `core/` (entire) | None — 0 imports |
+
+**Order:** 1-3 in any order. 4 must do import switch before deletion. 5 independent.
+
+### Phase 2: Spec-Aligned Protocol Placement (future, when building domains)
+
+When implementing domain specs, place protocols in domain packages per spec:
+
+```
+domains/
+├── cafe/
+│   ├── protocols.py   # ICafeFnbService (per cafe_spec §1.2)
+│   ├── services.py
+│   └── gateways.py
+├── gaming/
+│   ├── protocols.py   # IGamingTournamentService (per gaming_spec §7.2)
+│   ├── services.py
+│   └── gateways.py
+└── ecommerce/
+    ├── protocols.py   # IOrderService, IWalletService
+    ├── services.py
+    └── gateways.py
+```
+
+Brand-specific logic handled via `div_code` tenant scope — not separate code packages.
+
+### Phase 3: Known Issues from Chief Review
+
+Per `chief-review.md`:
+- **H1:** Cafe `OrderGateway` bypasses protocol layer (tight coupling, God object) — fix when building cafe domain per spec
+- **MongoDB naming skew** — collection names inconsistent with spec
+- **Missing DLQ** for outbox failures — add when outbox is implemented
 
 ## Caveats & Uncertainty
 
