@@ -3,13 +3,13 @@
 **Status:** Spec — TARGET  
 **Date:** 2026-05-17  
 **Source:** `eshop_legacy_review.md`, `KungOS_Endpoint_Design.md`, `KungOS_v2.md`  
-**Purpose:** Authoritative spec for e-commerce domain — cart, orders, payment, fulfillment, procurement
+**Purpose:** Authoritative spec for e-commerce domain (package: `eshop`) — cart, orders, payment, fulfillment, procurement
 
 ---
 
 ## 1. Domain Overview
 
-The e-commerce domain handles online retail operations: product catalog, cart, wishlist, addresses, orders, payment processing, and procurement bridging.
+The e-commerce domain (package: `eshop`) handles online retail operations: product catalog, cart, wishlist, addresses, orders, payment processing, and procurement bridging.
 
 ### 1.1 Domain Boundaries
 

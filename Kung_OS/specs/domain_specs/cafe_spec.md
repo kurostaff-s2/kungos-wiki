@@ -4,6 +4,7 @@
 **Date:** 2026-05-17  
 **Source:** `KungOS_Endpoint_Design.md`, `cafe-council-review.md`, `platform_primitives.md`  
 **Purpose:** Authoritative spec for cafe platform domain — sessions, stations, F&B orders, wallet, pricing
+**Packages:** `domains/cafe_arcade/` (sessions, stations, wallet, pricing) + `domains/cafe_fnb/` (F&B orders, menu)
 
 ---
 
@@ -28,7 +29,7 @@ From `cafe-council-review.md` (2026-05-13, all three reviewers agree):
 | Decision | Status | Rationale |
 |---|---|---|
 | **Session-attached F&B** | ❌ REJECT | Lifecycle mismatch, inventory integrity risk, God object |
-| **Separate `cafe-fnb/` domain** | ✅ ADOPT | Clean bounded context, independent scaling |
+| **Two-domain split: `cafe_arcade/` + `cafe_fnb/`** | ✅ ADOPT | Clean bounded contexts, independent scaling |
 | **Protocol chain bypass** | ⚠️ CRITICAL | Domains query DB directly, must enforce protocol usage |
 | **Rename `rebellion/cafe/`** | ✅ RENAME | Brand name on generic code is misleading |
 | **Session references F&B** | ✅ AGREE | Thin FK or `order_id` reference, not food_charges accumulation |
@@ -40,7 +41,7 @@ For 3 cafes at current scale:
 | Level | Approach |
 |---|---|
 | **Database** | All F&B data in existing `kgorders` collection. Session stores `order_id` reference. |
-| **Domain** | Lightweight `cafe-fnb/` with only gateway to Mongo (`OrderGateway.get_by_order_id`). No event bus. |
+| **Domain** | Two packages: `domains/cafe_arcade/` (sessions, stations, wallet, pricing) + `domains/cafe_fnb/` (F&B gateway to Mongo via `OrderGateway.get_by_order_id`). No event bus. |
 | **Protocol** | Thin adapter layer exposing F&B via existing `ICafeSessionService` contract |
 | **Session model** | Delete `food_charges`; add `last_order_id` (nullable). GUI shows real amount via single Mongo lookup. |
 | **Endpoint** | Remove all food-order endpoints not yet implemented. Keep FoodOrderModal on hold. |
@@ -178,15 +179,22 @@ def end_session(session):
 
 ## 4. F&B Orders (Lightweight)
 
-### 4.1 `cafe-fnb/` Domain Structure
+### 4.1 Domain Structure (Two Packages)
 
 ```
-cafe-fnb/
-├── models.py      — FoodOrder, MenuItem (lightweight)
-├── services.py    — OrderGateway (Mongo adapter)
-├── views.py       — F&B order endpoints
-├── urls.py        — URL routing
-└── protocols.py   — ICafeFnbService (Protocol interface)
+domains/cafe_arcade/      — Sessions, stations, wallet, pricing, games
+├── models.py      — Session, Station, Wallet, PricePlan, MemberPlan
+├── views.py       — Session/station/wallet endpoints
+├── gamers_views.py — Gamer session tracking
+├── legacy_views.py — MongoDB-based legacy endpoints
+├── urls.py        — Mounted at /api/v1/cafe/
+└── tasks.py       — Async tasks
+
+domains/cafe_fnb/          — F&B orders, menu
+├── gateways.py  — OrderGateway (Mongo adapter)
+├── views.py     — F&B order endpoints
+├── urls.py      — Mounted at /api/v1/cafe-fnb/
+└── serializers.py
 ```
 
 ### 4.2 OrderGateway — MongoDB Adapter
