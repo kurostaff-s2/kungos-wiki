@@ -1,10 +1,21 @@
 # Gaming Domain Specification
 
-**Status:** Spec — TARGET (Phase 3b, Deferred)  
+**Status:** Spec — ACTIVE (Phase 3b, Partial)  
 **Date:** 2026-05-17  
 **Source:** `KungOS_v2.md`, `KungOS_Endpoint_Design.md`, `kungos_v2_db.md`  
 **Purpose:** Authoritative spec for tournaments domain — tournaments, players, teams, esports integration
 **Package:** `domains/tournaments/` (canonical, not brand-locked)
+
+### Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Basic endpoints (tournaments, players, teams, registration) | ✅ Implemented | `domains/tournaments/views.py` |
+| URL routing (`/api/v1/tournaments/`) | ✅ Implemented | Generic namespace, not brand-locked |
+| Tenant scoping (`bg_code`/`div_code`) | ✅ Implemented | Via `get_collection()` wrapper |
+| Gaming backend integration (products, builds, games) | ⏳ Deferred (Phase 3b) | Requires djongo removal, tenant fields |
+| Protocol interfaces (`protocols.py`) | ⏳ Planned | Target pattern, not yet implemented |
+| PostgreSQL migration (players, teams) | ⏳ Planned | Currently MongoDB collections |
 
 ---
 
@@ -212,16 +223,23 @@ Tournament Archived (historical record)
 
 ## 6. API Contract
 
-### 6.1 Tournaments Endpoints
+### 6.1 Current Endpoints (Implemented)
+
+| Method | Endpoint | Description | Auth |
+|---|---|---|---|
+| `GET` | `/api/v1/tournaments/tournaments` | List tournaments | Public |
+| `GET` | `/api/v1/tournaments/players` | List players | JWT |
+| `GET` | `/api/v1/tournaments/teams` | List teams | Public |
+| `POST` | `/api/v1/tournaments/tourneyregister` | Team registration | JWT |
+
+### 6.2 Target Endpoints (Phase 3b)
 
 | Method | Endpoint | Description | Auth |
 |---|---|---|---|
 | `GET` | `/api/v1/tournaments/` | List tournaments | Public |
 | `GET` | `/api/v1/tournaments/{id}` | Tournament detail | Public |
 | `POST` | `/api/v1/tournaments/{id}/register` | Team registration | JWT |
-| `GET` | `/api/v1/tournaments/players` | List players | JWT |
 | `GET` | `/api/v1/tournaments/players/{id}` | Player detail | JWT |
-| `GET` | `/api/v1/tournaments/teams` | List teams | Public |
 | `GET` | `/api/v1/tournaments/teams/{id}` | Team detail | Public |
 | `GET` | `/api/v1/tournaments/games` | Game catalog | Public |
 | `GET` | `/api/v1/tournaments/products` | Product catalog | Public |
@@ -268,6 +286,6 @@ class TournamentsService:
 
 ---
 
-> **Implementation state:** Gaming domain is deferred to Phase 3b. Player/team data currently in MongoDB (`players`, `teams` collections). Tournament management not yet implemented. Gaming backend integration requires djongo removal, tenant field addition, and DRF serializer creation. Security remediation (hardcoded credentials, EOL Django) is critical prerequisite.
+> **Implementation state:** Basic endpoints (tournaments, players, teams, registration) are implemented in `domains/tournaments/views.py`. Player/team data currently in MongoDB (`players`, `teams` collections). Gaming backend integration (products, builds, games) is deferred to Phase 3b and requires djongo removal, tenant field addition, and DRF serializer creation. Security remediation (hardcoded credentials, EOL Django) is critical prerequisite.
 | `created_at` | timestamptz | |
 | `updated_at` | timestamptz | |
