@@ -134,6 +134,8 @@
 **Constraints:**
 - `uq_identity_alias_phone`: UNIQUE `(identity_id, alias_type, phone)`
 
+**Django model note:** `class Meta: db_table = 'identity_phone_aliases'` — Django would default to `users_phone_alias` which doesn't match the schema spec.
+
 ### 3.3 `users_employee` — Employee Extension (NEW)
 
 **Replaces:** `KuroUser` (employee fields), `employee_attendance.userid` (Mongo)
@@ -254,9 +256,11 @@
 | `created_at` | timestamptz | NOT NULL | — | |
 
 **Constraints:**
-- `chk_membership_has_reference`: CHECK `(identity_id IS NOT NULL) OR (phone IS NOT NULL)`
+- `chk_membership_has_reference`: CHECK `(identity_id IS NOT NULL) OR (phone IS NOT NULL)` — allows unregistered members
 - `uq_team_identity`: UNIQUE `(team_id, identity_id)` WHERE `identity_id IS NOT NULL`
 - `uq_team_phone`: UNIQUE `(team_id, phone)` WHERE `phone IS NOT NULL`
+
+**Django model note:** `class Meta: db_table = 'team_memberships'` — Django would default to `users_team_membership` which doesn't match the schema spec.
 
 ---
 

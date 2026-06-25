@@ -53,18 +53,6 @@
 | `/tournaments/` | Tournaments | `domains/tournaments/` | Tournaments, players, teams |
 | `/admin/` | Cross-cutting | `admin/` | Admin-only operations |
 
-| Namespace | Domain | Package | Description |
-|---|---|---|---|
-| `/auth/` | Identity | `users/` | Authentication, OTP, session management |
-| `/users/` | Identity | `users/` | Identity CRUD, lookup, extensions |
-| `/tenant/` | Multi-tenancy | `tenant/` | BG, division, branch management |
-| `/rbac/` | RBAC | `users/` | Roles, permissions, assignments |
-| `/cafe/` | Cafe (arcade) | `domains/cafe_arcade/` | Sessions, stations, wallet, pricing |
-| `/cafe-fnb/` | Cafe (F&B) | `domains/cafe_fnb/` | F&B orders, menu |
-| `/eshop/` | E-Commerce | `eshop/` | Products, cart, orders, payments |
-| `/tournaments/` | Tournaments | `domains/tournaments/` | Tournaments, players, teams |
-| `/admin/` | Cross-cutting | `admin/` | Admin-only operations |
-
 ---
 
 ## 2. URL Routing Rules
@@ -97,7 +85,7 @@ urlpatterns = [
         path('eshop/', include('eshop.urls')),
 
         # Tournaments
-        path('tournaments/', include('domains/tournaments/urls')),,
+        path('tournaments/', include('domains/tournaments/urls')),
 
         # Admin (cross-domain)
         path('admin/', include('admin.urls')),
@@ -239,8 +227,8 @@ urlpatterns = [
             "name": "John Doe",
             "email": "john@example.com",
             "bg_code": "KURO0001",
-            "div_code": "KURO0001_001",
-            "branch_code": null,
+            "active_div_code": "KURO0001_001",
+            "active_branch_code": null,
             "roles": ["employee", "customer"],
             "permissions": ["users.view", "orders.create"],
             "is_admin": false
@@ -256,8 +244,8 @@ urlpatterns = [
 | `user.userid` | `user.identity_id` | New PK format |
 | `user.phone` (raw) | `user.phone` (E.164) | Normalized |
 | `user.bg_code` | `user.bg_code` | Unchanged |
-| — | `user.div_code` | Added |
-| — | `user.branch_code` | Added |
+| — | `user.active_div_code` | Added |
+| — | `user.active_branch_code` | Added |
 | `user.accesslevel[]` | `user.permissions[]` | RBAC perm_codes |
 | — | `user.roles[]` | Derived from extensions |
 | — | `refresh_token` | Added (sliding refresh) |
@@ -323,7 +311,7 @@ class TenantContextMiddleware:
     "status": "success",
     "data": {
         "bg_code": "KURO0002",
-        "div_code": "KURO0002_001",
+        "active_div_code": "KURO0002_001",
         "scope": "division",
         "token_key": "new_tenant_key_abc"
     }
@@ -357,8 +345,8 @@ class TenantContextMiddleware:
         "name": "John Doe",
         "email": "john@example.com",
         "bg_code": "KURO0001",
-        "div_code": "KURO0001_001",
-        "branch_code": null,
+        "active_div_code": "KURO0001_001",
+        "active_branch_code": null,
         "status": "active",
         "roles": ["employee", "customer"],
         "primary_role": "employee",
@@ -470,8 +458,8 @@ class TenantContextMiddleware:
 | `res.data.user.accesslevel[]` | `res.data.user.permissions[]` | RBAC perm_codes |
 | `res.data.user.roles` (JSON) | `res.data.user.roles[]` | Derived from extensions |
 | `res.data.user.primary_bg` | `res.data.user.bg_code` | From tenant context |
-| — | `res.data.user.div_code` | New field |
-| — | `res.data.user.branch_code` | New field |
+| — | `res.data.user.active_div_code` | New field |
+| — | `res.data.user.active_branch_code` | New field |
 | `res.data.user.employee.*` | `res.data.user.employee_profile.*` | Nested extension |
 | `res.data.user.customer.*` | `res.data.user.customer_profile.*` | Nested extension |
 | `session.food_charges` | `session.last_order_id` | Reference, not amount |
@@ -607,13 +595,35 @@ Link: </api/v2/users/me>; rel="successor-version"
 
 ---
 
-## 11. OpenAPI Contract
+## 11. Compatibility Matrix
 
-### 11.1 Generation Strategy
+### 11.1 Legacy → Canonical Field Mapping
+
+| Legacy Field/Claim | Canonical Field | Context | Removal |
+|-------------------|----------------|---------|---------|
+| `division` (JSON array) | `div_codes[]` (scope) + `active_div_code` (active) | JWT + UserTenantContext | Phase 0 |
+| `branches` (JSON array) | `branch_codes[]` (scope) + `active_branch_code` (active) | JWT + UserTenantContext | Phase 0 |
+| `entity[0]` | `active_div_code` | JWT (stale) | Phase 0 |
+| `bgcode` | `bg_code` | MongoDB documents | M3 (Phase 5.7) |
+| `branch` | `branch_code` | MongoDB documents | M3 (Phase 5.7) |
+| `userid` (PK) | `identity_id` | All person references | M1 (Phase 4) |
+| `accesslevel[]` | `permissions[]` | Login response | Phase 2 |
+
+### 11.2 Response Envelope Authority
+
+**`endpoint_contract_spec.md` is the sole authority for wire contracts.** All other specs reference this document for response shapes, route definitions, and error formats. Do not redefine login response shapes in handoff notes or domain specs.
+
+### 11.3 Extension Payload Maturity
+
+`employee_profile`, `customer_profile`, `player_profile`, and other extension-derived subobjects are **nullable/absent until M1 data backfill completes**. The contract defines the shape; data availability follows migration timing. Return `null` or omit — do not fabricate empty objects.
+
+## 12. OpenAPI Contract
+
+### 12.1 Generation Strategy
 
 **ponytail:** Use `drf-spectacular` auto-generation from DRF viewsets + serializers. One manual `openapi.yaml` only if a consumer (mobile, partner) demands a static spec. Otherwise, live `/api/v1/schema/` endpoint is sufficient.
 
-### 11.2 Required OpenAPI Extensions
+### 12.2 Required OpenAPI Extensions
 
 ```yaml
 x-tenant-scoped: true        # Indicates endpoint requires tenant context
@@ -621,11 +631,11 @@ x-rbac-permission: "users.view"  # Required RBAC permission
 x-outbox-event: "order.placed"   # Published outbox event
 ```
 
-### 11.3 Schema Components
+### 12.3 Schema Components
 
 Shared schemas (referenced across domains):
 - `IdentityResponse` — unified identity with extensions
-- `TenantContext` — bg_code, div_code, branch_code, scope
+- `TenantContext` — bg_code, active_div_code, active_branch_code, scope
 - `PaginationMeta` — page, page_size, totals
 - `ErrorResponse` — standard error envelope
 - `PermissionList` — RBAC permission array
@@ -665,7 +675,7 @@ server: {
 - [ ] Replace `res.data.user.userid` → `res.data.user.identity_id`
 - [ ] Replace `res.data.user.accesslevel[]` → `res.data.user.permissions[]`
 - [ ] Replace `res.data.user.businessgroups[]` → `res.data.user.bg_code`
-- [ ] Add `div_code` / `branch_code` to user state
+- [ ] Add `active_div_code` / `active_branch_code` to user state
 - [ ] Replace `cafe/sessions/start` → `cafe/sessions` (POST)
 - [ ] Replace `cafe/sessions/{id}/food` → `cafe-fnb/orders` (POST with `session_id`)
 - [ ] Replace `tournaments/tourneyregister` → `tournaments/{id}/register`

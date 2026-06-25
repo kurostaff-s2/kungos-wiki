@@ -1,5 +1,18 @@
 # Multi-Tenancy Architecture
 
+## Canonical Glossary
+
+| Term | Canonical Name | Legacy Name | Description |
+|------|---------------|-------------|-------------|
+| Business Group | `bg_code` | `bgcode` | Top-level tenant (e.g., `KURO0001`) |
+| Division | `div_code` | `division` | Mid-level tenant (e.g., `KURO0001_001`) |
+| Branch | `branch_code` | `branch` | Leaf-level tenant (e.g., `KURO0001_001_B01`) |
+| Division scope | `div_codes[]` | `division[]` | Array of all accessible divisions (authorization scope) |
+| Branch scope | `branch_codes[]` | `branches[]` | Array of all accessible branches (authorization scope) |
+| Active division | `active_div_code` | `entity[0]` | Current active division (singular, from scope) |
+| Active branch | `active_branch_code` | `branches[0]` | Current active branch (singular, from scope) |
+| Identity | `identity_id` | `userid` | Stable person PK (replaces CustomUser PK) |
+
 **Status:** Constitution (stable, long-lived)
 **Last updated:** 2026-05-16
 
@@ -61,9 +74,11 @@ PostgreSQL silently filters every query to match the current tenant.
 | Variable | Source | Purpose |
 |----------|--------|---------|
 | `app.current_bg_code` | JWT `bg_code` | Tenant scope (required) |
-| `app.current_division` | JWT `entity[0]` | Division scope (optional) |
-| `app.current_branch` | JWT `branches[0]` | Branch scope (optional) |
-| `app.current_userid` | JWT `userid` | User identity (for self-reference) |
+| `app.current_division` | JWT `active_div_code` | Active division scope (singular, not array) |
+| `app.current_branch` | JWT `active_branch_code` | Active branch scope (singular, not array) |
+| `app.current_userid` | JWT `identity_id` (target) / `userid` (legacy) | User identity |
+
+**Scope vs active context:** The JWT carries both authorization scope (`div_codes[]`, `branch_codes[]` -- all accessible) and active context (`active_div_code`, `active_branch_code` -- current selection). Session variables reflect the **active context** (singular), not the full scope. See `endpoint_contract_spec.md` section 11 for the full compatibility matrix.
 
 **Policy structure (per table):**
 

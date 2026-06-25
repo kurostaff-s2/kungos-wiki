@@ -344,7 +344,7 @@ def update_customer_order_metrics(event: dict):
     "name": "John Doe",
     "email": "john@example.com",
     "bg_code": "KURO0001",
-    "div_code": "KURO0001_001",
+    "active_div_code": "KURO0001_001",
     "status": "active",
     "roles": ["employee", "customer"],
     "primary_role": "employee",
@@ -360,6 +360,8 @@ def update_customer_order_metrics(event: dict):
     }
 }
 ```
+
+**Maturity rule:** `employee_profile`, `customer_profile`, `player_profile` are **nullable/absent until M1 data backfill completes**. Return `null` or omit — do not fabricate empty objects. Data availability follows migration timing (`migration_spec.md` Phase 4).
 
 ---
 
