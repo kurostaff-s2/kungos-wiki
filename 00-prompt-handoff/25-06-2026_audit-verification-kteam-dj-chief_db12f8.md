@@ -200,7 +200,7 @@ Audit claims 4 layers (entry/api/core/internal). **No layer metadata in either i
 | `identity_spec.md` | ~60% done | Unified identity, extension tables, phone lookup, auth linkage |
 | `cafe_spec.md` | ~30% done | Separate cafe-fnb domain, OrderGateway, protocol chain, session-attached orders |
 | `gaming_spec.md` | ~20% done | Tournament service, protocol enforcement, tenant-scoped queries |
-| `ecommerce_spec.md` | ~10% done | E-commerce domain (eshop) |
+| `ecommerce_spec.md` | ~10% done | E-Commerce domain (package: `eshop`) |
 | `multi_tenancy.md` | ~70% done | BG → Division → Branch hierarchy, cascade-code PKs, shared DB |
 | `rbac_system.md` | ~50% done | Role-based access control |
 | `identity_layer.md` | ~40% done | Identity layer design |
@@ -213,7 +213,7 @@ Audit claims 4 layers (entry/api/core/internal). **No layer metadata in either i
 | What exists | What spec says |
 |-------------|----------------|
 | `core/tournaments/protocols.py` (ITournamentsService) | `gaming/protocols.py` (IGamingTournamentService) |
-| `core/commerce/protocols.py` (IOrderService, IWalletService) | `ecommerce/protocols.py` |
+| `core/commerce/protocols.py` (IOrderService, IWalletService) | `eshop/protocols.py` (per ecommerce_spec) |
 | `core/cafe_arcade/protocols.py` | `cafe/protocols.py` (ICafeFnbService) |
 | `brands/kurogaming/eshop/services.py` — implements core protocols | Brand logic via `div_code` tenant scope, not code packages |
 | `brands/rebellion/cafe_arcade/services.py` — implements core protocols | Generic cafe code in `cafe/` domain, not under brand name |
@@ -248,7 +248,7 @@ domains/
 │   ├── protocols.py   # IGamingTournamentService (per gaming_spec §7.2)
 │   ├── services.py
 │   └── gateways.py
-└── ecommerce/
+└── eshop/  # E-Commerce domain (package: eshop)
     ├── protocols.py   # IOrderService, IWalletService
     ├── services.py
     └── gateways.py
