@@ -14,7 +14,22 @@
 | Identity | `identity_id` | `userid` | Stable person PK (replaces CustomUser PK) |
 
 **Status:** Constitution (stable, long-lived)
-**Last updated:** 2026-05-16
+**Last updated:** 2026-06-26
+
+---
+
+## JWT Claims Target
+
+| Claim | Type | Source | Description |
+|-------|------|--------|-------------|
+| `bg_code` | string | active context | Business Group (required) |
+| `div_codes` | array[] | authorization scope | All accessible divisions |
+| `branch_codes` | array[] | authorization scope | All accessible branches |
+| `active_div_code` | string | active context | Current active division |
+| `active_branch_code` | string \| null | active context | Current active branch (nullable) |
+| `identity_id` | string | `users_identity` | Stable person PK |
+
+**Scope vs active context:** The JWT carries both authorization scope (`div_codes[]`, `branch_codes[]` — all accessible) and active context (`active_div_code`, `active_branch_code` — current selection). Session variables reflect the **active context** (singular), not the full scope.
 
 ---
 

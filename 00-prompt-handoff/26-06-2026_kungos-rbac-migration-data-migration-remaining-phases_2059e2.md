@@ -133,7 +133,38 @@ print(f'Organization: {Organization.objects.count()}')
 "
 ```
 
-### Step 2: Dry Run
+### Step 2: Employee Bridge (One-Time, Pre-Migration)
+
+**Before data migration, resolve employee userid→phone mapping via CustomUser.**
+
+This is a **one-time migration step**, not a permanent bridge. After this, CustomUser is deprecated and employees route through Identity like all other user types.
+
+```python
+# users/management/commands/migrate_identity.py — employee bridge step
+# Read CustomUser records that have employee_attendance entries
+# Map: employee_attendance.userid → CustomUser.userid → CustomUser.phone → Identity
+
+from users.models import CustomUser, Identity
+
+for attendance_doc in db['employee_attendance'].distinct('userid'):
+    try:
+        custom_user = CustomUser.objects.get(userid=attendance_doc)
+        phone = normalize_phone(custom_user.phone)
+        # Create or link Identity for this employee
+        identity, created = Identity.objects.get_or_create(
+            phone=phone,
+            defaults={'name': custom_user.name, 'bg_code': 'KURO0001'}
+        )
+        # Link CustomUser to Identity (one-time, for migration only)
+        if not identity.user_id:
+            identity.user = custom_user
+            identity.save(update_fields=['user'])
+    except CustomUser.DoesNotExist:
+        # Flag for manual review — employee with no CustomUser record
+        flagged.append(attendance_doc)
+```
+
+### Step 3: Dry Run
 
 ```bash
 # Execute dry run — preview without writing
@@ -144,9 +175,9 @@ python manage.py migrate_identity --dry-run
 - [ ] All 5 remaining sources processed (reb_users, players, employee_attendance, serviceRequest, orders)
 - [ ] Expected identity count matches source data (~2,500+ unique identities after dedup)
 - [ ] No errors or exceptions
-- [ ] `employee_attendance` shows SKIP with reason (userid format mismatch)
+- [ ] `employee_attendance` processed via CustomUser bridge (31 employees migrated)
 
-### Step 3: Live Migration
+### Step 4: Live Migration
 
 ```bash
 # Execute live migration
@@ -156,7 +187,7 @@ python manage.py migrate_identity --source=all
 **Monitor:**
 - [ ] Each source shows `identities`, `extensions`, `skipped`, `errors` counts
 - [ ] `errors` count is 0 for all sources
-- [ ] `employee_attendance` is SKIPPED with explanation
+- [ ] `employee_attendance` processed (31 employees migrated via CustomUser bridge)
 
 ### Step 4: Validation Gate
 
@@ -170,30 +201,40 @@ python manage.py migrate_identity --validate
 | Check | Expected | Evidence |
 |-------|----------|----------|
 | Identity count | ≥ 2,500 | `users_identity.count()` |
-| Employee count | 0 (skipped) | `users_employee.count()` — employee_attendance skipped due to userid format |
+| Employee count | 31 | `users_employee.count()` — migrated via CustomUser bridge |
 | Customer count | ≥ 2,500 | `users_customer.count()` |
 | Player count | 59 | `users_player.count()` |
 | Phone normalization | 100% E.164 | `Identity.objects.exclude(phone__regex=r'^\+\d{1,3}\d{4,14}$').count() == 0` |
 | FK integrity | 0 orphans | All extension rows reference valid identities |
 | Duplicate phones | 0 per tenant | `Identity.objects.values('bg_code', 'phone').annotate(cnt=Count('id')).filter(cnt__gt=1).count() == 0` |
+| Auth linkage | 31 employees linked | `Identity.objects.filter(user__isnull=False).count()` — CustomUser linked for employees |
 
-### Step 5: Employee Attendance Resolution (Manual)
+### Step 5: Validation Gate
 
-**Problem:** `employee_attendance.userid` format (`KCTM006`) doesn't match `reb_users` phone-based identity. Cannot auto-resolve.
+```bash
+# Run validation
+python manage.py migrate_identity --validate
+```
 
-**Options:**
-- **A:** Skip employee migration entirely (employees use `CustomUser` for auth, separate from identity). Accept that `users_employee` remains empty until manual mapping.
-- **B:** Create a manual mapping table (`userid` → `phone`) and execute a secondary migration.
-- **C:** Enrich `employee_attendance` docs with phone numbers in MongoDB, then re-run migration.
+**Validation checks (must all pass):**
 
-**Recommendation:** Option A for now. Employees authenticate via `CustomUser` → RBAC. The identity layer is for customers/players/walk-ins. Employee data can be migrated in a follow-up phase with explicit `userid` → `phone` mapping.
+| Check | Expected | Evidence |
+|-------|----------|----------|
+| Identity count | ≥ 2,500 | `users_identity.count()` |
+| Employee count | 31 | `users_employee.count()` — migrated via CustomUser bridge |
+| Customer count | ≥ 2,500 | `users_customer.count()` |
+| Player count | 59 | `users_player.count()` |
+| Phone normalization | 100% E.164 | `Identity.objects.exclude(phone__regex=r'^\+\d{1,3}\d{4,14}$').count() == 0` |
+| FK integrity | 0 orphans | All extension rows reference valid identities |
+| Duplicate phones | 0 per tenant | `Identity.objects.values('bg_code', 'phone').annotate(cnt=Count('id')).filter(cnt__gt=1).count() == 0` |
+| Auth linkage | 31 employees linked | `Identity.objects.filter(user__isnull=False).count()` — CustomUser linked for employees |
 
 **Completion Gate:**
 - [ ] Dry run passes (zero errors)
 - [ ] Live migration completes (zero errors)
 - [ ] Validation gate passes (all checks OK)
 - [ ] Pre/post-migration counts reconciled
-- [ ] Employee attendance resolution decision documented
+- [ ] All 31 employees migrated via CustomUser bridge
 
 ---
 
@@ -499,16 +540,27 @@ def api_error(code, message, details=None, status=400):
 | `POST /kuro/switchgroup` | `POST /tenant/switch` |
 | `GET /kuro/businessgroups` | `GET /tenant/accessible` |
 
-### Step 3: Remove Legacy Model Fields
+### Step 3: Deprecate CustomUser
+
+- Update `AUTH_USER_MODEL` from `'users.CustomUser'` to `'users.Identity'`
+- Update `SIMPLE_JWT.USER_ID_FIELD` from `'userid'` to `'identity_id'`
+- Update `CookieJWTAuthentication.get_user()` to resolve `identity_id` instead of `userid`
+- Update all auth-related views to use `Identity` instead of `CustomUser`
+- Retain `CustomUser` model as read-only (audit trail, historical data)
+- Retain `KuroUser` model as read-only (audit trail, historical data)
+
+### Step 4: Remove Legacy Model Fields
 
 - `KuroUser.roles` (JSON) → replaced by `rbac_user_roles`
 - `KuroUser.businessgroups` (JSON) → replaced by `rbac_user_roles.bg_code`
 - `Session.food_charges` (DEPRECATED) → use `last_order_id`
 
-### Step 4: Drop Legacy Tables
+### Step 5: Drop Legacy Tables
 
 - `users_accesslevel` (55-col flat table)
 - `users_switchgroupmodel`
+- `users_customuser` (deprecated — data migrated to `users_identity`)
+- `users_kurouser` (deprecated — data migrated to `users_employee`)
 
 **Completion Gate:**
 - [ ] Adapter layer removed
@@ -531,6 +583,7 @@ def api_error(code, message, details=None, status=400):
 | Action | File | Purpose |
 |--------|------|---------|
 | Create | `tests/test_legacy_removal.py` | Verify all legacy elements are gone |
+| Create | `tests/test_auth_model.py` | Verify Identity as AUTH_USER_MODEL, JWT with identity_id |
 | Create | `tests/test_endpoint_compliance.py` | Verify all endpoints match spec |
 | Create | `tests/test_rbac_integrity.py` | Verify RBAC cascading without adapter |
 | Create | `tests/fixtures/spec_endpoints.json` | Target spec endpoint definitions |
@@ -549,6 +602,17 @@ def api_error(code, message, details=None, status=400):
 8. No references to `Accesslevel` model remain (excluding migrations/tests)
 9. No references to `Switchgroupmodel` remain (excluding migrations/tests)
 10. `has_*_access()` calls replaced with `resolve_permission()`
+
+#### AUTH_USER_MODEL Tests (`test_auth_model.py`)
+
+1. `AUTH_USER_MODEL` is `'users.Identity'`
+2. `SIMPLE_JWT.USER_ID_FIELD` is `'identity_id'`
+3. Login response carries `identity_id` (not `userid`)
+4. JWT token resolves to `Identity` object (not `CustomUser`)
+5. `CookieJWTAuthentication.get_user()` returns `Identity`
+6. No `CustomUser` references in auth flow (excluding migrations/tests)
+7. No `KuroUser` references in auth flow (excluding migrations/tests)
+8. Django admin works with `Identity` as auth model
 
 #### Endpoint Compliance Tests (`test_endpoint_compliance.py`)
 
@@ -571,6 +635,7 @@ def api_error(code, message, details=None, status=400):
 **Completion Gate (FINAL — migration complete only if all pass):**
 
 - [ ] All 10 legacy removal tests pass
+- [ ] All 8 auth model tests pass (Identity as AUTH_USER_MODEL, JWT with identity_id)
 - [ ] All spec endpoint compliance tests pass
 - [ ] Login response matches target envelope exactly
 - [ ] RBAC cascading works without adapter layer
@@ -589,7 +654,8 @@ def api_error(code, message, details=None, status=400):
 - **Financial safety:** M4 orders migration requires financial sum reconciliation (total amounts match before/after). Zero discrepancy.
 - **No data loss:** M3 MongoDB field rename uses dual-read middleware during transition. Zero downtime requirement.
 - **Test discipline:** TDD for all new endpoints. Existing endpoints verified against spec before marking complete.
-- **Employee attendance:** `employee_attendance.userid` format (KCTM006) doesn't match phone-based identity. Skip for now (Option A), document decision.
+- **Identity as AUTH_USER_MODEL:** `users.Identity` replaces `users.CustomUser` as Django's auth model. JWT carries `identity_id`. CustomUser is deprecated (data migrated, table retained for audit only).
+- **Employee attendance:** `employee_attendance.userid` resolved via one-time CustomUser bridge (userid → CustomUser.phone → Identity). Not skipped.
 
 ---
 
@@ -610,17 +676,21 @@ def api_error(code, message, details=None, status=400):
 
 1. **M1 phone dedup collisions:** Multiple MongoDB sources may have the same phone with different data. Migration command handles dedup (merge: take most recent). **Risk:** Data loss if merge strategy is incorrect. Verify with `--dry-run` first.
 
-2. **Employee attendance skip:** `employee_attendance.userid` (KCTM006) doesn't match phone-based identity. **Decision:** Skip (Option A). Employees authenticate via `CustomUser` → RBAC. Identity layer is for customers/players/walk-ins.
+2. **Employee bridge dependency:** Employee migration requires CustomUser records to exist for all 31 employee userids. **Risk:** Missing CustomUser records → employees flagged for manual review. Verify with `--dry-run` before live migration.
 
-3. **M4 financial data integrity:** Orders contain financial data. Any discrepancy in migration is unacceptable. **Mitigation:** `--validate` mode with financial sum reconciliation.
+3. **AUTH_USER_MODEL change:** Switching from `CustomUser` to `Identity` as `AUTH_USER_MODEL` requires updating all auth-related code (login, JWT issuance, permission checks, admin integration). **Risk:** Auth regression if any path still references CustomUser. Audit all `AUTH_USER_MODEL` references before deployment.
 
-4. **Adapter layer call sites (~520):** Replacing `has_*_access()` calls requires careful review. Some may have custom logic not captured by RBAC. **Risk:** Permission regression if custom logic is lost. Audit before deletion.
+4. **JWT identity_id migration:** JWT `USER_ID_FIELD` changes from `userid` to `identity_id`. All existing tokens become invalid on deploy. **Risk:** Users forced to re-login. Coordinate with frontend for graceful token refresh.
 
-5. **Frontend coordination:** Login response shape change requires frontend update (`kteam-fe-chief`). Coordinate before Phase 8 (legacy cleanup). **Risk:** Frontend breakage if deployed without frontend update.
+5. **M4 financial data integrity:** Orders contain financial data. Any discrepancy in migration is unacceptable. **Mitigation:** `--validate` mode with financial sum reconciliation.
 
-6. **MongoDB connection:** Migration requires MongoDB running at `mongodb://127.0.0.1:27017`. Verify connection before execution.
+6. **Adapter layer call sites (~520):** Replacing `has_*_access()` calls requires careful review. Some may have custom logic not captured by RBAC. **Risk:** Permission regression if custom logic is lost. Audit before deletion.
 
-7. **E-Commerce Cashfree credentials:** Phase 6 requires Cashfree API keys. Obtain from finance team before implementation.
+7. **Frontend coordination:** Login response shape change requires frontend update (`kteam-fe-chief`). Coordinate before Phase 8 (legacy cleanup). **Risk:** Frontend breakage if deployed without frontend update.
+
+8. **MongoDB connection:** Migration requires MongoDB running at `mongodb://127.0.0.1:27017`. Verify connection before execution.
+
+9. **E-Commerce Cashfree credentials:** Phase 6 requires Cashfree API keys. Obtain from finance team before implementation.
 
 ---
 
