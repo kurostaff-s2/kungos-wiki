@@ -28,6 +28,19 @@
 - **Functions remaining:** 6
 - **Tests passing:** 157/157 ✅
 
+### domains/teams/ Cleanup (2026-06-27 16:30 UTC)
+- **`removetoken`** moved from `domains/teams/services.py` to `domains/shared/services.py` (not HR/payroll/attendance related)
+- **`domains/teams/`** now contains ONLY HR/payroll/attendance related functions:
+  - `emp_att_filters` - HR attendance filters
+  - `getting_attendance_data` - HR attendance data
+  - `getemployees` - HR employee management
+  - `dashboard_filters` - HR dashboard filters
+  - `EmployeeViewSet` - HR employee viewset
+  - `UsersViewSet` - HR users viewset
+  - `emp_dashboard` - HR employee dashboard
+  - `empupdate` - HR employee update
+  - `employees` - HR employees API
+
 ### Target State
 ```
 domains/teams/          # HR/Attendance/Payroll/Careers ONLY
