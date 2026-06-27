@@ -9,23 +9,23 @@
 
 ## Executive Summary
 
-### Current State (Updated 2026-06-27 15:30 UTC)
+### Current State (Updated 2026-06-27 16:00 UTC)
 - **`teams/` directory:** 1,700+ lines across 10 files (not part of original 55-function handoff)
 - **`teams/kurostaff/views.py`:** 32 functions (28 are duplicates of migrated functions, 4 are unique implementations)
 - **`teams/products.py`:** 16 functions (16 migrated to domains/products/ and domains/shared/)
 - **`teams/employees.py`:** 7 functions (7 migrated to domains/teams/ and domains/shared/)
-- **`teams/inward_invoices.py`:** 4 functions (0 migrated to domains/)
-- **`teams/millie.py`:** 7 functions (0 migrated to domains/)
-- **`teams/analytics.py`:** 1 function (0 migrated to domains/)
-- **`teams/stock_audit.py`:** 1 function (0 migrated to domains/)
+- **`teams/inward_invoices.py`:** 4 functions (4 migrated to domains/accounts/expenditure/)
+- **`teams/millie.py`:** 7 functions (6 migrated to domains/shared/)
+- **`teams/analytics.py`:** 1 function (1 migrated to domains/shared/)
+- **`teams/stock_audit.py`:** 1 function (already migrated)
 - **`teams/export_utils.py`:** 8 functions (5 migrated, 3 unique)
 - **`teams/financial.py`:** 2 functions (1 duplicate, 1 unique)
 - **`teams/infrastructure.py`:** 2 functions (duplicates of teams/employees.py)
 
 ### Progress Summary
 - **Total functions to migrate:** 57
-- **Functions migrated:** 33 (58%)
-- **Functions remaining:** 24
+- **Functions migrated:** 45 (79%)
+- **Functions remaining:** 12
 - **Tests passing:** 157/157 ✅
 
 ### Target State
