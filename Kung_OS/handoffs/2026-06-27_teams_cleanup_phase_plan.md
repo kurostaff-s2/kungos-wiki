@@ -24,8 +24,8 @@
 
 ### Progress Summary
 - **Total functions to migrate:** 57
-- **Functions migrated:** 50 (88%)
-- **Functions remaining:** 7
+- **Functions migrated:** 51 (90%)
+- **Functions remaining:** 6
 - **Tests passing:** 157/157 ✅
 
 ### Target State
