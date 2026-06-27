@@ -169,4 +169,45 @@ To implement this foolproof architecture under the Board's vision, we recommend 
 
 ---
 
+## 6. Known Gap: Domain Migration (2026-06-27)
+
+**Status:** In Progress  
+**Owner:** Chief Architect
+
+### Gap Description
+
+~8,000 lines of business logic currently reside in `teams/` (legacy holding pattern) instead of proper domain modules. This violates the domain architecture principle: "Cross-cutting concerns live in `plat/`. Domain logic lives in `domains/<name>/`."
+
+### Affected Files
+
+| File | Lines | Target Domain |
+|------|-------|---------------|
+| `teams/financial.py` | 1824 | `domains/accounts/` |
+| `teams/inward_invoices.py` | 1517 | `domains/accounts/` |
+| `teams/outward_invoices.py` | 607 | `domains/accounts/` |
+| `teams/estimates.py` | 267 | `domains/orders/` |
+| `teams/stock_audit.py` | 89 | `domains/inventory/` |
+| `teams/kurostaff/views.py` | 1828 | Scattered |
+| `teams/products.py` | 1516 | `domains/products/` |
+| `teams/employees.py` | 275 | `domains/teams/` |
+
+### Resolution
+
+See `domain_architecture.md` for the target domain structure and `handoffs/2026-06-27_domain_migration_phase_plan.md` for the migration plan.
+
+**Migration phases:**
+1. Accounts: Sales (10 functions, 2-3 hrs)
+2. Accounts: Expenditure (18 functions, 4-5 hrs)
+3. Accounts: Tax (5 functions, 1-2 hrs)
+4. Accounts: Financials (9 functions, 2-3 hrs)
+5. Orders: Estimates (1 function, 30 min)
+6. Inventory: Stock Operations (5 functions, 2-3 hrs)
+7. Inventory: Purchase Orders (3 functions, 1-2 hrs)
+8. Inventory: Assets & Indents (4 functions, 1-2 hrs)
+9. Cleanup (2 hrs)
+
+**Total:** 55 functions, 16-22 hours
+
+---
+
 *This audit document serves as the formal reconciliation of the architectural guidelines for the KungOS ecosystem. Any departures must be logged in `kungos-log.md`.*

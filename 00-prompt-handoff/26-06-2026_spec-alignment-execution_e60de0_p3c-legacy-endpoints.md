@@ -90,3 +90,20 @@ Create `tests/test_legacy_endpoint_removal.py`:
 - [ ] All phase-specific tests pass
 - [ ] No regression in existing tests
 - [ ] Files committed
+
+## Consistency Rules
+
+**This phase defers to:**
+- Wire shapes: `endpoint_contract_spec.md`
+- Migration ordering: `migration_spec.md`
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes beyond what the spec allows
+- Migration steps beyond what the spec defines
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
+

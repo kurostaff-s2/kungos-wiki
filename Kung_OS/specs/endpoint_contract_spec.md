@@ -43,7 +43,7 @@
 
 | Namespace | Domain | Package | Description |
 |---|---|---|---|
-| `/auth/` | Identity | `users/` | Authentication, OTP, session management |
+| `/auth/` | Authentication | `users/` | Login, OTP, session management |
 | `/users/` | Identity | `users/` | Identity CRUD, lookup, extensions |
 | `/tenant/` | Multi-tenancy | `tenant/` | BG, division, branch management |
 | `/rbac/` | RBAC | `users/` | Roles, permissions, assignments |
@@ -88,7 +88,7 @@ urlpatterns = [
         path('tournaments/', include('domains/tournaments/urls')),
 
         # Admin (cross-domain)
-        path('admin/', include('admin.urls')),
+        path('admin/', include('admin.urls'))
     ])),
 ]
 ```

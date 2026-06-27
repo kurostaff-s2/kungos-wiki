@@ -72,9 +72,13 @@ Read `domains/cafe_arcade/models.py` and verify:
 ```python
 class WalkInSession(models.Model):
     session_id = models.CharField(max_length=50, primary_key=True)
-    identity_id = models.CharField(max_length=20, db_index=True)  # FK to Identity
+    identity_id = models.ForeignKey(
+        'users.Identity',
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
     station_id = models.CharField(max_length=50)
-    bg_code = models.CharField(max_length=10)
+    bg_code = models.CharField(max_length=10, db_index=True)
     start_time = models.DateTimeField()
     end_time = models.DateTimeField(null=True)
     status = models.CharField(max_length=20, default='active')
@@ -164,3 +168,20 @@ Create `tests/test_cafe_schema.py`:
 - Phase 4C (Legacy cleanup) depends on this phase — `caf_platform_users` must be dropped first.
 - Phase 2A (RBAC FK) is independent — can run in parallel.
 - After this phase, cafe tables use `identity_id` consistently.
+
+## Consistency Rules
+
+**This phase defers to:**
+- Migration ordering: `migration_spec.md` §4 (M4: Cafe Schema Migrations)
+- PostgreSQL schema: `postgresql_schema.md`
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes (Phase 2B handles login response)
+- Mongo field names (Phase 1B handles field rename)
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
+

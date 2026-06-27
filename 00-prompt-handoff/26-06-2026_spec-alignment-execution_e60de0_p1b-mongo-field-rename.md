@@ -305,3 +305,19 @@ Create `tests/test_mongo_field_rename.py`:
 2. **Division field ambiguity:** `division` is a common word. Only replace in MongoDB document context (not Django model fields, URL parameters, or variable names).
 
 3. **Data migration atomicity:** MongoDB `update_many` is atomic per document but not across the collection. If migration is interrupted, some documents may have new names and others old. **Mitigation:** Run migration during low-traffic window. Use backward compat helper during transition.
+
+## Consistency Rules
+
+**This phase defers to:**
+- Migration ordering & data transformation: `migration_spec.md` §3 (M3: MongoDB Field Rename)
+- Canonical naming: `CANONICAL_NAMING.md` (`bg_code`, `div_code`, `branch_code`)
+
+**This phase does NOT redefine:**
+- Response shapes (Phase 2B handles login response)
+- PostgreSQL schema (Phase 4A handles orders migration)
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
+

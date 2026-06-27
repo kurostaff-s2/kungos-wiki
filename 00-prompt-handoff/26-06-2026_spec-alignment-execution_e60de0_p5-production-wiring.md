@@ -60,9 +60,9 @@ pytest tests/ -v --tb=short
 ### Step 2: Verify All Spec Endpoints
 
 ```bash
-# Auth endpoints
-curl http://localhost:8000/api/v1/users/auth/login/
-curl http://localhost:8000/api/v1/users/auth/refresh/
+# Auth endpoints (spec §4.1: auth under /api/v1/auth/ namespace)
+curl http://localhost:8000/api/v1/auth/login/
+curl http://localhost:8000/api/v1/auth/refresh/
 
 # User endpoints
 curl http://localhost:8000/api/v1/users/me/
@@ -85,32 +85,30 @@ curl http://localhost:8000/api/v1/cafe/wallet/
 curl http://localhost:8000/api/v1/eshop/products/
 ```
 
-### Step 3: Verify Login Response Shape
+### Step 3: Verify Login Response Shape (Spec §4.2)
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/users/auth/login/ \
+curl -X POST http://localhost:8000/api/v1/auth/login/ \
   -H "Content-Type: application/json" \
   -d '{"phone": "+919876543210", "password": "test"}'
 ```
 
-**Expected response:**
+**Expected response (verbatim from endpoint contract spec §4.2):**
 ```json
 {
     "status": "success",
     "data": {
-        "identity_id": "ID001",
-        "phone": "+919876543210",
-        "bg_code": "KURO0001",
-        "active_div_code": "DIV001",
-        "active_branch_code": "BRANCH001",
-        "token": "eyJhbG...",
-        "refresh_token": "dGhpcyBpcy...",
+        "access_token": "eyJhbG...",
         "token_type": "Bearer",
         "expires_in": 3600,
-        "permissions": ["admin.full", "orders.read"],
-        "roles": ["branch_supervisor"],
-        "profile": {
-            "name": "John Doe",
+        "user": {
+            "identity_id": "ID000001",
+            "phone": "+919876543210",
+            "bg_code": "KURO0001",
+            "active_div_code": "KURO0001_001",
+            "active_branch_code": "BRANCH001",
+            "roles": ["branch_supervisor"],
+            "permissions": ["orders.read"],
             "email": "john@example.com"
         }
     },
@@ -121,14 +119,20 @@ curl -X POST http://localhost:8000/api/v1/users/auth/login/ \
 }
 ```
 
+**Field placement rules:**
+- `access_token`, `token_type`, `expires_in` → top-level `data`
+- `user.identity_id`, `user.phone`, `user.bg_code`, `user.active_div_code`, `user.active_branch_code`, `user.roles`, `user.permissions`, `user.email` → nested under `data.user`
+- `bg_code` = accessible tenant scope; `active_div_code`/`active_branch_code` = active session context (single values, not arrays)
+
+
 ### Step 4: Verify Tenant Isolation
 
 ```python
 # Test that tenant A cannot access tenant B's data
 def test_tenant_isolation():
-    # Login as tenant A user
-    response_a = client.post('/api/v1/users/auth/login/', data=tenant_a_credentials)
-    token_a = response_a.data['data']['token']
+    # Login as tenant A user (spec §4.2: /api/v1/auth/login)
+    response_a = client.post('/api/v1/auth/login/', data=tenant_a_credentials)
+    token_a = response_a.data['data']['access_token']
     
     # Try to access tenant B's data
     response = client.get('/api/v1/orders/', HTTP_AUTHORIZATION=f'Bearer {token_a}')
@@ -187,6 +191,64 @@ Update the following documents to reflect completed alignment:
 - [ ] Health check endpoint reports all components ok
 - [ ] Documentation updated
 
+## Stronger Migration Verification
+
+### Per-Source Row Reconciliation
+
+For each data migration phase, verify row counts match:
+
+```python
+def verify_row_counts(source_db, target_db, source_collections, target_collections):
+    for src_coll, tgt_coll in zip(source_collections, target_collections):
+        src_count = source_db[src_coll].count_documents({})
+        tgt_count = target_db[tgt_coll].count_documents({})
+        assert src_count == tgt_count, f"Row count mismatch: {src_coll}={src_count}, {tgt_coll}={tgt_count}"
+```
+
+### Audit Tables
+
+Create audit tables to track migration progress:
+
+```python
+class MigrationAudit(models.Model):
+    phase = models.CharField(max_length=50)
+    source = models.CharField(max_length=100)
+    target = models.CharField(max_length=100)
+    row_count = models.IntegerField()
+    verified_at = models.DateTimeField(auto_now_add=True)
+    verified_by = models.ForeignKey('users.Identity', on_delete=models.CASCADE)
+```
+
+### Sampled Record Diffs
+
+For each migration, sample 100 records and verify field-by-field match:
+
+```python
+def verify_sampled_records(source_db, target_db, collection_name, sample_size=100):
+    import random
+    src_docs = list(source_db[collection_name].find({}))
+    sample = random.sample(src_docs, min(sample_size, len(src_docs)))
+    
+    for doc in sample:
+        src_id = doc['_id']
+        tgt_doc = target_db[collection_name].find_one({'_id': src_id})
+        
+        # Verify canonical fields
+        assert doc.get('bg_code') == tgt_doc.get('bg_code'), f"bg_code mismatch for {src_id}"
+        assert doc.get('div_code') == tgt_doc.get('div_code'), f"div_code mismatch for {src_id}"
+        assert doc.get('branch_code') == tgt_doc.get('branch_code'), f"branch_code mismatch for {src_id}"
+```
+
+### Alerting/Observability Gates
+
+Configure monitoring alerts for rollout day:
+
+- **Error rate:** Alert if error rate > 1% for any endpoint
+- **Latency:** Alert if p99 latency > 500ms for any endpoint
+- **Row count mismatch:** Alert if any migration has row count mismatch > 0
+- **FK constraint violations:** Alert on any FK constraint violation
+- **Tenant isolation failures:** Alert on any cross-tenant data access
+
 ## Completion Gate
 
 - [ ] All post-wiring tests pass
@@ -195,3 +257,23 @@ Update the following documents to reflect completed alignment:
 - [ ] Documentation updated
 - [ ] Files committed
 - [ ] Handoff marked `complete`
+- [ ] Per-source row reconciliation verified
+- [ ] Audit tables created and populated
+- [ ] Sampled record diffs pass (100 records per collection)
+- [ ] Monitoring alerts configured and tested
+
+## Consistency Rules
+
+**This phase defers to:**
+- Wire shapes: `endpoint_contract_spec.md` (all endpoints)
+- Migration ordering: `migration_spec.md` (all phases)
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes (use spec verbatim)
+- Migration steps (use spec validation gates)
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._

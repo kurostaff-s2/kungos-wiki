@@ -74,14 +74,32 @@ Health check endpoints.
 | `urls.py` | Health check URL routing |
 | `views.py` | Health check views (database, MongoDB, MeiliSearch) |
 
+### PDF Export (`plat/pdf/`)
+
+Cross-domain PDF generation utilities. Consolidates PDF export logic that was previously duplicated across `teams/` modules.
+
+| File | Purpose |
+|------|---------|
+| `export.py` | PDF export functions (`exporttopdf`, `fetch_resources`, `add_page_numbers`) |
+
+**Functions:**
+
+- `exporttopdf(template_path, context, filename, add_page_nums=True)` — Renders a Django template to PDF with optional page numbers
+- `fetch_resources(uri, rel)` — Resolves static/media URIs to filesystem paths for xhtml2pdf
+- `add_page_numbers(input_pdf)` — Adds page number overlay to PDF
+
+**Pattern:** Template → HTML → xhtml2pdf → HttpResponse with PDF content.
+
+**Why in `plat/`:** PDF export is used by 10+ files across `teams/` (financial, outward_invoices, inward_invoices, estimates, etc.). It is a cross-cutting concern, not domain-specific logic. Consolidating in `plat/pdf/` eliminates duplication and ensures consistent behavior.
+
 ### Shared (`plat/shared/`)
 
-Utility functions used across domains.
+Pure utility functions with no side effects. Used across domains.
 
 | File | Purpose |
 |------|---------|
 | `encoding.py` | Encoding utilities |
-| `helpers.py` | General helpers |
+| `helpers.py` | General helpers (includes `num2words`) |
 | `validation.py` | Input validation utilities |
 
 ### Management (`plat/management/`)
@@ -106,7 +124,11 @@ Singleton pattern: `get_collection()` uses a singleton `get_mongo_client()`. All
 
 ### Why Platform Primitives, Not Domain Responsibility?
 
-Cross-cutting concerns (outbox, events, observability, tenant) are infrastructure. If each domain implements its own version, you get inconsistency, bugs, and maintenance overhead. Platform primitives enforce a single implementation.
+Cross-cutting concerns (outbox, events, observability, tenant, PDF export) are infrastructure. If each domain implements its own version, you get inconsistency, bugs, and maintenance overhead. Platform primitives enforce a single implementation.
+
+### Why `plat/pdf/`, Not `plat/shared/`?
+
+`plat/shared/` is for pure functions only — no side effects, no business logic. PDF export has side effects (file I/O, Django templates, xhtml2pdf rendering), so it belongs in `plat/pdf/` as a dedicated module, not in `plat/shared/`.
 
 ### Why Outbox Pattern, Not Direct Dual-Write?
 
@@ -122,4 +144,4 @@ Correlation IDs must be generated at the request boundary (middleware), not in i
 
 ---
 
-> **Implementation state:** All platform primitives are implemented and wired. See `operations/` for deployment and monitoring tracking.
+> **Implementation state:** All platform primitives are implemented and wired, including the PDF export module (added 2026-06-27). Domains are being migrated from `teams/` — see `domain_architecture.md` for the migration plan.

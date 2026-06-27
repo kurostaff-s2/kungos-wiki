@@ -197,3 +197,19 @@ Create `tests/test_rbac_urls.py`:
 - Phase 3A (Response envelope) is independent — can run in parallel.
 - Phase 3C (Legacy endpoint removal) depends on this phase — /rbac/ endpoints must be available before removing legacy endpoints.
 - After this phase, RBAC operations are accessible via standard REST endpoints.
+
+## Consistency Rules
+
+**This phase defers to:**
+- Wire shapes: `endpoint_contract_spec.md`
+- Migration ordering: `migration_spec.md`
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes beyond what the spec allows
+- Migration steps beyond what the spec defines
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._

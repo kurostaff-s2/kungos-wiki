@@ -85,3 +85,18 @@ class Migration(migrations.Migration):
 - [ ] All phase-specific tests pass
 - [ ] No regression in existing tests
 - [ ] Files committed
+
+## Consistency Rules
+
+**This phase defers to:**
+- Migration ordering: `migration_spec.md` §7 (M7: Legacy Cleanup)
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Migration steps beyond what the spec defines
+- Response shapes (Phase 3A handles response envelope)
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._

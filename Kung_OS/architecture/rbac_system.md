@@ -18,11 +18,22 @@ Permissions are normalized, tenant-scoped, and resolved through a cascading engi
 `rbac_permissions` — source of truth for all permission codes.
 
 ```
-perm_code  — unique identifier, format: {module}.{resource}
-module     — grouping: invoices, orders, analytics, hr, admin, etc.
+perm_code  — unique identifier, format: {domain}.{module}.{resource}.{action}
+domain     — bounded context: accounts, orders, inventory, vendors, teams, etc.
+module     — sub-domain: sales, expenditure, tax, financials, stock, etc.
+resource   — business entity: invoices, payments, purchase_orders, etc.
+action     — verb: view, edit, approve, export, etc.
+
 description — human-readable label
 is_active  — False = deprecated (kept for audit)
 ```
+
+**Examples:**
+- `accounts.sales.view` — View sales invoices
+- `accounts.expenditure.payments.edit` — Edit payment vouchers
+- `inventory.stock.edit` — Edit stock register
+- `orders.estimates.view` — View estimates
+- `vendors.manage` — Manage vendors
 
 ### Permission Levels
 

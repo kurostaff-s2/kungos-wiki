@@ -63,8 +63,21 @@ class ResponseEnvelopeMiddleware(MiddlewareMixin):
         except (json.JSONDecodeError, ValueError):
             return response
         
-        # Skip already-wrapped responses
-        if isinstance(data, dict) and data.get('status') in ('success', 'error'):
+        # Ensure meta is present (add if missing, even if already wrapped)
+        if not isinstance(data, dict):
+            return response
+        
+        # If response already has meta, leave as-is
+        if 'meta' in data:
+            return response
+        
+        # Add meta to already-wrapped responses (Phase 2B, etc.)
+        if 'status' in data and 'data' in data:
+            data['meta'] = {
+                'request_id': str(uuid.uuid4()),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            response.content = json.dumps(data)
             return response
         
         # Wrap in envelope
@@ -184,3 +197,20 @@ Create `tests/test_response_envelope.py`:
 - [ ] All phase-specific tests pass
 - [ ] No regression in existing tests
 - [ ] Files committed
+
+## Consistency Rules
+
+**This phase defers to:**
+- Wire shapes: `endpoint_contract_spec.md`
+- Migration ordering: `migration_spec.md`
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes beyond what the spec allows
+- Migration steps beyond what the spec defines
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
+

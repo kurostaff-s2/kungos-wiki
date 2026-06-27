@@ -17,6 +17,17 @@ This expanded handoff resolves all inconsistencies identified in the spec review
 
 ---
 
+## Tenant Context Rule (Applies to All Phases)
+
+**Tenant context is set at the middleware layer, not per-request.** `TenantContextMiddleware` populates `request.bg_code`, `request.div_codes`, `request.branch_codes`, and `request.scope` from the JWT on every authenticated request. Webhook endpoints (HMAC-authenticated) have no `request.user`; they resolve tenant context from the domain entity being verified.
+
+**Rule:** Derive `bg_code` from one of:
+1. `request.bg_code` — set by `TenantContextMiddleware` on authenticated requests
+2. The resolved domain entity (e.g. `session.bg_code`, `order.bg_code`) — for webhooks and cross-store operations
+3. **Never** `request.user.bg_code` — the user object may not exist (HMAC endpoints, walk-ins, service accounts)
+
+---
+
 ## Phase 1: Core Spec Alignment (3-5 days)
 
 *Original handoff tasks — no changes required.*
@@ -57,167 +68,91 @@ This expanded handoff resolves all inconsistencies identified in the spec review
 
 ## Phase 2: Foundational Infrastructure (5-7 days)
 
-### Task 6: Implement Outbox Pattern (2 days)
+### Task 6: Adopt and Complete Existing Outbox Primitive (1 day)
 
 **Priority:** CRITICAL (Transaction integrity)
-**Effort:** 2 days
+**Effort:** 1 day
 **Dependencies:** Phase 1 complete
 
-#### Current State
-- Direct MongoDB writes from PostgreSQL views
-- Split-brain risk: PG succeeds, MongoDB fails (or vice versa)
+#### Context
 
-#### Target State
-- All domain writes use `plat/outbox/` primitive
-- Outbox events: `order.placed`, `order.payment_verified`, `fnb.session_billing`
+`plat/outbox/` is a **Constitution-level platform primitive** (`architecture/platform_primitives.md`). It is already implemented with:
+
+| File | Purpose |
+|------|---------|
+| `models.py` | Outbox entry model (action, payload, status, retry_count) |
+| `service.py` | Outbox service API (create, process, retry) |
+| `worker.py` | Background worker that processes pending outbox entries |
+
+The PostgreSQL table `platform_outbox_events` (11 cols, PK `event_id` uuid) is **LIVE and stable** (`postgresql_schema.md` §8). This task extends the primitive with domain event handlers — it does **not** create a parallel implementation.
+
+**Do not:** Create new files in `plat/outbox/` that duplicate `models.py`, `service.py`, or `worker.py`. Do not create a table named `outbox_events`.
 
 #### Implementation Steps
 
-**Step 1: Create Outbox Service (`plat/outbox/service.py`)**
+**Step 1: Register Domain Outbox Event Handlers**
+
+Extend `plat/outbox/worker.py` to dispatch the three domain event types. Add handlers in their respective domain packages:
+
+**File:** `domains/cafe_fnb/outbox_handlers.py` (NEW)
 
 ```python
-"""Outbox pattern service for durable event publishing."""
-from django.db import transaction
-from django.utils import timezone
-import json
+"""Outbox event handler for F&B session billing."""
+from plat.tenant.collection import TenantCollection
 
-class OutboxEvent:
-    def __init__(self, event_type: str, payload: dict, bg_code: str):
-        self.event_type = event_type
-        self.payload = payload
-        self.bg_code = bg_code
-        self.created_at = timezone.now()
 
-class OutboxService:
-    """Publish events to outbox table for reliable processing."""
+def handle_fnb_session_billing(event: dict):
+    """Write final session charges to MongoDB via TenantCollection."""
+    session_id = event['session_id']
+    total_charges = event['total_charges']
+    bg_code = event['bg_code']
     
-    @staticmethod
-    def publish(event_type: str, payload: dict, bg_code: str):
-        """Publish event to outbox table."""
-        event = OutboxEvent(event_type, payload, bg_code)
-        
-        # Insert into outbox table
-        from plat.outbox.models import OutboxEvent as OutboxEventModel
-        OutboxEventModel.objects.create(
-            event_type=event.event_type,
-            payload=json.dumps(event.payload),
-            bg_code=event.bg_code,
-            created_at=event.created_at,
-        )
-    
-    @staticmethod
-    def publish_on_commit(event_type: str, payload: dict, bg_code: str):
-        """Publish event after successful PG commit."""
-        transaction.on_commit(
-            lambda: OutboxService.publish(event_type, payload, bg_code)
-        )
+    collection = TenantCollection.get_collection('caf_platform_sessions')
+    collection.update_one(
+        {'_id': session_id, 'bg_code': bg_code},
+        {'$set': {
+            'total_charges': total_charges,
+            'status': 'ended',
+        }}
+    )
 ```
 
-**Step 2: Create Outbox Model (`plat/outbox/models.py`)**
+**File:** `domains/eshop/outbox_handlers.py` (NEW)
 
 ```python
-from django.db import models
-from django.utils import timezone
+"""Outbox event handlers for EShop order lifecycle."""
+from users.models import Identity, Customer
 
-class OutboxEvent(models.Model):
-    event_type = models.CharField(max_length=100, db_index=True)
-    payload = models.JSONField()
-    bg_code = models.CharField(max_length=10, db_index=True)
-    created_at = models.DateTimeField(default=timezone.now, db_index=True)
-    processed_at = models.DateTimeField(null=True, blank=True)
-    error_message = models.TextField(null=True, blank=True)
+
+def handle_order_placed(event: dict):
+    """Update customer order metrics after order creation."""
+    customer_id = event['customer_id']
+    total_amount = event['total_amount']
     
-    class Meta:
-        db_table = 'outbox_events'
-        indexes = [
-            models.Index(fields=['event_type', 'created_at']),
-            models.Index(fields=['bg_code', 'created_at']),
-        ]
+    try:
+        identity = Identity.objects.get(identity_id=customer_id)
+        if hasattr(identity, 'customer_profile'):
+            customer = identity.customer_profile
+            customer.order_count += 1
+            customer.total_spent = (customer.total_spent or 0) + total_amount
+            customer.save(
+                update_fields=['order_count', 'total_spent']
+            )
+    except Identity.DoesNotExist:
+        pass  # Walk-in order, no customer extension yet
+
+
+def handle_order_payment_verified(event: dict):
+    """Trigger order conversion pipeline after payment verification."""
+    order_id = event['order_id']
+    # Integrate with existing orderconversion pipeline
+    # See ecommerce_spec.md for pipeline details
+    pass
 ```
 
-**Step 3: Create Outbox Processor (`plat/outbox/processor.py`)**
+**Step 2: Wire Outbox Publishing in Domain Viewsets**
 
-```python
-"""Background processor for outbox events."""
-import logging
-from django.utils import timezone
-from datetime import timedelta
-
-logger = logging.getLogger(__name__)
-
-class OutboxProcessor:
-    """Process outbox events in background."""
-    
-    @staticmethod
-    def process_pending():
-        """Process all unprocessed outbox events."""
-        cutoff = timezone.now() - timedelta(minutes=5)
-        pending = OutboxEvent.objects.filter(
-            processed_at__isnull=True,
-            created_at__lt=cutoff
-        )
-        
-        for event in pending:
-            try:
-                OutboxProcessor._process_event(event)
-            except Exception as e:
-                logger.error(f"Outbox event {event.id} failed: {e}")
-                event.error_message = str(e)
-                event.save()
-    
-    @staticmethod
-    def _process_event(event: OutboxEvent):
-        """Process a single outbox event."""
-        if event.event_type == 'order.placed':
-            OutboxProcessor._handle_order_placed(event)
-        elif event.event_type == 'order.payment_verified':
-            OutboxProcessor._handle_order_payment_verified(event)
-        elif event.event_type == 'fnb.session_billing':
-            OutboxProcessor._handle_fnb_session_billing(event)
-        else:
-            logger.warning(f"Unknown outbox event type: {event.event_type}")
-        
-        event.processed_at = timezone.now()
-        event.save()
-    
-    @staticmethod
-    def _handle_order_placed(event: OutboxEvent):
-        """Handle order.placed event."""
-        # Update customer metrics via outbox handler
-        from identity.outbox_handlers import update_customer_order_metrics
-        update_customer_order_metrics(event.payload)
-    
-    @staticmethod
-    def _handle_order_payment_verified(event: OutboxEvent):
-        """Handle order.payment_verified event."""
-        # Trigger order conversion pipeline
-        from eshop.outbox_handlers import process_order_conversion
-        process_order_conversion(event.payload)
-    
-    @staticmethod
-    def _handle_fnb_session_billing(event: OutboxEvent):
-        """Handle fnb.session_billing event."""
-        # Update F&B order in MongoDB
-        from cafe_fnb.outbox_handlers import update_session_billing
-        update_session_billing(event.payload)
-```
-
-**Step 4: Create Outbox Management Command (`plat/management/commands/process_outbox.py`)**
-
-```python
-from django.core.management.base import BaseCommand
-from plat.outbox.processor import OutboxProcessor
-
-class Command(BaseCommand):
-    help = 'Process pending outbox events'
-    
-    def handle(self, *args, **options):
-        self.stdout.write('Processing outbox events...')
-        OutboxProcessor.process_pending()
-        self.stdout.write(self.style.SUCCESS('Outbox processing complete'))
-```
-
-**Step 5: Update Domain Viewsets to Use Outbox**
+Replace direct MongoDB writes with `OutboxService.publish_on_commit()`. Derive tenant context from the **resolved domain entity** (not `request.user.bg_code`), because not all endpoints are user-authenticated.
 
 **File:** `domains/cafe_arcade/views.py` (session_end)
 
@@ -234,14 +169,16 @@ def end_session(request, session_id):
         session.save()
         
         # Queue F&B write in outbox (not direct Mongo call)
+        # Tenant context derived from the session entity itself,
+        # which is already scoped by RLS/TenantCollection.
         OutboxService.publish_on_commit(
             event_type='fnb.session_billing',
             payload={
                 'session_id': session.id,
                 'last_order_id': session.last_order_id,
                 'total_charges': session.total_charges,
+                'bg_code': session.bg_code,
             },
-            bg_code=request.user.bg_code
         )
 ```
 
@@ -252,10 +189,28 @@ from plat.outbox.service import OutboxService
 
 class CheckoutViewSet(viewsets.ViewSet):
     def create(self, request):
-        # Create order in PG
-        order = OrderCore.objects.create(...)
+        # Create order in PG (RLS enforces tenant scope)
+        order = OrderCore.objects.create(
+            orderid=generate_orderid(),
+            order_type='eshop',
+            status='pending',
+            total_amount=request.data['total_amount'],
+            customer=request.user.identity_id,
+            bg_code=request.bg_code,        # From TenantContextMiddleware
+            div_code=request.active_div_code,
+            billadd=request.data['billadd'],
+            products=request.data['products'],
+            channel='online',
+        )
+        
+        # Create eshop_detail
+        EshopDetail.objects.create(
+            order=order,
+            payment_option=request.data.get('payment_option', 'cashfree'),
+        )
         
         # Queue payment verification in outbox
+        # Tenant context from the order entity just created
         OutboxService.publish_on_commit(
             event_type='order.placed',
             payload={
@@ -263,8 +218,8 @@ class CheckoutViewSet(viewsets.ViewSet):
                 'orderid': order.orderid,
                 'customer_id': order.customer_id,
                 'total_amount': order.total_amount,
+                'bg_code': order.bg_code,
             },
-            bg_code=request.user.bg_code
         )
         
         return Response({'order_id': order.id}, status=201)
@@ -273,121 +228,276 @@ class CheckoutViewSet(viewsets.ViewSet):
 **File:** `domains/eshop/payment/views.py` (webhook)
 
 ```python
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import permissions
+import hmac
+import hashlib
+import base64
 from plat.outbox.service import OutboxService
 
-def cashfree_webhook(request):
-    # Verify HMAC signature
-    if not verify_cashfree_signature(...):
-        return Response({'error': 'Invalid signature'}, status=400)
+
+def verify_cashfree_signature(payload_string, signature, secret_key):
+    """Verify Cashfree webhook signature."""
+    computed = base64.b64encode(
+        hmac.new(
+            secret_key.encode('utf-8'),
+            payload_string.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+    ).decode('utf-8')
+    return hmac.compare_digest(computed, signature)
+
+
+class CashfreeWebhookView(APIView):
+    permission_classes = [permissions.AllowAny]
     
-    # Queue payment verification in outbox
-    OutboxService.publish_on_commit(
-        event_type='order.payment_verified',
-        payload={
-            'order_id': request.data['order_id'],
-            'payment_reference': request.data['payment_id'],
-        },
-        bg_code=request.user.bg_code
-    )
-    
-    return Response({'status': 'received'}, status=202)
+    def post(self, request):
+        # Verify HMAC signature
+        signature = request.headers.get('X-CF-SIGNATURE')
+        if not verify_cashfree_signature(
+            request.body.decode('utf-8'),
+            signature,
+            settings.CASHFREE_SECRET_KEY
+        ):
+            return Response({'error': 'Invalid signature'}, status=400)
+        
+        # Resolve tenant context from the order record, NOT request.user
+        # (this endpoint is HMAC-authenticated, not JWT-authenticated)
+        order = OrderCore.objects.get(orderid=request.data['order_id'])
+        
+        # Queue payment verification in outbox
+        OutboxService.publish_on_commit(
+            event_type='order.payment_verified',
+            payload={
+                'order_id': order.id,
+                'orderid': order.orderid,
+                'payment_reference': request.data['payment_id'],
+                'bg_code': order.bg_code,
+            },
+        )
+        
+        return Response({'status': 'received'}, status=202)
 ```
+
+**Tenant context rule:** Derive `bg_code` from one of:
+1. `request.bg_code` — set by `TenantContextMiddleware` on authenticated requests
+2. The resolved domain entity (e.g. `session.bg_code`, `order.bg_code`) — for webhooks and cross-store operations
+3. Never `request.user.bg_code` — the user object may not exist (HMAC endpoints, walk-ins, service accounts)
 
 #### Verification
 
 ```bash
-# 1. Run migrations
-python manage.py makemigrations outbox
-python manage.py migrate outbox
-
-# 2. Test outbox publishing
-python manage.py shell -c "
-from plat.outbox.service import OutboxService
-OutboxService.publish('test.event', {'key': 'value'}, 'KURO0001')
-"
-
-# 3. Test outbox processing
-python manage.py process_outbox
-
-# 4. Verify outbox events created
+# 1. Verify existing outbox primitive is intact
 python manage.py shell -c "
 from plat.outbox.models import OutboxEvent
-print(f'Outbox events: {OutboxEvent.objects.count()}')
+from plat.outbox.service import OutboxService
+from plat.outbox.worker import OutboxWorker
+print('Outbox primitive: OK')
 "
+
+# 2. Verify platform_outbox_events table exists
+python manage.py shell -c "
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute(\"SELECT column_name FROM information_schema.columns WHERE table_name = 'platform_outbox_events'\")
+    cols = [row[0] for row in cursor.fetchall()]
+    print(f'platform_outbox_events columns: {cols}')
+"
+
+# 3. Test outbox publishing via domain viewset
+# (create an order via checkout endpoint, verify outbox event created)
+
+# 4. Test outbox processing
+python manage.py process_outbox
+
+# 5. Verify no duplicate outbox files
+find plat/outbox/ -type f | sort
+# Expected: models.py, service.py, worker.py, __init__.py
 ```
 
 ---
 
-### Task 7: Implement Tenant Isolation Verification (1 day)
+### Task 7: Prove Tenant Isolation by Behavior (1 day)
 
 **Priority:** CRITICAL (Security)
 **Effort:** 1 day
 **Dependencies:** Phase 1 complete
 
+#### Context
+
+Tenant isolation is enforced at two levels:
+- **PostgreSQL:** Row-Level Security (RLS) via session variables set by `TenantContextMiddleware`. The middleware sets `app.current_bg_code`, `app.current_division`, `app.current_branch`. Policies filter silently at the DB level.
+- **MongoDB:** `TenantCollection` wrapper injects `bg_code` into every query. Raw PyMongo calls bypass this layer.
+
+**SQL-substring checks are not proof of safety.** With RLS, the SQL text may not contain `bg_code` at all, yet isolation is still enforced. Real proof requires behavioral tests that set one tenant's session context and query another tenant's data.
+
 #### Implementation Steps
 
-**Step 1: Create Tenant Isolation Test Suite (`tests/test_tenant_isolation.py`)**
+**Step 1: Create Behavioral Tenant Isolation Test Suite (`tests/test_tenant_isolation.py`)**
 
 ```python
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.db import connection
 from users.models import Identity, CustomUser
 from tenant.models import BusinessGroup, Division
+from orders.models import OrderCore
+from plat.tenant.collection import TenantCollection
+from plat.tenant.rls import enable_rls, disable_rls
 
-class TenantIsolationTests(TestCase):
-    """Verify tenant isolation across all domains."""
+
+class PostgresTenantIsolationTests(TestCase):
+    """Prove PostgreSQL tenant isolation via RLS behavior."""
     
     def setUp(self):
         # Create two business groups
-        self.bg1 = BusinessGroup.objects.create(bg_code='BG0001', name='Test BG 1')
-        self.bg2 = BusinessGroup.objects.create(bg_code='BG0002', name='Test BG 2')
+        self.bg1 = BusinessGroup.objects.create(bg_code='BGTEST01', name='Test BG 1')
+        self.bg2 = BusinessGroup.objects.create(bg_code='BGTEST02', name='Test BG 2')
         
         # Create divisions
         self.div1 = Division.objects.create(
-            div_code='BG0001_001', bg_code='BG0001', name='Test Division 1'
+            div_code='BGTEST01_001', bg_code='BGTEST01', name='Test Division 1'
         )
         self.div2 = Division.objects.create(
-            div_code='BG0002_001', bg_code='BG0002', name='Test Division 2'
+            div_code='BGTEST02_001', bg_code='BGTEST02', name='Test Division 2'
         )
     
-    def test_mongo_tenant_isolation(self):
-        """Verify MongoDB queries are tenant-scoped."""
-        from plat.tenant.collection import TenantCollection
+    @override_settings(
+        DATABASES={'default': {...}}  # Use test database with RLS policies
+    )
+    def test_cross_tenant_data_invisible_under_rls(self):
+        """Prove: querying with BGTEST01's session vars returns zero BGTEST02 rows."""
+        # Create data in both tenants
+        order_bg1 = OrderCore.objects.create(
+            orderid='ISOTEST001',
+            order_type='eshop',
+            status='pending',
+            total_amount=100,
+            bg_code='BGTEST01',
+            div_code='BGTEST01_001',
+        )
+        order_bg2 = OrderCore.objects.create(
+            orderid='ISOTEST002',
+            order_type='eshop',
+            status='pending',
+            total_amount=200,
+            bg_code='BGTEST02',
+            div_code='BGTEST02_001',
+        )
         
-        # Query should auto-inject bg_code
-        collection = TenantCollection.get_collection('test_collection')
-        # Verify bg_code is in filter
-        self.assertIn('bg_code', collection._filters)
-    
-    def test_postgres_tenant_isolation(self):
-        """Verify PostgreSQL queries include bg_code filter."""
-        from orders.models import OrderCore
+        # Set RLS session variables to BGTEST01
+        with connection.cursor() as cursor:
+            cursor.execute("SET app.current_bg_code = 'BGTEST01'")
+            cursor.execute("SET app.current_division = 'BGTEST01_001'")
         
-        # Query should include bg_code
-        orders = OrderCore.objects.all()
-        # Verify SQL includes bg_code filter
-        sql = str(orders.query)
-        self.assertIn('bg_code', sql)
+        # Query all orders — RLS should filter to BGTEST01 only
+        results = list(OrderCore.objects.all())
+        result_ids = {o.id for o in results}
+        
+        self.assertIn(order_bg1.id, result_ids)
+        self.assertNotIn(order_bg2.id, result_ids)
     
-    def test_no_raw_pymongo_calls(self):
-        """Verify no raw PyMongo calls bypass tenant isolation."""
+    @override_settings(
+        DATABASES={'default': {...}}
+    )
+    def test_division_scope_filters_correctly(self):
+        """Prove: division-scoped user sees only their division's data."""
+        order_div1 = OrderCore.objects.create(
+            orderid='ISOTEST003',
+            order_type='eshop',
+            status='pending',
+            total_amount=100,
+            bg_code='BGTEST01',
+            div_code='BGTEST01_001',
+        )
+        order_div2 = OrderCore.objects.create(
+            orderid='ISOTEST004',
+            order_type='eshop',
+            status='pending',
+            total_amount=200,
+            bg_code='BGTEST01',
+            div_code='BGTEST01_002',
+        )
+        
+        # Set RLS to division scope (BGTEST01, only div1)
+        with connection.cursor() as cursor:
+            cursor.execute("SET app.current_bg_code = 'BGTEST01'")
+            cursor.execute("SET app.current_division = 'BGTEST01_001'")
+        
+        results = list(OrderCore.objects.all())
+        result_ids = {o.id for o in results}
+        
+        self.assertIn(order_div1.id, result_ids)
+        self.assertNotIn(order_div2.id, result_ids)
+    
+    def test_rls_policies_exist(self):
+        """Verify RLS policies are enabled on tenant-scoped tables."""
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT tablename, policyname 
+                FROM pg_policies 
+                WHERE policyname LIKE 'tenant_isolation%%'
+                ORDER BY tablename
+            """)
+            policies = cursor.fetchall()
+        
+        # At minimum: orders_core, users_identity, cafe sessions
+        policy_tables = {p[0] for p in policies}
+        self.assertIn('orders_core', policy_tables)
+        self.assertIn('users_identity', policy_tables)
+
+
+class MongoTenantIsolationTests(TestCase):
+    """Prove MongoDB tenant isolation via TenantCollection behavior."""
+    
+    def test_tenant_collection_injects_bg_code(self):
+        """Prove: TenantCollection auto-injects bg_code into query filters."""
+        from unittest.mock import patch
+        
+        with patch('plat.tenant.collection.get_mongo_client') as mock_client:
+            collection = TenantCollection.get_collection('test_collection')
+            # Verify bg_code is in the collection's filter
+            self.assertIn('bg_code', collection._filters)
+    
+    def test_tenant_collection_raises_without_context(self):
+        """Prove: TenantCollection raises TenantContextMissing without context."""
+        from plat.tenant.exceptions import TenantContextMissing
+        
+        with self.assertRaises(TenantContextMissing):
+            TenantCollection.get_collection('test_collection', bg_code=None)
+    
+    def test_no_raw_pymongo_in_domain_code(self):
+        """Verify no raw PyMongo calls bypass TenantCollection in domain code."""
         import subprocess
         result = subprocess.run(
-            ['grep', '-rn', 'pymongo.MongoClient', '--include=*.py', '.'],
+            ['grep', '-rn', 'MongoClient(', '--include=*.py', 
+             'domains/', 'eshop/', 'plat/'],
             capture_output=True, text=True
         )
-        # Should only find imports, not direct calls
-        lines = [l for l in result.stdout.split('\n') if l and 'import' not in l]
+        # Should only find imports or management commands
+        lines = [l for l in result.stdout.split('\n') 
+                 if l and 'import' not in l 
+                 and 'management/commands' not in l
+                 and '__pycache__' not in l]
         self.assertEqual(len(lines), 0, f"Raw PyMongo calls found: {lines}")
+
+
+class TenantCodeHardeningTests(TestCase):
+    """Verify no hardcoded tenant codes leak into production code."""
     
-    def test_no_hardcoded_tenant_codes(self):
-        """Verify no hardcoded tenant codes."""
+    def test_no_hardcoded_kuro_code(self):
+        """Verify no hardcoded 'KURO0001' in production code."""
         import subprocess
         result = subprocess.run(
-            ['grep', '-rn', "'KURO0001'", '--include=*.py', '.'],
+            ['grep', '-rn', "'KURO0001'", '--include=*.py',
+             'domains/', 'eshop/', 'users/', 'plat/'],
             capture_output=True, text=True
         )
         # Should only find in tests or migrations
-        lines = [l for l in result.stdout.split('\n') if l and 'test_' not in l and 'migration' not in l]
+        lines = [l for l in result.stdout.split('\n') 
+                 if l and 'test_' not in l 
+                 and 'migration' not in l
+                 and '__pycache__' not in l]
         self.assertEqual(len(lines), 0, f"Hardcoded tenant codes found: {lines}")
 ```
 
@@ -401,33 +511,79 @@ class TenantIsolationTests(TestCase):
     python manage.py test tests.test_tenant_isolation -v 2
 ```
 
-**Step 3: Update All Viewsets to Use TenantContext**
+**Step 3: Centralize Scope Resolution**
 
-**Pattern:**
+Create a scope resolver mixin that expands query filters based on the user's active scope (`full`, `division`, `branch`). This ensures views don't stop at BG-only filtering.
+
+**File:** `plat/tenant/scoping.py` (NEW)
+
 ```python
-# BEFORE
-def list_orders(request):
-    orders = OrderCore.objects.all()  # ❌ No tenant filter
+"""Centralized tenant scope resolution for query filtering."""
+from django.db.models import Q
 
-# AFTER
-def list_orders(request):
-    bg_code = request.user.bg_code  # From JWT/session
-    orders = OrderCore.objects.filter(bg_code=bg_code)  # ✅ Tenant filter
+
+class TenantScopingMixin:
+    """Mixin that applies tenant scope to querysets."""
+    
+    def get_tenant_scope(self, request):
+        """Extract scope from request (set by TenantContextMiddleware)."""
+        return {
+            'bg_code': request.bg_code,
+            'div_codes': getattr(request, 'div_codes', [request.active_div_code]),
+            'branch_codes': getattr(request, 'branch_codes', []),
+            'scope': getattr(request, 'scope', 'full'),
+        }
+    
+    def apply_tenant_scope(self, queryset, request):
+        """Apply tenant scope filter to queryset based on active scope."""
+        scope = self.get_tenant_scope(request)
+        bg_code = scope['bg_code']
+        
+        if scope['scope'] == 'full':
+            return queryset.filter(bg_code=bg_code)
+        
+        elif scope['scope'] == 'division':
+            div_codes = scope['div_codes']
+            if len(div_codes) == 1:
+                return queryset.filter(bg_code=bg_code, div_code=div_codes[0])
+            return queryset.filter(bg_code=bg_code, div_code__in=div_codes)
+        
+        elif scope['scope'] == 'branch':
+            div_code = scope['div_codes'][0] if scope['div_codes'] else None
+            branch_codes = scope['branch_codes']
+            if div_code and branch_codes:
+                return queryset.filter(
+                    bg_code=bg_code,
+                    div_code=div_code,
+                    branch_code__in=branch_codes,
+                )
+            return queryset.filter(bg_code=bg_code, div_code=div_code)
+        
+        return queryset.filter(bg_code=bg_code)
 ```
 
 #### Verification
 
 ```bash
-# 1. Run tenant isolation tests
+# 1. Run behavioral tenant isolation tests
 python manage.py test tests.test_tenant_isolation -v 2
 
-# 2. Verify no raw PyMongo calls
-grep -rn "pymongo.MongoClient" --include="*.py" | grep -v import | grep -v __pycache__
+# 2. Verify RLS policies are enabled
+python manage.py shell -c "
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute(\"SELECT tablename, policyname FROM pg_policies WHERE policyname LIKE 'tenant_isolation%%'\")
+    for row in cursor.fetchall():
+        print(f'{row[0]}: {row[1]}')
+"
 
-# 3. Verify no hardcoded tenant codes
-grep -rn "'KURO0001'" --include="*.py" | grep -v test_ | grep -v migration
+# 3. Verify no raw PyMongo calls in domain code
+grep -rn "MongoClient(" --include="*.py" domains/ eshop/ plat/ | grep -v import | grep -v management/commands | grep -v __pycache__
 
-# 4. Run full test suite
+# 4. Verify no hardcoded tenant codes
+grep -rn "'KURO0001'" --include="*.py" domains/ eshop/ users/ plat/ | grep -v test_ | grep -v migration | grep -v __pycache__
+
+# 5. Run full test suite
 python manage.py test -v 2
 ```
 
@@ -485,11 +641,12 @@ class RegisterViewSet(viewsets.ViewSet):
             return Response({'error': 'Invalid phone number'}, status=400)
         
         # Create identity with normalized phone
+        # Tenant context from middleware (request.bg_code, request.active_div_code)
         identity = Identity.objects.create(
             phone=phone,
             name=request.data['name'],
-            bg_code=request.data['bg_code'],
-            div_code=request.data['div_code'],
+            bg_code=request.bg_code,
+            div_code=request.active_div_code,
         )
         
         return Response({'identity_id': identity.identity_id}, status=201)
@@ -535,221 +692,305 @@ print(normalize_phone('9876543210'))  # Should print +919876543210
 
 ---
 
-### Task 9: Implement Identity Migration (2-3 days)
+### Task 9: Identity Migration (2-3 days)
 
 **Priority:** HIGH (Foundational)
 **Effort:** 2-3 days
 **Dependencies:** Task 6, 7, 8 complete
 
+#### Authority
+
+This task is governed by `migration_spec.md` §2 (M1: Identity Consolidation). The migration spec defines the full dedup flow, conflict resolution, cross-reference merges, and 13 validation gates. The management commands below are **illustrative examples** of the per-source migration pattern — they are not the complete migration design.
+
+**Critical constraints from the spec:**
+- Identity lookup key is **composite** `(bg_code, phone)` — NOT phone alone
+- Phone uniqueness is tenant-scoped: same number in different tenants is valid
+- **No hardcoded tenant fallbacks** — tenant values must come from the source records
+- Dedup requires name fuzzy matching (85% threshold) and conflict flagging
+- Migration must pass all 13 validation gates before deployment
+
 #### Implementation Steps
 
-**Step 1: Create Customer Identity Migration (`users/management/commands/migrate_customers.py`)**
+**Step 1: Create Unified Migration Command (`users/management/commands/migrate_identity.py`)**
+
+This single command handles all sources per `migration_spec.md` §2.1. It is a template — implement per-source migration logic following the pattern below.
 
 ```python
-from django.core.management.base import BaseCommand
-from users.models import Identity, Customer
+"""
+Unified identity migration command.
+
+Authority: migration_spec.md §2 (M1: Identity Consolidation)
+This command is a template. Implement per-source migration logic
+following the pattern below. The full design includes:
+- Dedup by normalized phone with name fuzzy matching (85% threshold)
+- Cross-reference merges (serviceRequest↔reb_users, players↔reb_users, etc.)
+- 13 validation gates (§2.3 of migration_spec.md)
+- Rollback strategy (§2.5 of migration_spec.md)
+"""
+from django.core.management.base import BaseCommand, CommandError
+from users.utils import normalize_phone
+
 
 class Command(BaseCommand):
-    help = 'Migrate customers from reb_users + misc to users_customer'
+    help = 'Migrate identities from MongoDB sources to users_identity + extensions'
+    
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--source', type=str, required=True,
+            choices=['reb_users', 'players', 'vendors', 'teams', 
+                     'service_requests', 'order_phones', 'employee_attendance'],
+            help='Source collection to migrate'
+        )
+        parser.add_argument(
+            '--validate', action='store_true',
+            help='Run validation gates after migration'
+        )
+        parser.add_argument(
+            '--dry-run', action='store_true',
+            help='Preview migration without writing'
+        )
     
     def handle(self, *args, **options):
-        self.stdout.write('Migrating customers...')
+        source = options['source']
+        dry_run = options.get('dry_run', False)
         
-        # Migrate from reb_users
+        self.stdout.write(f'Migrating from {source}...')
+        
+        # Get source collection via TenantCollection (per-tenant iteration)
         from plat.tenant.collection import TenantCollection
-        reb_users = TenantCollection.get_collection('reb_users')
+        source_collection = TenantCollection.get_collection(source)
         
-        for user in reb_users.find({}, {'_id': 0}):
-            phone = user.get('phone')
-            if not phone:
+        # Phase 1: Extract and normalize
+        records = []
+        for doc in source_collection.find({}, {'_id': 0}):
+            phone_raw = doc.get('phone') or doc.get('mobile')
+            if not phone_raw:
+                self.stdout.write(self.style.WARNING(
+                    f'Skipping record without phone: {doc.get("name", "unknown")}'
+                ))
                 continue
             
-            # Normalize phone
-            from users.utils import normalize_phone
-            phone = normalize_phone(phone)
+            phone = normalize_phone(phone_raw)
             
-            # Create or get identity
-            identity, created = Identity.objects.get_or_create(
-                phone=phone,
-                defaults={
-                    'name': user.get('name', ''),
-                    'bg_code': user.get('bg_code', 'KURO0001'),
-                    'div_code': user.get('div_code', 'KURO0001_001'),
-                }
-            )
+            # Tenant context from the source record itself — NEVER hardcode
+            bg_code = doc.get('bg_code')
+            div_code = doc.get('div_code')
             
-            # Create customer extension
-            Customer.objects.update_or_create(
-                identity=identity,
-                defaults={
-                    'registered': user.get('registered', False),
-                    'order_count': user.get('order_count', 0),
-                    'total_spent': user.get('total_spent', 0),
-                }
-            )
-        
-        self.stdout.write(self.style.SUCCESS('Customer migration complete'))
-```
-
-**Step 2: Create Player Identity Migration (`users/management/commands/migrate_players.py`)**
-
-```python
-from django.core.management.base import BaseCommand
-from users.models import Identity, Player
-
-class Command(BaseCommand):
-    help = 'Migrate players from MongoDB to users_player'
-    
-    def handle(self, *args, **options):
-        self.stdout.write('Migrating players...')
-        
-        from plat.tenant.collection import TenantCollection
-        players = TenantCollection.get_collection('players')
-        
-        for player in players.find({}, {'_id': 0}):
-            phone = player.get('phone')
-            if not phone:
+            if not bg_code:
+                self.stdout.write(self.style.ERROR(
+                    f'Skipping record without bg_code: {doc.get("name", "unknown")}'
+                ))
                 continue
             
-            # Normalize phone
-            from users.utils import normalize_phone
-            phone = normalize_phone(phone)
+            records.append({
+                'phone': phone,
+                'bg_code': bg_code,
+                'div_code': div_code,
+                'name': doc.get('name', ''),
+                'raw_doc': doc,
+            })
+        
+        # Phase 2: Lookup or create identity using COMPOSITE key (bg_code, phone)
+        from users.models import Identity
+        
+        for rec in records:
+            if dry_run:
+                self.stdout.write(f'  DRY RUN: {rec["phone"]} @ {rec["bg_code"]}')
+                continue
             
-            # Create or get identity
+            # COMPOSITE lookup: (bg_code, phone) — NOT phone alone
+            # This prevents cross-tenant identity collapse
             identity, created = Identity.objects.get_or_create(
-                phone=phone,
+                bg_code=rec['bg_code'],
+                phone=rec['phone'],
                 defaults={
-                    'name': player.get('name', ''),
-                    'bg_code': player.get('bg_code', 'KURO0001'),
-                    'div_code': player.get('div_code', 'KURO0001_001'),
+                    'name': rec['name'],
+                    'div_code': rec['div_code'],
                 }
             )
             
-            # Create player extension
-            Player.objects.update_or_create(
-                identity=identity,
-                defaults={
-                    'player_id': player.get('player_id'),
-                    'team_id': player.get('team_id'),
-                    'riot_id': player.get('riot_id'),
-                    'rank': player.get('rank'),
-                }
-            )
+            if created:
+                self.stdout.write(f'  Created: {identity.identity_id} ({rec["phone"]})')
+            else:
+                # Update name if empty (first creator wins for other fields)
+                if not identity.name or identity.name == '':
+                    identity.name = rec['name']
+                    identity.save(update_fields=['name'])
         
-        self.stdout.write(self.style.SUCCESS('Player migration complete'))
-```
-
-**Step 3: Create Organization Identity Migration (`users/management/commands/migrate_organizations.py`)**
-
-```python
-from django.core.management.base import BaseCommand
-from users.models import Organization, VendorProfile, TeamProfile
-
-class Command(BaseCommand):
-    help = 'Migrate organizations (teams + vendors) to users_organization'
+        # Phase 3: Create extension records (per-source)
+        if source == 'reb_users':
+            self._migrate_customer_extensions(records, dry_run)
+        elif source == 'players':
+            self._migrate_player_extensions(records, dry_run)
+        elif source in ('vendors', 'teams'):
+            self._migrate_org_extensions(records, source, dry_run)
+        
+        if not dry_run:
+            self.stdout.write(self.style.SUCCESS(f'{source} migration complete'))
+        else:
+            self.stdout.write(self.style.SUCCESS(f'{source} dry run complete'))
     
-    def handle(self, *args, **options):
-        self.stdout.write('Migrating organizations...')
+    def _migrate_customer_extensions(self, records, dry_run):
+        """Create users_customer extensions for migrated identities."""
+        from users.models import Identity, Customer
         
-        # Migrate vendors
-        from plat.tenant.collection import TenantCollection
-        vendors = TenantCollection.get_collection('vendors')
+        for rec in records:
+            if dry_run:
+                continue
+            try:
+                identity = Identity.objects.get(
+                    bg_code=rec['bg_code'], phone=rec['phone']
+                )
+                Customer.objects.update_or_create(
+                    identity=identity,
+                    defaults={
+                        'registered': rec['raw_doc'].get('registered', False),
+                        'order_count': rec['raw_doc'].get('order_count', 0),
+                        'total_spent': rec['raw_doc'].get('total_spent', 0),
+                    }
+                )
+            except Identity.DoesNotExist:
+                pass
+    
+    def _migrate_player_extensions(self, records, dry_run):
+        """Create users_player extensions for migrated identities."""
+        from users.models import Identity, Player
         
-        for vendor in vendors.find({}, {'_id': 0}):
+        for rec in records:
+            if dry_run:
+                continue
+            try:
+                identity = Identity.objects.get(
+                    bg_code=rec['bg_code'], phone=rec['phone']
+                )
+                Player.objects.update_or_create(
+                    identity=identity,
+                    defaults={
+                        'player_id': rec['raw_doc'].get('player_id'),
+                        'team_id': rec['raw_doc'].get('team_id'),
+                        'riot_id': rec['raw_doc'].get('riot_id'),
+                        'rank': rec['raw_doc'].get('rank'),
+                    }
+                )
+            except Identity.DoesNotExist:
+                pass
+    
+    def _migrate_org_extensions(self, records, source, dry_run):
+        """Create users_organization extensions for migrated orgs."""
+        from users.models import Organization, VendorProfile, TeamProfile
+        
+        for rec in records:
+            if dry_run:
+                continue
+            doc = rec['raw_doc']
+            org_type = 'vendor' if source == 'vendors' else 'team'
+            
             Organization.objects.update_or_create(
-                org_id=vendor.get('org_id'),
+                org_id=doc.get('org_id') or doc.get('team_id'),
                 defaults={
-                    'org_type': 'vendor',
-                    'name': vendor.get('name', ''),
-                    'bg_code': vendor.get('bg_code', 'KURO0001'),
-                    'div_code': vendor.get('div_code', 'KURO0001_001'),
+                    'org_type': org_type,
+                    'name': doc.get('name', ''),
+                    'bg_code': rec['bg_code'],
+                    'div_code': rec['div_code'],
                 }
             )
             
-            VendorProfile.objects.update_or_create(
-                org_id=vendor.get('org_id'),
-                defaults={
-                    'gstin': vendor.get('gstin'),
-                    'pan': vendor.get('pan'),
-                    'address': vendor.get('address'),
-                }
-            )
-        
-        # Migrate teams
-        teams = TenantCollection.get_collection('teams')
-        
-        for team in teams.find({}, {'_id': 0}):
-            Organization.objects.update_or_create(
-                org_id=team.get('org_id'),
-                defaults={
-                    'org_type': 'team',
-                    'name': team.get('name', ''),
-                    'bg_code': team.get('bg_code', 'KURO0001'),
-                    'div_code': team.get('div_code', 'KURO0001_001'),
-                }
-            )
-            
-            TeamProfile.objects.update_or_create(
-                org_id=team.get('org_id'),
-                defaults={
-                    'team_id': team.get('team_id'),
-                    'coach': team.get('coach'),
-                }
-            )
-        
-        self.stdout.write(self.style.SUCCESS('Organization migration complete'))
+            if org_type == 'vendor':
+                VendorProfile.objects.update_or_create(
+                    org_id=doc.get('org_id'),
+                    defaults={
+                        'gstin': doc.get('gstin'),
+                        'pan': doc.get('pan'),
+                        'address': doc.get('address'),
+                    }
+                )
+            else:
+                TeamProfile.objects.update_or_create(
+                    org_id=doc.get('org_id') or doc.get('team_id'),
+                    defaults={
+                        'team_id': doc.get('team_id'),
+                        'coach': doc.get('coach'),
+                    }
+                )
 ```
 
-**Step 4: Run Migrations**
+**Step 2: Run Per-Source Migrations**
 
 ```bash
-python manage.py migrate_customers
-python manage.py migrate_players
-python manage.py migrate_organizations
+# Run each source independently
+python manage.py migrate_identity --source=reb_users --validate
+python manage.py migrate_identity --source=players --validate
+python manage.py migrate_identity --source=vendors --validate
+python manage.py migrate_identity --source=teams --validate
+python manage.py migrate_identity --source=service_requests --validate
+python manage.py migrate_identity --source=order_phones --validate
+python manage.py migrate_identity --source=employee_attendance --validate
 ```
 
-**Step 5: Verify Migrations**
+**Step 3: Run Validation Gates**
+
+Per `migration_spec.md` §2.3, all 13 gates must pass:
 
 ```bash
-# Check customer count
 python manage.py shell -c "
-from users.models import Identity, Customer
+from users.models import Identity, Customer, Player, Organization
+
+# Gate 1: Row count reconciliation
 print(f'Identities: {Identity.objects.count()}')
 print(f'Customers: {Customer.objects.count()}')
-"
-
-# Check player count
-python manage.py shell -c "
-from users.models import Identity, Player
 print(f'Players: {Player.objects.count()}')
-"
-
-# Check organization count
-python manage.py shell -c "
-from users.models import Organization
 print(f'Organizations: {Organization.objects.count()}')
+
+# Gate 2: Phone uniqueness per tenant
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute(\"\"\"
+        SELECT bg_code, phone, COUNT(*) 
+        FROM users_identity 
+        GROUP BY bg_code, phone 
+        HAVING COUNT(*) > 1
+    \"\"\")
+    dupes = cursor.fetchall()
+    if dupes:
+        print(f'FAIL: Duplicate (bg_code, phone) found: {dupes}')
+    else:
+        print('PASS: No duplicate (bg_code, phone)')
+
+# Gate 3: FK integrity
+with connection.cursor() as cursor:
+    cursor.execute(\"\"\"
+        SELECT COUNT(*) FROM users_customer c
+        LEFT JOIN users_identity i ON c.identity_id = i.identity_id
+        WHERE i.identity_id IS NULL
+    \"\"\")
+    orphans = cursor.fetchone()[0]
+    print(f'FAIL: {orphans} orphaned customer rows' if orphans else 'PASS: No orphaned customer rows')
 "
 ```
 
 #### Verification
 
 ```bash
-# 1. Run migrations
-python manage.py migrate_customers
-python manage.py migrate_players
-python manage.py migrate_organizations
+# 1. Dry run first
+python manage.py migrate_identity --source=reb_users --dry-run
 
-# 2. Verify counts
+# 2. Run with validation
+python manage.py migrate_identity --source=reb_users --validate
+
+# 3. Verify composite uniqueness holds
 python manage.py shell -c "
-from users.models import Identity, Customer, Player, Organization
-print(f'Identities: {Identity.objects.count()}')
-print(f'Customers: {Customer.objects.count()}')
-print(f'Players: {Player.objects.count()}')
-print(f'Organizations: {Organization.objects.count()}')
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute(\"\"\"
+        SELECT bg_code, phone, COUNT(*) 
+        FROM users_identity 
+        GROUP BY bg_code, phone 
+        HAVING COUNT(*) > 1
+    \"\"\")
+    print('Duplicate (bg_code, phone):', cursor.fetchall())
 "
 
-# 3. Run identity tests
-python manage.py test users.tests.IdentityTests -v 2
+# 4. Run all validation gates from migration_spec.md §2.3
 ```
 
 ---
@@ -795,7 +1036,7 @@ class OrderCore(models.Model):
     total_amount = models.DecimalField(max_digits=12, decimal_places=2)
     customer = models.ForeignKey(Identity, on_delete=models.CASCADE, related_name='orders')
     bg_code = models.CharField(max_length=10)
-    division = models.CharField(max_length=20)
+    div_code = models.CharField(max_length=20)
     billadd = models.JSONField(default=dict)
     products = models.JSONField(default=list)
     channel = models.CharField(max_length=10, default='online')
@@ -837,7 +1078,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderCore
         fields = ['orderid', 'order_type', 'status', 'total_amount', 
-                  'customer', 'bg_code', 'division', 'billadd', 'products', 
+                  'customer', 'bg_code', 'div_code', 'billadd', 'products', 
                   'channel', 'created_at', 'updated_at']
         read_only_fields = ['orderid', 'created_at', 'updated_at']
 
@@ -855,20 +1096,22 @@ from rest_framework import viewsets, permissions
 from .models import OrderCore, EshopDetail
 from .serializers import OrderSerializer, EshopDetailSerializer
 
-class OrderViewSet(viewsets.ModelViewSet):
+
+class OrderViewSet(viewsets.ModelViewSet, TenantScopingMixin):
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        return OrderCore.objects.filter(
-            customer=self.request.user.identity_id
+        # Apply tenant scope from middleware (full/division/branch)
+        return self.apply_tenant_scope(
+            OrderCore.objects.all(), self.request
         )
     
     def perform_create(self, serializer):
         order = serializer.save(
             customer=self.request.user.identity_id,
-            bg_code=self.request.user.bg_code,
-            division=self.request.user.active_div_code,
+            bg_code=self.request.bg_code,          # From middleware
+            div_code=self.request.active_div_code,  # From middleware
         )
         
         # Create eshop_detail
@@ -877,19 +1120,21 @@ class OrderViewSet(viewsets.ModelViewSet):
             payment_option='cashfree',  # Default
         )
 
+
 class CheckoutViewSet(viewsets.ViewSet):
     """Handle checkout and payment initiation."""
     
     def create(self, request):
         # Create order
+        # Tenant context from middleware: request.bg_code, request.active_div_code
         order = OrderCore.objects.create(
-            orderid=f"ESH{OrderCore.objects.count() + 1:06d}",
+            orderid=generate_orderid(),
             order_type='eshop',
             status='pending',
             total_amount=request.data['total_amount'],
             customer=request.user.identity_id,
-            bg_code=request.user.bg_code,
-            division=request.user.active_div_code,
+            bg_code=request.bg_code,
+            div_code=request.active_div_code,
             billadd=request.data['billadd'],
             products=request.data['products'],
             channel='online',
@@ -913,6 +1158,8 @@ from rest_framework import permissions
 import hmac
 import hashlib
 import base64
+from plat.outbox.service import OutboxService
+
 
 def verify_cashfree_signature(payload_string, signature, secret_key):
     """Verify Cashfree webhook signature."""
@@ -925,11 +1172,12 @@ def verify_cashfree_signature(payload_string, signature, secret_key):
     ).decode('utf-8')
     return hmac.compare_digest(computed, signature)
 
+
 class CashfreeWebhookView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        # Verify signature
+        # Verify HMAC signature
         signature = request.headers.get('X-CF-SIGNATURE')
         if not verify_cashfree_signature(
             request.body.decode('utf-8'),
@@ -938,15 +1186,19 @@ class CashfreeWebhookView(APIView):
         ):
             return Response({'error': 'Invalid signature'}, status=400)
         
+        # Resolve tenant context from the order record, NOT request.user
+        # (this endpoint is HMAC-authenticated, not JWT-authenticated)
+        order = OrderCore.objects.get(orderid=request.data['order_id'])
+        
         # Queue payment verification in outbox
-        from plat.outbox.service import OutboxService
         OutboxService.publish_on_commit(
             event_type='order.payment_verified',
             payload={
-                'order_id': request.data['order_id'],
+                'order_id': order.id,
+                'orderid': order.orderid,
                 'payment_reference': request.data['payment_id'],
+                'bg_code': order.bg_code,
             },
-            bg_code=request.user.bg_code
         )
         
         return Response({'status': 'received'}, status=202)
@@ -1042,25 +1294,32 @@ class CafeWalkinSerializer(serializers.ModelSerializer):
 ```python
 from rest_framework import viewsets, permissions
 from users.models import Identity
+from users.utils import normalize_phone
 from .models import CafeWalkin
 from .serializers import CafeWalkinSerializer
 
-class CafeWalkinViewSet(viewsets.ModelViewSet):
+
+class CafeWalkinViewSet(viewsets.ModelViewSet, TenantScopingMixin):
     serializer_class = CafeWalkinSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        return CafeWalkin.objects.filter(
-            identity__bg_code=self.request.user.bg_code
+        return self.apply_tenant_scope(
+            CafeWalkin.objects.all(), self.request
         )
     
     def perform_create(self, serializer):
-        # Create identity for walk-in
+        # Normalize phone
+        phone_raw = serializer.validated_data.get('phone', '')
+        phone = normalize_phone(phone_raw) if phone_raw else ''
+        
+        # Create identity with tenant context from middleware
+        # (NOT request.user.bg_code — walk-ins may not have auth)
         identity = Identity.objects.create(
-            phone=serializer.validated_data.get('phone', ''),
+            phone=phone,
             name=serializer.validated_data['name'],
-            bg_code=self.request.user.bg_code,
-            div_code=self.request.user.active_div_code,
+            bg_code=self.request.bg_code,
+            div_code=self.request.active_div_code,
         )
         
         serializer.save(identity=identity)
@@ -1092,7 +1351,7 @@ python manage.py migrate cafe_arcade
 curl -X POST http://localhost:8000/api/v1/cafe/walkins/ \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"name': 'John Doe', 'phone': '9876543210'}'
+  -d '{"name": "John Doe", "phone": "9876543210"}'
 
 # 3. Test walk-in listing
 curl -X GET http://localhost:8000/api/v1/cafe/walkins/ \
@@ -1122,7 +1381,8 @@ class ICafeSessionService(ABC):
     
     @abstractmethod
     def create_session(self, cafe_id: int, station_id: int, game_id: int, 
-                      identity_id: str, price_plan_id: int) -> 'Session':
+                      identity_id: str, price_plan_id: int,
+                      bg_code: str, div_code: str) -> 'Session':
         """Create a new session."""
         pass
     
@@ -1137,8 +1397,9 @@ class ICafeSessionService(ABC):
         pass
     
     @abstractmethod
-    def list_sessions(self, cafe_id: int, status: str = 'active') -> list:
-        """List sessions for a cafe."""
+    def list_sessions(self, cafe_id: int, bg_code: str, 
+                     scope: str = 'full') -> list:
+        """List sessions for a cafe, scoped by tenant."""
         pass
 
 class ICafeStationService(ABC):
@@ -1150,8 +1411,8 @@ class ICafeStationService(ABC):
         pass
     
     @abstractmethod
-    def list_stations(self, cafe_id: int) -> list:
-        """List stations for a cafe."""
+    def list_stations(self, cafe_id: int, bg_code: str) -> list:
+        """List stations for a cafe, scoped by tenant."""
         pass
     
     @abstractmethod
@@ -1178,18 +1439,18 @@ class ITournamentsService(ABC):
     
     @abstractmethod
     def register_team(self, tournament_id: int, team_id: str, 
-                     captain_id: str) -> 'Registration':
+                     captain_id: str, bg_code: str) -> 'Registration':
         """Register a team for a tournament."""
         pass
     
     @abstractmethod
-    def get_tournament(self, tournament_id: int) -> Optional['Tournament']:
-        """Get tournament by ID."""
+    def get_tournament(self, tournament_id: int, bg_code: str) -> Optional['Tournament']:
+        """Get tournament by ID, scoped by tenant."""
         pass
     
     @abstractmethod
-    def list_tournaments(self, status: str = 'open') -> list:
-        """List tournaments."""
+    def list_tournaments(self, bg_code: str, scope: str = 'full') -> list:
+        """List tournaments, scoped by tenant."""
         pass
 ```
 
@@ -1200,6 +1461,7 @@ class ITournamentsService(ABC):
 ```python
 from .protocols import ICafeSessionService
 from .services import CafeSessionService
+
 
 class SessionViewSet(viewsets.ModelViewSet):
     serializer_class = SessionSerializer
@@ -1212,7 +1474,8 @@ class SessionViewSet(viewsets.ModelViewSet):
         service = self.get_service()
         sessions = service.list_sessions(
             cafe_id=request.query_params.get('cafe_id'),
-            status=request.query_params.get('status', 'active')
+            bg_code=request.bg_code,           # From middleware
+            scope=getattr(request, 'scope', 'full'),
         )
         serializer = self.get_serializer(sessions, many=True)
         return Response(serializer.data)
@@ -1225,6 +1488,8 @@ class SessionViewSet(viewsets.ModelViewSet):
             game_id=request.data['game_id'],
             identity_id=request.user.identity_id,
             price_plan_id=request.data['price_plan_id'],
+            bg_code=request.bg_code,           # From middleware
+            div_code=request.active_div_code,   # From middleware
         )
         serializer = self.get_serializer(session)
         return Response(serializer.data, status=201)
@@ -1236,6 +1501,7 @@ class SessionViewSet(viewsets.ModelViewSet):
 from .protocols import ITournamentsService
 from .services import TournamentsService
 
+
 class TournamentViewSet(viewsets.ModelViewSet):
     serializer_class = TournamentSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -1246,7 +1512,8 @@ class TournamentViewSet(viewsets.ModelViewSet):
     def list(self, request):
         service = self.get_service()
         tournaments = service.list_tournaments(
-            status=request.query_params.get('status', 'open')
+            bg_code=request.bg_code,           # From middleware
+            scope=getattr(request, 'scope', 'full'),
         )
         serializer = self.get_serializer(tournaments, many=True)
         return Response(serializer.data)
@@ -1260,14 +1527,18 @@ class TournamentViewSet(viewsets.ModelViewSet):
 from .protocols import ICafeSessionService
 from .models import Session
 
+
 class CafeSessionService(ICafeSessionService):
-    def create_session(self, cafe_id, station_id, game_id, identity_id, price_plan_id):
+    def create_session(self, cafe_id, station_id, game_id, identity_id, 
+                      price_plan_id, bg_code, div_code):
         session = Session.objects.create(
             cafe_id=cafe_id,
             station_id=station_id,
             game_id=game_id,
             identity_id=identity_id,
             price_plan_id=price_plan_id,
+            bg_code=bg_code,
+            div_code=div_code,
             status='active',
         )
         return session
@@ -1279,7 +1550,7 @@ class CafeSessionService(ICafeSessionService):
         session.total_charges = calculate_final_charges(session)
         session.save()
         
-        # Trigger outbox event
+        # Trigger outbox event — tenant context from the session entity
         from plat.outbox.service import OutboxService
         OutboxService.publish_on_commit(
             event_type='fnb.session_billing',
@@ -1287,8 +1558,8 @@ class CafeSessionService(ICafeSessionService):
                 'session_id': session.id,
                 'last_order_id': session.last_order_id,
                 'total_charges': session.total_charges,
+                'bg_code': session.bg_code,
             },
-            bg_code=session.bg_code
         )
         
         return session
@@ -1296,8 +1567,15 @@ class CafeSessionService(ICafeSessionService):
     def get_session(self, session_id):
         return Session.objects.filter(id=session_id).first()
     
-    def list_sessions(self, cafe_id, status='active'):
-        return Session.objects.filter(cafe_id=cafe_id, status=status)
+    def list_sessions(self, cafe_id, bg_code, scope='full'):
+        qs = Session.objects.filter(cafe_id=cafe_id, bg_code=bg_code)
+        if scope == 'division':
+            # Filter by active division
+            pass
+        elif scope == 'branch':
+            # Filter by active branch
+            pass
+        return qs
 ```
 
 **File:** `domains/tournaments/services.py`
@@ -1305,6 +1583,7 @@ class CafeSessionService(ICafeSessionService):
 ```python
 from .protocols import ITournamentsService
 from .models import Tournament
+
 
 class TournamentsService(ITournamentsService):
     def create_tournament(self, name, game, format, max_teams, bg_code, div_code):
@@ -1319,20 +1598,28 @@ class TournamentsService(ITournamentsService):
         )
         return tournament
     
-    def register_team(self, tournament_id, team_id, captain_id):
+    def register_team(self, tournament_id, team_id, captain_id, bg_code):
         registration = Registration.objects.create(
             tournament_id=tournament_id,
             team_id=team_id,
             captain_id=captain_id,
+            bg_code=bg_code,
             status='pending',
         )
         return registration
     
-    def get_tournament(self, tournament_id):
-        return Tournament.objects.filter(id=tournament_id).first()
+    def get_tournament(self, tournament_id, bg_code):
+        return Tournament.objects.filter(
+            id=tournament_id, bg_code=bg_code
+        ).first()
     
-    def list_tournaments(self, status='open'):
-        return Tournament.objects.filter(status=status)
+    def list_tournaments(self, bg_code, scope='full'):
+        qs = Tournament.objects.filter(bg_code=bg_code)
+        if scope == 'division':
+            pass
+        elif scope == 'branch':
+            pass
+        return qs
 ```
 
 #### Verification
@@ -1344,7 +1631,11 @@ ls -la domains/cafe_arcade/protocols.py domains/tournaments/protocols.py
 # 2. Verify viewsets use protocols
 grep -n "ICafeSessionService\|ITournamentsService" domains/cafe_arcade/views.py domains/tournaments/views.py
 
-# 3. Run tests
+# 3. Verify no request.user.bg_code in protocol services
+grep -rn "request.user.bg_code" domains/cafe_arcade/services.py domains/tournaments/services.py
+# Expected: 0 results
+
+# 4. Run tests
 python manage.py test domains.cafe_arcade tests.test_protocols -v 2
 ```
 
@@ -1361,8 +1652,8 @@ Week 1 (Phase 1: 3-5 days):
   Day 5: Buffer + Phase 1 verification
 
 Week 2 (Phase 2: 5-7 days):
-  Day 6-7: Task 6 (outbox pattern)
-  Day 8: Task 7 (tenant isolation)
+  Day 6: Task 6 (outbox adoption)
+  Day 7-8: Task 7 (tenant isolation)
   Day 9: Task 8 (phone normalization)
   Day 10-12: Task 9 (identity migration)
   Day 13: Buffer + Phase 2 verification
@@ -1388,35 +1679,43 @@ Week 3 (Phase 3: 5-7 days):
 - [ ] Domain database usage documented
 
 ### Phase 2 (Foundational Infrastructure)
-- [ ] Outbox events published and processed
-- [ ] Tenant isolation verified (all queries scoped)
+- [ ] Outbox events published via existing `plat/outbox/` primitive
+- [ ] `platform_outbox_events` table used (not `outbox_events`)
+- [ ] No duplicate outbox files in `plat/outbox/`
+- [ ] Tenant isolation proven by behavior (RLS + TenantCollection)
+- [ ] Scope resolver centralizes full/division/branch filtering
 - [ ] Phone normalization working (E.164 format)
-- [ ] Customer identity migration complete
-- [ ] Player identity migration complete
-- [ ] Organization identity migration complete
+- [ ] Identity migration uses `(bg_code, phone)` composite key
+- [ ] No hardcoded tenant fallbacks in migration
+- [ ] Migration validation gates pass
 
 ### Phase 3 (Domain-Specific Features)
 - [ ] EShop orders and payment endpoints work
+- [ ] Webhook resolves tenant from order record (not `request.user`)
 - [ ] Walk-in management endpoints work
 - [ ] Protocol interfaces defined for cafe and tournaments
 - [ ] Viewsets use protocol interfaces (not direct DB)
+- [ ] No `request.user.bg_code` in domain service code
 - [ ] All tests passing
 
 ---
 
 ## Risk Mitigation
 
-### Risk: Outbox Pattern Adds Complexity
-**Mitigation:** Start with simple outbox table, add processing logic incrementally
+### Risk: Outbox Extension Conflicts with Existing Primitive
+**Mitigation:** Only add domain event handler files (`outbox_handlers.py`). Do not modify `plat/outbox/models.py`, `service.py`, or `worker.py`. Verify existing primitive is intact before and after.
 
 ### Risk: Identity Migration Breaks Existing Data
-**Mitigation:** Run migrations in staging first, verify data integrity
+**Mitigation:** Run migrations in staging first. Use composite `(bg_code, phone)` lookup key. Run all 13 validation gates from `migration_spec.md` §2.3. Dry-run first.
 
 ### Risk: Protocol Enforcement Requires Viewset Refactoring
-**Mitigation:** Create protocol interfaces first, refactor viewsets incrementally
+**Mitigation:** Create protocol interfaces first, refactor viewsets incrementally. Services accept `bg_code`/`div_code` as parameters, resolved by views from middleware context.
 
 ### Risk: EShop Payment Integration Requires Cashfree Account
-**Mitigation:** Use Cashfree sandbox for development, switch to prod before deployment
+**Mitigation:** Use Cashfree sandbox for development, switch to prod before deployment.
+
+### Risk: Webhook Tenant Context Injection
+**Mitigation:** Webhook resolves `bg_code` from the order record, not from request context. HMAC signature verification is the only auth — no user object exists.
 
 ---
 
@@ -1424,10 +1723,12 @@ Week 3 (Phase 3: 5-7 days):
 
 1. **OpenAPI:** Schema generates without errors
 2. **EShop:** 16/16 endpoints implemented and tested
-3. **Tenant Isolation:** 0 raw PyMongo calls, 0 hardcoded tenant codes
-4. **Identity:** 100% of customers/players/organizations migrated
-5. **Protocols:** All cafe and tournaments viewsets use protocol interfaces
-6. **Tests:** 80%+ test coverage
+3. **Outbox:** Events published via existing `plat/outbox/` primitive, `platform_outbox_events` table
+4. **Tenant Isolation:** 0 raw PyMongo calls, 0 hardcoded tenant codes, behavioral isolation tests pass
+5. **Identity:** `(bg_code, phone)` composite key enforced, migration validation gates pass
+6. **Protocols:** All cafe and tournaments viewsets use protocol interfaces
+7. **Tenant Context:** No `request.user.bg_code` in domain code; middleware-derived or entity-resolved
+8. **Tests:** 80%+ test coverage
 
 ---
 
@@ -1437,7 +1738,7 @@ After execution, update these documents:
 
 1. **`KUNGOS_DOMAIN_DATABASE_USAGE.md`** — Add outbox, identity migration, protocols
 2. **`CAFE_COUNCIL_TODO.md`** — Update phase completion status
-3. **`migration_spec.md`** — Add outbox, identity migration tasks
+3. **`migration_spec.md`** — Mark M1 migration as complete
 4. **`endpoint_contract_spec.md`** — Add EShop order/payment endpoints
 
 ---

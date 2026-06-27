@@ -61,13 +61,17 @@ class UserRole(models.Model):
 
 class UserPermission(models.Model):
     # Existing fields
-    user = models.ForeignKey('users.CustomUser', ...)
-    permission = models.ForeignKey('users.Permission', ...)
-    bg_code = models.CharField(...)
+    user = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE)
+    permission = models.ForeignKey('users.Permission', on_delete=models.CASCADE)
+    bg_code = models.CharField(max_length=10, db_index=True)
     
-    # NEW: identity_id
-    identity_id = models.CharField(
-        max_length=20, blank=True, null=True, db_index=True,
+    # NEW: identity_id (real FK to users_identity)
+    identity_id = models.ForeignKey(
+        'users.Identity',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        db_index=True,
     )
     
     class Meta:
@@ -75,12 +79,16 @@ class UserPermission(models.Model):
 
 class UserRoleBranch(models.Model):
     # Existing fields
-    user_role = models.ForeignKey('users.UserRole', ...)
-    branch_code = models.CharField(...)
+    user_role = models.ForeignKey('users.UserRole', on_delete=models.CASCADE)
+    branch_code = models.CharField(max_length=20, db_index=True)
     
-    # NEW: identity_id
-    identity_id = models.CharField(
-        max_length=20, blank=True, null=True, db_index=True,
+    # NEW: identity_id (real FK to users_identity)
+    identity_id = models.ForeignKey(
+        'users.Identity',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        db_index=True,
     )
     
     class Meta:
@@ -284,3 +292,20 @@ Create `tests/test_rbac_identity_fk.py`:
 - Phase 2C (Legacy patterns) depends on this phase — needs `is_supervisor()` with `identity_id`.
 - Phase 2D (RBAC URLs) depends on this phase — needs `identity_id` endpoints.
 - After this phase, `CustomUser.userid` is no longer referenced by RBAC tables. The `CustomUser` model still exists as AUTH_USER_MODEL but RBAC is fully `identity_id`-based.
+
+## Consistency Rules
+
+**This phase defers to:**
+- Migration ordering: `migration_spec.md` §4 (M4: RBAC FK Migration)
+- PostgreSQL schema: `postgresql_schema.md` (rbac_user_roles, rbac_user_permissions, rbac_user_role_branches)
+- Canonical naming: `CANONICAL_NAMING.md` (`identity_id`)
+
+**This phase does NOT redefine:**
+- Response shapes (Phase 2B handles login response)
+- Mongo field names (Phase 1B handles field rename)
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
+

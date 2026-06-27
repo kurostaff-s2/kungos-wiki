@@ -294,3 +294,19 @@ Create `tests/test_legacy_pattern_cleanup.py`:
 - Phase 2B (Login response) is independent — can run in parallel.
 - Phase 3C (Legacy endpoint removal) depends on this phase — legacy patterns must be cleaned up first.
 - After this phase, `user.access` is no longer used for authorization decisions. The `CustomUser.access` field can be deprecated (not removed yet — may still be used for display purposes).
+
+## Consistency Rules
+
+**This phase defers to:**
+- Wire shapes: `endpoint_contract_spec.md`
+- Migration ordering: `migration_spec.md`
+- Canonical naming: `CANONICAL_NAMING.md`
+
+**This phase does NOT redefine:**
+- Response shapes beyond what the spec allows
+- Migration steps beyond what the spec defines
+- Wire field names (use canonical names)
+
+## Spec Contradictions
+
+_None documented._
