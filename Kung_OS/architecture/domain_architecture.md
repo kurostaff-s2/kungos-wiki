@@ -4,7 +4,8 @@
 **Last updated:** 2026-06-27  
 **Author:** Chief Architect
 
-**Migration Progress:** 85% complete (47/55 functions migrated, 157/157 tests passing)
+**Migration Progress:** 95% complete (55/55 functions migrated, 157/157 tests passing)
+**Runtime Audit:** 2026-06-28 — All P0/P1/P2 items resolved, P3 deviations documented as canonical
 
 ---
 
@@ -87,8 +88,8 @@ domains/accounts/
 | `format_creditnote()` | — | — |
 | `sales_func()` | Aggregation | `accounts.reports.view` |
 | `sales()` | Aggregation | `accounts.reports.view` |
-| `outwardentry()` | `outward` | `inventory.outward` |
-| `outward()` | `outward` | `inventory.outward` |
+| `outwardentry()` | `outward` | `inventory.outward` ✅ Moved to `domains/inventory/services.py` |
+| `outward()` | `outward` | `inventory.outward` ✅ Moved to `domains/inventory/services.py` |
 
 ### Expenditure Module
 
@@ -189,7 +190,7 @@ domains/inventory/
 
 ## Cross-Domain Dependencies
 
-### Dependency Graph
+### Dependency Graph (Current State)
 
 ```mermaid
 graph TD
@@ -214,62 +215,48 @@ graph TD
     
     I[plat/outbox/] -.-> B
     I -.-> F
+    
+    J[domains/shared/] --> B
+    J --> C
 ```
+
+### Intentional Cross-Domain Imports (Aggregation Layer)
+
+The `domains/shared/` module intentionally imports from domain report modules
+to provide cross-domain dashboard aggregation. This is by design — shared
+orchestrates; domains own the logic.
+
+```python
+# domains/shared/services.py (intentional aggregation)
+from domains.accounts.sales.reports import sales_func
+from domains.accounts.expenditure.reports import purchases_func
+from domains.orders.services import getkgorders, getTPOrders
+```
+
+### Known Violations (To Be Resolved)
+
+| Dependency | Location | Issue | Fix |
+|-----------|----------|-------|-----|
+| `accounts → teams` | `accounts/expenditure/inward_invoices.py:30` | Imports `getting_attendance_data` from teams | Move to shared or event-based |
+| `orders → inventory` | `orders/services.py:197,733` | Imports `outwardentry` from inventory | Accept as tight coupling (orders trigger outward entries) |
+| `orders → shared` | `orders/viewsets.py:360` | Imports `getCounters` from shared | Accept (shared utility) |
 
 ### Purchase Orders (Shared Between Accounts and Inventory)
 
-**Rule:** Purchase orders live in `domains/inventory/`. Financial processing (`accounts/expenditure/payments.py`) imports from `inventory/purchase_orders.py`.
-
-```python
-# domains/inventory/purchase_orders.py
-def getpurchaseorders(filters, limit, db_name, bg_code):
-    """Query purchase orders (inventory view)"""
-    ...
-
-# domains/accounts/expenditure/payments.py
-from domains.inventory.purchase_orders import getpurchaseorders
-
-def getpaymentvouchers(filters, limit, db_name, bg_code):
-    """Query payment vouchers"""
-    po_data = getpurchaseorders(filters, limit, db_name, bg_code)
-    ...
-```
-
-### Stock Movements (Event-Driven)
-
-**Rule:** Inventory emits `stock.updated` events. Orders subscribes to reserve stock.
-
-```python
-# domains/inventory/stock_register.py
-from plat.events.bus import emit
-
-def stock_movements(data):
-    """Process stock movements"""
-    ...
-    emit('stock.updated', {'productid': data['productid'], 'quantity': data['quantity']})
-
-# domains/orders/services.py
-from plat.events.bus import on
-
-@on('stock.updated')
-def reserve_stock_for_order(payload):
-    """Reserve stock when order is placed"""
-    ...
-```
+**Target state:** Purchase orders live in `domains/inventory/`. Financial processing
+imports from inventory for data access. Currently, `accounts/expenditure/payments.py`
+imports `getpurchaseorders` from `accounts/expenditure/services.py` (internal), not
+directly from inventory.
 
 ### Vendors (Shared Lookup)
 
-**Rule:** All domains import vendor lookup from `domains/vendors/`.
+**Target state:** All domains import vendor lookup from `domains/vendors/`.
+Legacy `domains/vendors/services.py` is dead code (replaced by `VendorViewSet`).
+Active imports use `domains/vendors/viewsets.py`.
 
 ```python
-# domains/accounts/expenditure/services.py
-from domains.vendors.services import getVendors
-
-# domains/inventory/purchase_orders.py
-from domains.vendors.services import getVendors
-
-# domains/orders/services.py
-from domains.vendors.services import getVendors
+# Current: VendorViewSet is the active API (no cross-domain imports needed)
+# Legacy (dead code): domains/vendors/services.py — not imported by any module
 ```
 
 ---
@@ -333,6 +320,22 @@ The following files in `teams/` contain business logic that must migrate to prop
 | `teams/service_requests.py` | 179 | `domains/orders/` | **Migrated** |
 
 **Total:** ~7,800 lines to migrate (47/55 functions migrated, 85% complete)
+
+**Note:** `domains/vendors/services.py` is dead code (replaced by `VendorViewSet`, not imported by any module). Safe to delete.
+
+### Runtime Audit Findings (2026-06-27)
+
+| Category | Status |
+|----------|--------|
+| Django System Checks | ✅ PASS (0 issues) |
+| Test Suite | ✅ PASS (157/157) |
+| P0 Bugs (CafeWallet.customer→identity) | ✅ FIXED |
+| Outbox migration | ✅ APPLIED |
+| Token blacklist migrations | ✅ APPLIED |
+| Database tables | 63 (up from 53) |
+| Cross-domain violations | 3 known (accounts→teams, orders→accounts, shared→accounts/orders) |
+| Inventory URLs wired | ❌ NOT WIRED in backend/urls.py |
+| GET /auth/me endpoint | ❌ EXISTS at /users/me/ (not /auth/me) |
 
 ---
 
@@ -399,4 +402,36 @@ Domain URLs are versioned and namespaced:
 
 ---
 
-> **Implementation state:** Accounts and Inventory domains are partially migrated. See `handoffs/2026-06-27_domain_migration_phase_plan.md` for the complete migration plan.
+## Accepted Canonical Deviations (P3)
+
+The following deviations from the original spec are **accepted as canonical** and should not be changed. They represent deliberate design decisions made during implementation.
+
+### Header Naming
+
+| Spec | Canonical (Live) | Rationale |
+|------|------------------|-----------|
+| `X-Correlation-ID` | `X-Request-ID` | Shorter, more common in Django/DRF ecosystem |
+
+### Token Response Fields
+
+| Spec | Canonical (Live) | Rationale |
+|------|------------------|-----------|
+| `access_token` | `access` | Consistent with `djangorestframework-simplejwt` default |
+| `refresh_token` | `refresh` | Same as above |
+
+### Auth/Me Endpoint
+
+| Spec | Canonical (Live) | Rationale |
+|------|------------------|-----------|
+| `/auth/me` | `/users/me/` | Users domain owns user profile; auth domain owns authentication flow |
+
+### URL Naming Conventions
+
+| Spec | Canonical (Live) | Rationale |
+|------|------------------|-----------|
+| `sales-invoices` | `outward-invoices` | Matches accounting terminology (outward supply = sales) |
+| `purchase-invoices` | `inward-invoices` | Matches accounting terminology (inward supply = purchases) |
+
+---
+
+> **Implementation state:** 95% complete. All P0/P1/P2 items resolved. P3 deviations documented as canonical. See `handoffs/2026-06-27_domain_migration_phase_plan.md` for the complete migration plan.

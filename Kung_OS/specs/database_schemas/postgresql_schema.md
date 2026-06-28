@@ -62,12 +62,12 @@
 | `id` | bigint | PRIMARY KEY |
 | `userid` | varchar | FK → `users_customuser.userid` |
 | `bg_code` | varchar | Current business group |
-| `division` | jsonb | JSON list of accessible divisions (**anti-pattern**: should be `div_codes`) |
-| `branches` | jsonb | JSON list of accessible branches (**anti-pattern**: should be `branch_codes`) |
+| `div_codes` | jsonb | JSON list of accessible division codes (canonical) |
+| `branch_codes` | jsonb | JSON list of accessible branch codes (canonical) |
 | `token_key` | varchar | JWT token for the session |
 | `scope` | varchar | `'full'` \| `'division'` \| `'branch'` |
 
-**Anti-pattern:** Field names `division`/`branches` don't match canonical `div_code`/`branch_code` naming.
+**Note:** The Django model (`users/models.py`) and migration (`users/migrations/0001_initial.py`) both use `div_codes` and `branch_codes` (canonical). The PostgreSQL schema reflects the live target-state.
 
 ### 2.4 Other User Tables
 

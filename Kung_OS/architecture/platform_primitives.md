@@ -46,7 +46,7 @@ Request-level tracing and tenant context propagation.
 | `logging.py` | Structured logging with correlation ID |
 | `middleware.py` | `CorrelationIDMiddleware`, `TenantContextMiddleware` |
 
-**CorrelationIDMiddleware:** Generates `X-Correlation-ID` on every request. Propagates through logs, outbox entries, and downstream calls.
+**CorrelationIDMiddleware:** Generates `X-Request-ID` on every request. Propagates through logs, outbox entries, and downstream calls. (Canonical name: `X-Request-ID`, not `X-Correlation-ID`.)
 
 **TenantContextMiddleware:** Extracts tenant scope from JWT/session. Makes `bg_code`, `div_code`, `branch_code` available to views and services.
 
