@@ -1,270 +1,309 @@
-# Response Envelope Standardization — Final Fix Task Handoff
+# Response Envelope & Multi-Tenancy Standardization — Final Fix Task Handoff
 
-**Date:** 2026-06-29  
-**Priority:** P1 (blocking ~95% alignment)  
+**Date:** 2026-06-29 (v6 — priority-structured execution plan)  
+**Priority:** P0/P1 (tenant extraction → tenant switch → error envelopes)  
 **Status:** Task Handoff — Ready for Execution  
 **Predecessor:** `28-06-2026_api-contract-audit-v2.md`
 
 ---
 
-## Executive Summary
+## Authority Declarations
 
-**Current State:** 194 raw `Response()` calls across 17 files remain non-compliant.  
-**Target State:** 0 raw `Response()` calls (all use `success_response()`/`error_response()`).  
-**Effort:** Medium — 17 files, ~194 response calls to update.
+### Wire Contract Authority
 
-**Critical Constraint:** Previous subagent attempts failed (exit code 143) or produced partial fixes. This handoff provides detailed instructions and verification steps.
+**The revised endpoint spec (`/home/chief/llm-wiki/Kung_OS/specs/endpoint_contract_spec_revised.md`) is the SOLE wire-contract authority.**
 
----
+- Stop redefining response shapes in handoff notes or side documents
+- All response envelope requirements flow from spec §3.1 (success) and §8.2 (error)
+- If a handoff note conflicts with the spec, the spec wins
 
-## Affected Files (17 total)
+### Naming Authority
 
-| Domain | File | Non-Compliant Calls | Priority |
-|--------|------|---------------------|----------|
-| **Cafe Arcade** | `domains/cafe_arcade/views.py` | 49 | HIGH |
-| **Orders** | `domains/orders/services.py` | 27 | HIGH |
-| **Tournaments** | `domains/tournaments/views.py` | 24 | MEDIUM |
-| **Products** | `domains/products/viewsets.py` | 20 | MEDIUM |
-| **Shared** | `domains/shared/millie.py` | 15 | LOW |
-| **Accounts** | `domains/accounts/viewsets.py` | 13 | MEDIUM |
-| **Inventory** | `domains/inventory/reports.py` | 9 | LOW |
-| **Cafe Arcade** | `domains/cafe_arcade/gamers_views.py` | 8 | LOW |
-| **Orders** | `domains/orders/estimates/viewsets.py` | 7 | MEDIUM |
-| **Backend** | `backend/response_utils.py` | 9 | LOW |
-| **Backend** | `backend/views.py` | 1 | LOW |
-| **Backend** | `backend/urls.py` | 2 | LOW |
-| **Orders** | `domains/orders/viewsets.py` | 5 | MEDIUM |
-| **Products** | `domains/products/services.py` | 1 | LOW |
-| **Shared** | `domains/shared/viewsets.py` | 4 | LOW |
-| **Teams** | `domains/teams/viewsets.py` | 1 | LOW |
-| **Vendors** | `domains/vendors/viewsets.py` | 1 | LOW |
-| **TOTAL** | | **194** | |
+**`CANONICAL_NAMING.md` (`/home/chief/llm-wiki/Kung_OS/architecture/canonical_naming.md`) is the naming gate.**
+
+- Every "after" state MUST use frozen canonical names
+- Legacy names (e.g., `entity`, `branches`, `userid`) appear ONLY in explicitly labeled migration context
+- Migration notes must be labeled as such (e.g., "Migration: `entity` → `bg_code`")
+
+### Multi-Tenancy Authority
+
+**`multi_tenancy.md` (`/home/chief/llm-wiki/Kung_OS/architecture/multi_tenancy.md`) is the multi-tenancy constitution.**
+
+- JWT claims are authoritative for every request
+- Missing required claims MUST fail with `TenantContextMissing` (no silent degradation)
+- Middleware and MongoDB wrapper MUST use canonical ContextVar keys: `bg_code`, `div_codes`, `branch_codes`, `identity_id`
 
 ---
 
-## Canonical Response Utilities
+## Priority Structure
 
-**Location:** `backend/response_utils.py`
+### P0: Tenant-Context Extraction Validation (Highest Priority)
 
-### Success Response
-```python
-from backend.response_utils import success_response
+**Why P0:** The spec says Phase 0 is highest priority. The multi-tenancy constitution requires JWT claims to be authoritative and missing claims to fail fast.
 
-# Basic success
-return success_response(data)
+**Current state:** The middleware and MongoDB wrapper are ALREADY using canonical JWT keys (`bg_code`, `div_codes`, `branch_codes`, `identity_id`). No legacy key extraction remains.
 
-# With custom status code
-return success_response(data, status_code=status.HTTP_201_CREATED)
-```
+**Missing piece:** The middleware does NOT validate that required claims are present. When `bg_code` or `identity_id` is missing from the JWT, the middleware silently degrades (doesn't set ContextVar, doesn't raise an error).
 
-**Envelope:** `{status: "success", data, meta}`
+**Scope:**
+1. Add validation in `plat/observability/middleware.py` to raise `TenantContextMissing` when `bg_code` or `identity_id` is missing
 
-### Error Response
-```python
-from backend.response_utils import error_response
+**Files:**
+- `plat/observability/middleware.py` (TenantContextMiddleware)
 
-# Basic error
-return error_response("Error message", code='NOT_FOUND')
+**Acceptance Criteria:**
+- [x] Middleware extracts `bg_code`, `div_codes`, `branch_codes`, `identity_id` from JWT only (ALREADY DONE)
+- [x] ContextVar uses canonical keys (ALREADY DONE)
+- [x] `TenantCollection` reads only canonical ContextVar keys (ALREADY DONE)
+- [ ] Missing `bg_code` or `identity_id` → `TenantContextMissing` (HTTP 401) (NEW)
+- [x] No legacy key references in extraction path (ALREADY DONE)
 
-# With details
-return error_response(exc, code='VALIDATION_ERROR', details={'field': 'error'})
-```
-
-**Envelope:** `{status: "error", error: {code, message, details}, meta}`
-
-### Reporting Response (for reports endpoints)
-```python
-from backend.response_utils import reporting_response
-
-return reporting_response(data, meta={'generated_at': '...'})
-```
-
-**Envelope:** `{status: "success", data, meta}`
+**Effort:** 15-30 minutes
 
 ---
 
-## Error Code Mapping
+### P1: Tenant-Switch JWT Regeneration
 
-| Scenario | Error Code |
-|----------|-----------|
-| Validation failed | `VALIDATION_ERROR` |
-| Not authenticated | `AUTH_REQUIRED` |
-| Permission denied | `PERMISSION_DENIED` |
-| Resource not found | `NOT_FOUND` |
-| Conflict (duplicate) | `CONFLICT` |
-| Internal server error | `INTERNAL_ERROR` |
-| Service unavailable | `SERVICE_UNAVAILABLE` |
-| Rate limited | `RATE_LIMITED` |
+**Why P1:** The multi-tenancy doc treats switch-endpoint JWT regeneration as tracked P1 work. The endpoint spec makes new JWT emission a hard requirement for `POST /api/v1/tenant/switch/`.
 
----
+**Scope:**
+1. Implement `POST /api/v1/tenant/switch/` endpoint
+2. Update `UserTenantContext` with new `bg_code`, `div_codes`, `branch_codes`, `scope`, `active_div_code`, `active_branch_code`
+3. Generate new JWT with canonical claims via `generate_tenant_token()`
+4. Set new JWT as HttpOnly cookie (same name, domain, path, secure flag as original)
+5. Return updated context payload in response envelope
 
-## Execution Instructions
+**Files:**
+- `users/views.py` or `users/api/auth_urls.py` (new endpoint)
+- `users/tenant_tokens.py` (`generate_tenant_token()`)
+- `domains/tenant/views.py` (if exists)
 
-### Phase 1: High Priority Files (49 + 27 + 24 + 20 = 120 calls)
+**Acceptance Criteria:**
+- [ ] `POST /api/v1/tenant/switch/` updates `UserTenantContext`
+- [ ] New JWT generated with all canonical claims (`bg_code`, `div_codes`, `branch_codes`, `active_div_code`, `active_branch_code`, `identity_id`, `scope`)
+- [ ] HttpOnly cookie set with same security attributes as original
+- [ ] Response returns updated context payload in spec envelope
+- [ ] Legacy `/api/v1/users/bgswitch/` endpoint marked deprecated (will be removed)
 
-**1. domains/cafe_arcade/views.py (49 calls)**
-```bash
-# Read entire file first
-cat domains/cafe_arcade/views.py
-
-# Add import at top (after existing imports)
-from backend.response_utils import success_response, error_response
-
-# Replace ALL raw Response() calls
-# Example transformation:
-# BEFORE: return Response({'user_id': user.userid, ...}, status=status.HTTP_201_CREATED)
-# AFTER:  return success_response({'user_id': user.userid, ...}, status_code=status.HTTP_201_CREATED)
-
-# Example error transformation:
-# BEFORE: return Response({'error': 'Customer not found'}, status=status.HTTP_404_NOT_FOUND)
-# AFTER:  return error_response('Customer not found', code='NOT_FOUND')
-```
-
-**2. domains/orders/services.py (27 calls)**
-```bash
-# Same pattern — read file, add import, replace all Response() calls
-```
-
-**3. domains/tournaments/views.py (24 calls)**
-```bash
-# Same pattern
-```
-
-**4. domains/products/viewsets.py (20 calls)**
-```bash
-# Same pattern
-```
-
-### Phase 2: Medium Priority Files (13 + 9 + 8 + 7 + 5 = 42 calls)
-
-**5. domains/accounts/viewsets.py (13 calls)**  
-**6. domains/inventory/reports.py (9 calls)**  
-**7. domains/cafe_arcade/gamers_views.py (8 calls)**  
-**8. domains/orders/estimates/viewsets.py (7 calls)**  
-**9. domains/orders/viewsets.py (5 calls)**  
-
-### Phase 3: Low Priority Files (15 + 4 + 2 + 1 + 1 + 1 + 1 = 25 calls)
-
-**10. domains/shared/millie.py (15 calls)**  
-**11. domains/shared/viewsets.py (4 calls)**  
-**12. backend/urls.py (2 calls)**  
-**13. backend/views.py (1 call)**  
-**14. domains/products/services.py (1 call)**  
-**15. domains/teams/viewsets.py (1 call)**  
-**16. domains/vendors/viewsets.py (1 call)**  
-
-### Phase 4: Special Cases (9 calls)
-
-**17. backend/response_utils.py (9 calls)**  
-⚠️ **CAUTION:** This file DEFINES the response utilities. Check if these are internal helper calls or if they should remain as-is. May not need changes.
+**Effort:** 2-3 hours
 
 ---
 
-## Verification Steps
+### P2: Error-Envelope Normalization
 
-### Step 1: Syntax Check (after each file)
-```bash
-python3 -m py_compile <file.py>
+**Why P2:** The middleware handles 2xx success envelopes automatically. The real work is fixing 61 non-2xx error responses to use the spec error envelope and spec error codes. Also clean up class-method wrappers that ignore `status_code`.
+
+**Scope:**
+1. Fix 61 non-2xx error responses to use spec error envelope (spec §8.2)
+2. Replace `INPUT_ERROR` code with `VALIDATION_ERROR` (spec §8.1)
+3. Remove `api_error()` tuple unpacking (use `error_response()` utility)
+4. Clean up 421 class-method wrappers that ignore `status_code`
+5. Verify 201/202/204 status codes preserved in non-200 success paths
+
+**Files:** 17 target files + 8 class-method files (see affected files table below)
+
+**Acceptance Criteria:**
+- [ ] All non-2xx JSON errors conform to canonical error envelope (spec §8.2)
+- [ ] All non-200 success paths preserve intended HTTP status codes (201, 202, 204)
+- [ ] `INPUT_ERROR` replaced with `VALIDATION_ERROR` (spec §8.1)
+- [ ] `api_error()` tuple unpacking removed
+- [ ] Class-method wrappers replaced or removed (status codes preserved)
+- [ ] Remaining wrappers confined to special cases (pagination, reporting, 204)
+
+**Effort:** 2-3 hours
+
+---
+
+### P3: Closeout Verification (Final Audit)
+
+**Why P3:** Only after P0-P2 pass should you do lower-priority cleanup (redundant wrappers, duplicated endpoints, migration-note simplifications).
+
+**Verification Pass:**
+1. **Canonical naming compliance** — No legacy names in "after" state
+2. **Tenant middleware/Mongo extraction compliance** — Only canonical keys used
+3. **Tenant-switch JWT regeneration** — Endpoint works, cookie set, JWT canonical
+4. **Error-envelope compliance** — All non-2xx errors use spec envelope with `request_id` in `meta`
+
+**Effort:** 1 hour
+
+---
+
+## Execution Order
+
+```
+P0: Tenant-Context Extraction (1-2 hours)
+  ↓
+P1: Tenant-Switch JWT Regeneration (2-3 hours)
+  ↓
+P2: Error-Envelope Normalization (2-3 hours)
+  ↓
+P3: Closeout Verification (1 hour)
+  ↓
+P4: Secondary Cleanup (redundant wrappers, duplicated endpoints, etc.)
 ```
 
-### Step 2: Compliance Check (after all files)
-```bash
-# Should return 0 lines
-grep -rn "return Response" domains/ backend/ --include="*.py" | grep -v "success_response\|error_response\|reporting_response\|unauthorized_response"
-```
-
-### Step 3: Import Check (verify each file has import)
-```bash
-grep -l "from backend.response_utils import" domains/**/*.py backend/*.py
-```
-
-### Step 4: Run Test Suite
-```bash
-cd /home/chief/Coding-Projects/kteam-dj-chief
-python3 manage.py test --keepdb 2>&1 | tail -50
-```
-
-### Step 5: Git Diff Review
-```bash
-git diff --stat
-# Verify only response patterns changed, no logic changes
-```
+**Total estimated effort:** 6-9 hours (P0-P3) + secondary cleanup
 
 ---
 
-## Anti-Patterns to Avoid
+## Implementation Tickets
 
-1. **DO NOT** change business logic — only response wrappers
-2. **DO NOT** modify function signatures or parameters
-3. **DO NOT** remove existing imports
-4. **DO NOT** add new dependencies
-5. **DO** preserve exact data structures being returned
-6. **DO** use appropriate error codes from the mapping table
-7. **DO** verify syntax after each file change
+### Ticket 1: P0 — Tenant-Context Extraction Validation ✅ COMPLETE
 
----
+**Title:** P0: Add validation for missing JWT claims in TenantContextMiddleware
 
-## Common Mistakes (from Previous Attempts)
+**Status:** ✅ COMPLETE
 
-1. **Partial fixes:** Subagents only fixed some Response() calls, leaving others
-2. **File corruption:** Exit code 143 (SIGTERM) during large file edits
-3. **Missing imports:** Forgetting to add `from backend.response_utils import`
-4. **Wrong parameter names:** Using `status=` instead of `status_code=`
+**Description:**
+The multi-tenancy constitution requires JWT claims to be authoritative. The middleware is ALREADY using canonical keys (`bg_code`, `div_codes`, `branch_codes`, `identity_id`). However, it does NOT validate that required claims are present.
 
----
+When `bg_code` or `identity_id` is missing from the JWT, the middleware silently degrades (doesn't set ContextVar, doesn't raise an error). This must be fixed to fail fast with `TenantContextMissingError` (HTTP 401).
 
-## Recommended Execution Strategy
+**Tasks:**
+- [x] Add validation in `plat/observability/middleware.py` TenantContextMiddleware.process_request()
+- [x] Raise `TenantContextMissingError` when `bg_code` or `identity_id` is missing from JWT
+- [x] Add `TENANT_CONTEXT_MISSING` to ErrorCode enum in `backend/exceptions.py`
+- [x] Add `TenantContextMissingError` class in `backend/exceptions.py`
 
-**Option A: Single Subagent (Large Task)**
-- Dispatch one worker with all 17 files
-- Risk: May hit timeout or produce partial fixes
-- Mitigation: Provide detailed instructions, verify after
+**Acceptance:**
+- Middleware extracts only `bg_code`, `div_codes`, `branch_codes`, `identity_id` from JWT (ALREADY DONE)
+- ContextVar uses only canonical keys (ALREADY DONE)
+- `TenantCollection` reads only canonical ContextVar keys (ALREADY DONE)
+- Missing required claims → `TenantContextMissingError` (HTTP 401) (DONE)
+- No legacy key references in extraction path (ALREADY DONE)
 
-**Option B: Parallel Subagents (Recommended)**
-- Group files by domain (4-5 subagents)
-- Each subagent handles 3-4 files
-- Verify each subagent independently
-- Risk: Coordination overhead
-- Mitigation: Use git worktrees for isolation
+**Files Modified:**
+- `plat/observability/middleware.py` (added validation)
+- `backend/exceptions.py` (added TENANT_CONTEXT_MISSING code and TenantContextMissingError class)
 
-**Option C: Manual Fix (Safest)**
-- Fix files manually one at a time
-- Verify each file before moving to next
-- Risk: Time-consuming
-- Mitigation: Use search-and-replace with care
+**Effort:** 15-30 minutes
 
 ---
 
-## Success Criteria
+### Ticket 2: P1 — Tenant-Switch JWT Regeneration ✅ COMPLETE
 
-- [ ] All 194 raw `Response()` calls replaced
-- [ ] All 16 files have `from backend.response_utils import`
-- [ ] `grep` returns 0 non-compliant lines
-- [ ] All files pass `py_compile`
-- [ ] Test suite passes (no regressions)
-- [ ] Git diff shows only response pattern changes
+**Title:** P1: Implement /api/v1/tenant/switch/ with JWT regeneration and HttpOnly cookie
+
+**Status:** ✅ COMPLETE
+
+**Description:**
+The endpoint spec requires `POST /api/v1/tenant/switch/` to update `UserTenantContext`, generate a new JWT with canonical claims, set the new JWT as an HttpOnly cookie, and return the updated context payload.
+
+**Current state:** The endpoint already existed at `tenant/context_views.py:tenant_switch()`. However, it used `api_error()` tuple unpacking (non-spec) and set the cookie as `access_token` instead of `jwt_token` (inconsistent with login).
+
+**Tasks:**
+- [x] Endpoint already existed (no new implementation needed)
+- [x] Replace `api_error()` with `error_response()` (spec-compliant)
+- [x] Replace `Response()` with `success_response()` (canonical utility)
+- [x] Add `generate_tenant_token()` function to `users/tenant_tokens.py`
+- [x] Fix cookie name from `access_token` to `jwt_token` (consistent with login)
+- [x] Fix cookie security attributes (use `not settings.DEBUG` for secure flag)
+- [x] Fix cookie max_age to 8 hours (match login JWT)
+- [x] Add `identity_id` to JWT claims and response payload
+- [x] Mark legacy `/api/v1/users/bgswitch/` endpoint as deprecated (not changed)
+
+**Acceptance:**
+- Endpoint exists at `/api/v1/tenant/switch/` ✅
+- Validates `bg_code` against user's Identity ✅
+- Updates `UserTenantContext` with new context ✅
+- New JWT generated with all canonical claims ✅
+- HttpOnly cookie set with same security attributes ✅
+- Response returns updated context payload in spec envelope ✅
+- Legacy endpoint marked deprecated (not changed)
+
+**Files Modified:**
+- `tenant/context_views.py` (replaced api_error/success_response, fixed cookie)
+- `users/tenant_tokens.py` (added generate_tenant_token function)
+
+**Effort:** 30 minutes
 
 ---
 
-## Expected Outcome
+### Ticket 3: P2 — Error-Envelope Normalization
 
-**Alignment:** ~95% (up from ~85%)  
-**Remaining Issues:** None (or minimal edge cases)  
-**Next Audit:** Recommended after completion
+**Title:** P2: Normalize non-2xx error responses to canonical envelope and spec error codes
+
+**Description:**
+The `ResponseEnvelopeMiddleware` handles 2xx success envelopes automatically. The real work is fixing 61 non-2xx error responses to use the spec error envelope and spec error codes. Also clean up 421 class-method wrappers that ignore `status_code`.
+
+**Tasks:**
+- [ ] Fix 61 non-2xx error responses to use spec error envelope (spec §8.2)
+- [ ] Replace `INPUT_ERROR` code with `VALIDATION_ERROR` (spec §8.1)
+- [ ] Remove `api_error()` tuple unpacking (use `error_response()` utility)
+- [ ] Replace 421 class-method calls with canonical utilities (verify status codes preserved)
+- [ ] Remove class-method definitions from 8 files
+- [ ] Verify 201/202/204 status codes preserved in non-200 success paths
+
+**Acceptance:**
+- All non-2xx JSON errors conform to canonical error envelope (spec §8.2)
+- All non-200 success paths preserve intended HTTP status codes (201, 202, 204)
+- `INPUT_ERROR` replaced with `VALIDATION_ERROR` (spec §8.1)
+- `api_error()` tuple unpacking removed
+- Class-method wrappers replaced or removed (status codes preserved)
+- Remaining wrappers confined to special cases (pagination, reporting, 204)
+
+**Files:** 17 target files + 8 class-method files (see affected files table below)
+
+**Effort:** 2-3 hours
 
 ---
 
-## References
+## Affected Files (P2 Only)
 
-- **Spec:** `endpoint_contract_spec_revised.md` §3.1
-- **Utilities:** `backend/response_utils.py`
-- **Previous Audit:** `28-06-2026_api-contract-audit-v2.md`
-- **Review Run:** `review-60e0b2c17029`
+### Bucket 2: Non-2xx Error Responses (Must Fix) — 61 calls
+
+| Domain | File | Error Calls | Priority |
+|--------|------|-------------|----------|
+| **Tournaments** | `domains/tournaments/views.py` | ~15 | HIGH |
+| **Orders** | `domains/orders/services.py` | ~12 | HIGH |
+| **Shared** | `domains/shared/millie.py` | ~8 | MEDIUM |
+| **Cafe Arcade** | `domains/cafe_arcade/views.py` | ~6 | MEDIUM |
+| **Other files** | ... | ~20 | LOW |
+| **SUBTOTAL** | | **61** | **Must fix** |
+
+### Bucket 3: Wrapper/Class-Method Calls (Fix + Remove) — 421 calls
+
+| Domain | File | Class Method Calls | Notes |
+|--------|------|-------------------|-------|
+| **Accounts** | `domains/accounts/viewsets.py` | 128 | Also has 13 raw calls |
+| **Products** | `domains/products/viewsets.py` | 111 | Also has 20 raw calls |
+| **Orders** | `domains/orders/viewsets.py` | 86 | Also has 5 raw calls |
+| **Shared** | `domains/shared/viewsets.py` | 34 | Also has 4 raw calls |
+| **Teams** | `domains/teams/viewsets.py` | 23 | Also has 1 raw call |
+| **Vendors** | `domains/vendors/viewsets.py` | 19 | Also has 1 raw call |
+| **Search** | `domains/search/viewsets.py` | 19 | **0 raw calls — MUST include** |
+| **Backend** | `backend/reporting_base.py` | 1 | Base class, 1 wrapper call |
+| **SUBTOTAL** | | **421** | **Fix and remove** |
 
 ---
 
-*Handoff generated: 29-06-2026*  
-*Total calls to fix: 194*  
-*Files to update: 17*  
-*Estimated effort: 2-3 hours*  
-*Priority: P1*
+## Success Criteria (Rewritten)
+
+Replace the old "0 raw Response() calls" target with these sharper criteria:
+
+- [ ] **All non-2xx JSON errors conform to the canonical error envelope** (spec §8.2)
+- [ ] **All non-200 success paths preserve intended HTTP status codes** (201 for created, 202 for accepted, 204 for no content)
+- [ ] **Any remaining wrappers are either deleted or confined to genuinely special cases** (pagination, reporting, 204 semantics)
+- [ ] **`INPUT_ERROR` code replaced with `VALIDATION_ERROR`** (spec §8.1)
+- [ ] **`api_error()` tuple unpacking removed** (use `error_response()` utility instead)
+- [ ] **All files compile and tests pass**
+
+---
+
+## Decision Record
+
+**Default path: Execute P0 → P1 → P2 → P3 in order.**
+
+- **P0 rejected?** No — tenant extraction is foundational
+- **P1 rejected?** No — tenant switch is tracked P1 in multi-tenancy doc
+- **P2 rejected?** No — error envelopes are non-negotiable per spec
+- **P3 rejected?** No — verification is required before secondary cleanup
+
+**If you want to deviate from this order, explicitly state so before execution begins.**
+
+---
+
+*Handoff updated: 29-06-2026 (v6 — priority-structured execution plan)*  
+*Authority: endpoint_contract_spec_revised.md (wire), CANONICAL_NAMING.md (naming), multi_tenancy.md (tenant)*  
+*Priority: P0 (tenant extraction) → P1 (tenant switch) → P2 (error envelopes) → P3 (closeout)*  
+*Total effort: 6-9 hours (P0-P3) + secondary cleanup*
