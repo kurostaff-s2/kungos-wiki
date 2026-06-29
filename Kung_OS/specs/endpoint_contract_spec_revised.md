@@ -267,7 +267,7 @@ urlpatterns = [
 - `active_branch_code` (string \| null) — current active branch
 - `scope` (string) — scope level: `'full'` \| `'division'` \| `'branch'`
 - `roles` (array[string]) — derived from extensions
-- `permissions` (array[string]) — RBAC perm_codes
+- `permissions` (object) — RBAC permissions keyed by code with levels: `{ "code": { level: N, bg_code: "..." }, ... }`
 
 **Refresh token delivery:** The refresh token is delivered ONLY as an HttpOnly cookie (`refresh_token`). It is NOT included in the JSON response body to prevent XSS exposure. The frontend MUST use the cookie for token refresh requests.
 
@@ -289,7 +289,7 @@ urlpatterns = [
 | — | `user.active_div_code` | Added (was `entity[0]`) |
 | — | `user.active_branch_code` | Added (was `branches[0]`) |
 | — | `user.scope` | Added |
-| `user.accesslevel[]` | `user.permissions[]` | RBAC perm_codes |
+| `user.accesslevel[]` | `user.permissions{}` | RBAC perm_codes with levels |
 | — | `user.roles[]` | Derived from extensions |
 | — | `refresh_token` | Added (sliding refresh) |
 
@@ -715,7 +715,7 @@ UserTenantContext
 | `res.data.user.userid` | `res.data.user.identity_id` | New PK |
 | `res.data.user.phone` (raw) | `res.data.user.phone` (E.164) | Normalized |
 | `res.data.user.businessgroups[]` | `res.data.user.bg_code` | Single BG from tenant context |
-| `res.data.user.accesslevel[]` | `res.data.user.permissions[]` | RBAC perm_codes |
+| `res.data.user.accesslevel[]` | `res.data.user.permissions{}` | RBAC perm_codes with levels |
 | `res.data.user.roles` (JSON) | `res.data.user.roles[]` | Derived from extensions |
 | `res.data.user.primary_bg` | `res.data.user.bg_code` | From tenant context |
 | — | `res.data.user.div_codes[]` | Added (was `division[]`) |
@@ -898,7 +898,7 @@ Link: </api/v2/users/me>; rel="successor-version"
 | `division` | `div_code` | MongoDB documents | M3 (Phase 5.7) |
 | `branch` | `branch_code` | MongoDB documents | M3 (Phase 5.7) |
 | `userid` (PK) | `identity_id` | All person references | M1 (Phase 4) |
-| `accesslevel[]` | `permissions[]` | Login response | Phase 2 |
+| `accesslevel[]` | `permissions{}` | Login response (with levels) | Phase 2 — FIXED |
 
 **Phase 0 is the highest priority:** The middleware and MongoDB wrapper MUST be fixed to use canonical field names before any other work. This is a P0 bug that breaks all tenant isolation.
 
@@ -968,7 +968,7 @@ server: {
 
 - [ ] Replace `kuro/user` → `users/me` in `user.jsx`
 - [ ] Replace `res.data.user.userid` → `res.data.user.identity_id`
-- [ ] Replace `res.data.user.accesslevel[]` → `res.data.user.permissions[]`
+- [x] Replace `res.data.user.accesslevel[]` → `res.data.user.permissions{}` (with levels)
 - [ ] Replace `res.data.user.businessgroups[]` → `res.data.user.bg_code`
 - [ ] Add `div_codes`, `branch_codes`, `active_div_code`, `active_branch_code`, `scope` to user state
 - [ ] Replace `cafe/sessions/start` → `cafe/sessions` (POST)
