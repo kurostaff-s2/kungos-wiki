@@ -5,7 +5,7 @@
 | Project ID | `kteam-dj-chief` |
 | Primary entity ID | `779286` |
 | Entity type | `handoff` |
-| Short description | Wipe dev target (`kuro-cadence`) and re-migrate all user data from eShop PG, KungOS Mongo, and legacy Mongo with consistent identity format and phone-based dedup |
+| Short description | Wipe dev target (`KungOS_PG_One` / `kuro-cadence`) and re-migrate all user data from eShop PG, KungOS Mongo, and legacy Mongo with consistent identity format and phone-based dedup |
 | Status | `draft` |
 | Source references | `30-06-2026_business-logic-data-audit_7111e7.md`, `migrate_identity.py`, `migrate_legacy_eshop.py` |
 | Generated | `30-06-2026` |
@@ -29,7 +29,7 @@
 
 ## Goal
 
-Wipe the dev target database (`kuro-cadence` / `KungOS_PG_One`) and re-migrate **all user data** from every source into a clean, consistent state with:
+Wipe the dev target database (`KungOS_PG_One` / `kuro-cadence`) and re-migrate **all user data** from every source into a clean, consistent state with:
 
 - **One identity per phone** — no duplicates across sources
 - **Consistent identity ID format** — `ESH*` for eShop, `ID*` for walk-ins, `KCTM*`/`KCAD*` for employees, `REPL*` for players
@@ -82,7 +82,7 @@ Wipe the dev target database (`kuro-cadence` / `KungOS_PG_One`) and re-migrate *
 
 ---
 
-## Target Schema (`kuro-cadence` / `KungOS_PG_One`)
+## Target Schema (`KungOS_PG_One` / `kuro-cadence`)
 
 ### Core Tables
 
@@ -161,7 +161,7 @@ Phase 10: Tenant Context + Validation
 **What:** Wipe all data from target and re-apply Django migrations to reset schema.
 
 **Steps:**
-1. Connect to `kuro-cadence` as `postgres` user.
+1. Connect to `KungOS_PG_One` (`kuro-cadence`) as `postgres` user.
 2. Execute:
    ```sql
    BEGIN;

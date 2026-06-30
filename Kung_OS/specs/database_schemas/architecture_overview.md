@@ -18,6 +18,12 @@
 - **TARGET later** — What's planned for future migration
 - **Contract-stable** — APIs/interfaces that are storage-agnostic (work with any backend)
 
+### Revision History
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.5 | 2026-07-01 | Vendors moved from `users_organization` to `inv_vendors` (Inventory domain). `vendor_code` preserved as PK. Phase 2 (MongoDB canonicalization) added as prerequisite. Phase ordering re-aligned. |
+
 ### Field Naming Convention
 
 TARGET uses canonical field names (`bg_code`, `div_code`, `branch_code`). The `TenantCollection` wrapper injects canonical names on write. Phase 2 migration renames all documents and indexes to canonical names. Legacy field names (`bgcode`, `division`, `branch`) are no longer supported — all code paths use target state.
@@ -125,11 +131,18 @@ KungOS uses a **dual-database architecture** with clear separation of concerns:
 
 | Table | Purpose | Source |
 |-------|---------|--------|
+| `inv_vendors` | Vendor registry — Suppliers/service providers. PK = `vendor_code` (string, preserved from MongoDB). Multi-state GST in JSONB `gstdetails`. | `vendors` (MongoDB) |
 | `inventory_inventoryitem` | Item registry — Tracks item_code, category, collection, base_price | `stock_register` (merged) |
 | `inventory_inventorystock` | Branch stock quantities — Tracks stock_quantity, reserved_quantity, available_quantity per branch | `stock_register` |
 | `inventory_inventorymovement` | Stock movements — Tracks movement_type, quantity, reference_id, sr_nos | `stock_register` |
-| `inv_purchase_orders` | Purchase orders — **Inventory domain** — POs triggered by stock replenishment | `purchase_orders` (MongoDB) |
+| `inv_purchase_orders` | Purchase orders — **Inventory domain** — POs triggered by stock replenishment. `vendor_code` FK → `inv_vendors` | `purchase_orders` (MongoDB) |
 | `inv_purchase_order_items` | PO line items — FK → `inventory_inventoryitem`, FK → `inv_purchase_orders` | `purchase_orders` (MongoDB) |
+
+**Why `inv_vendors` (not `users_organization`):**
+- Vendors are referenced by `vendor_code` (string) across POs, invoices, debit/credit notes — not by an opaque FK
+- `vendor_code` is embedded in PO numbers, invoice IDs, and debit note IDs (e.g., `KCTM0001` → `KCTM-PO-000001`)
+- Vendors have procurement-specific fields (multi-state GST, payment terms, registration addresses) unrelated to identity
+- `users_organization` is for teams + identity-linked entities; vendors are not users
 
 **Purchase Order Flow (TARGET):**
 ```
@@ -137,6 +150,13 @@ indentproduct (MongoDB) → inv_purchase_orders (PG) → inventory_inventorymove
                                       ↓
                             inward_invoice (financial_documents)
 ```
+
+**Vendor Reference Pattern:**
+```python
+# inv_purchase_orders.vendor_code → inv_vendors.vendor_code (string FK)
+# NOT: inv_purchase_orders.vendor_id → users_organization.org_id
+```
+
 
 ### 3.1a Accounts Domain — TARGET (Master Data)
 
@@ -218,10 +238,12 @@ Tenant-scoped master data. Sundry ledger is computed from `inv_purchase_orders` 
 | `employee_attendance` | Attendance records — New table. FK → users_identity. Merges `employee_attendance` (MongoDB) |
 | `users_customer` | Customer extension — FK → users_identity |
 | `users_player` | Player extension — FK → users_identity |
-| `users_organization` | Organizations (teams, vendors) |
-| `users_vendor_profile` | Vendor extension — FK → users_organization |
+| `users_organization` | Organizations (teams only) — `org_type='team'` |
 | `users_team_profile` | Team extension — FK → users_organization |
 | `team_memberships` | Team-to-person mapping |
+
+> **Note:** Vendors are NOT in `users_organization`. They live in `inv_vendors` (Inventory Domain, §3.1).
+> Vendors are procurement entities, not identity entities. Referenced by `vendor_code` (string), not `org_id` FK.
 
 ### 3.5 RBAC Domain — LIVE (Stable)
 
@@ -367,6 +389,7 @@ Tenant-scoped master data. Sundry ledger is computed from `inv_purchase_orders` 
 |-------------------|---------------------|------------------|
 | `asset_register` | `inventory_inventoryasset` | ✅ Phase 8 |
 | `stock_register` | `inventory_inventorystock` | 🔜 TO BE MIGRATED |
+| `vendors` | `inv_vendors` | 🔜 TO BE MIGRATED (Inventory domain, vendor_code preserved as PK) |
 | `indentpos` | `inv_purchase_orders` | 🔜 TO BE MIGRATED |
 | `purchase_orders` | `inv_purchase_orders` + `inv_purchase_order_items` | 🔜 TO BE MIGRATED (Inventory domain) |
 | `partners` | `acct_partners` | 🔜 TO BE MIGRATED (Accounts master data) |
@@ -443,8 +466,10 @@ Tenant-scoped master data. Sundry ledger is computed from `inv_purchase_orders` 
 | `AssetRegisterViewSet` | `inventory_inventoryasset` (PG) (LIVE) | LIVE |
 | `StockAuditViewSet` | `inventory_inventorymovement` (PG) (TARGET) | TARGET |
 | `PurchaseOrderViewSet` | `inv_purchase_orders` (PG) (TARGET) | TARGET |
+| `VendorViewSet` | `inv_vendors` (PG) (TARGET) | TARGET |
 
 > **Note:** `PurchaseOrderViewSet` is in Inventory domain, not Accounts. POs are inventory management (triggered by stock replenishment), not financial operations.
+> `VendorViewSet` is in Inventory domain (procurement), not in `users_organization` (identity).
 
 ### 6.3 Accounts Domain
 
@@ -606,8 +631,8 @@ Migrate user data from MongoDB + legacy PG tables to unified `users_identity` + 
 - [ ] Create `users_identity` table (char(20) PK, `ID000001` sequence)
 - [ ] Migrate `reb_users` → `users_identity` + `users_customer`
 - [ ] Migrate `players` → `users_identity` + `users_player`
-- [ ] Migrate `vendors` → `users_organization` + `users_vendor_profile`
 - [ ] Migrate `teams` → `users_organization` + `users_team_profile`
+> **Note:** Vendors are NOT migrated here. They go to `inv_vendors` (Inventory Domain, Phase 5).
 - [ ] Create `identity_phone_aliases` table
 - [ ] Create `users_employee` table
 - [ ] Migrate `employees` (MongoDB) → `users_employee`
@@ -664,13 +689,17 @@ Migrate stock/inventory data and purchase orders from MongoDB to PostgreSQL. POs
 - [ ] Migrate stock data → PG tables
 - [ ] Create `inv_purchase_orders` table (Inventory domain)
 - [ ] Create `inv_purchase_order_items` table
+- [ ] Create `inv_vendors` table (vendor_code PK, multi-state GST in JSONB gstdetails)
+- [ ] Migrate `vendors` (MongoDB) → `inv_vendors` (PG) — preserve vendor_code as PK
 - [ ] Migrate `purchase_orders` (MongoDB) → `inv_purchase_orders` + `inv_purchase_order_items`
 - [ ] Migrate `indentpos` (MongoDB) → `inv_purchase_orders` (if not same as `purchase_orders`)
 - [ ] Update `InventoryViewSet` to read from PG
 - [ ] Move `PurchaseOrderViewSet` from Accounts to Inventory domain
+- [ ] Create `VendorViewSet` in Inventory domain
 - [ ] Add FK: `inv_purchase_order_items.item_code` → `inventory_inventoryitem.item_code`
-- [ ] Add indexes (`item_code`, `branch_code`, `item_id+branch_code` unique)
-- [ ] Drop/archive `stock_register`, `purchase_orders`, `indentpos` from MongoDB
+- [ ] Add FK: `inv_purchase_orders.vendor_code` → `inv_vendors.vendor_code`
+- [ ] Add indexes (`vendor_code`, `item_code`, `branch_code`, `item_id+branch_code` unique)
+- [ ] Drop/archive `stock_register`, `purchase_orders`, `indentpos`, `vendors` from MongoDB
 
 ### Phase 5.5: Finance Consolidation (TARGET)
 
@@ -845,10 +874,15 @@ ALTER TABLE inv_purchase_order_items
   ADD CONSTRAINT fk_po_item
   FOREIGN KEY (item_code) REFERENCES inventory_inventoryitem (item_code);
 
--- Purchase orders reference organizations (vendors)
+-- Purchase orders reference vendors (Inventory domain, not users_organization)
 ALTER TABLE inv_purchase_orders
   ADD CONSTRAINT fk_po_vendor
-  FOREIGN KEY (vendor_id) REFERENCES users_organization(org_id);
+  FOREIGN KEY (vendor_code) REFERENCES inv_vendors (vendor_code);
+
+-- Vendors reference tenant
+ALTER TABLE inv_vendors
+  ADD CONSTRAINT fk_vendor_bg
+  FOREIGN KEY (bg_code) REFERENCES tenant_business_groups (bg_code);
 
 -- Accounts master data references tenant
 ALTER TABLE acct_partners
