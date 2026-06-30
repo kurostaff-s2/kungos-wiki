@@ -1,13 +1,13 @@
-# Orders Migration & Identity Mapping Audit
+# Orders Migration & Identity Mapping Audit (CORRECTED)
 
 | Field | Value |
 |-------|-------|
 | Project ID | `kteam-dj-chief` |
-| Primary entity ID | `de5d4d` |
+| Primary entity ID | `de5d4d-v2` |
 | Entity type | `handoff` |
-| Short description | Audit orders migration across 6 source collections, map to identity-based users in `KungOS_PG_One`, and document the clean re-migration strategy with customer_id resolution |
+| Short description | Corrected audit of orders migration from TRUE legacy sources (kuropurchase + kg_eshop_latest) to `KungOS_PG_One` with proper tenant mapping and identity resolution |
 | Status | `draft` |
-| Source references | `30-06-2026_user-data-migration-canonical_779286.md`, `30-06-2026_architecture-v15-execution_e02526.md`, `/tmp/migrate_orders.py`, `migrate_legacy_eshop.py` |
+| Source references | `30-06-2026_user-data-migration-canonical_779286.md`, `30-06-2026_architecture-v15-execution_e02526.md` |
 | Generated | `30-06-2026` |
 | Next action / owner | Execute orders re-migration after user migration (Phase 8-9 in user handoff) |
 
@@ -19,141 +19,199 @@
 **Reference docs:**
 - `30-06-2026_user-data-migration-canonical_779286.md` (user migration handoff — prerequisite)
 - `30-06-2026_architecture-v15-execution_e02526.md` (architecture v1.5 execution)
-- `30-06-2026_business-logic-data-audit_7111e7.md` (business logic audit)
-
-**Key files for this task:**
-- `/tmp/migrate_orders.py` (existing MongoDB → PG orders migration)
-- `plat/management/commands/migrate_legacy_eshop.py` (eShop orders migration)
-- CREATE: `plat/management/commands/migrate_orders_canonical.py` (master orders migration with identity resolution)
+- `30-06-2026_business-logic-data-audit_7111e7.md` (business logic data audit)
 
 **Target DB:** `KungOS_PG_One` (`kuro-cadence`)
-**Source DBs:** `KungOS_Mongo_One` (MongoDB), `kg_eshop_latest` (PostgreSQL), `kuropurchase` (MongoDB legacy)
+**TRUE Legacy Source DBs:**
+- `kuropurchase` (MongoDB) — legacy, NO tenant fields
+- `kg_eshop_latest` (PostgreSQL) — legacy, NO tenant fields
+
+**NOT a source:** `KungOS_Mongo_One` is a pre-migrated/canonicalized version of kuropurchase (subset with tenant fields). Use only for reference, NOT as source.
 
 ---
 
 ## Goal
 
-Audit the current orders migration state, identify gaps between source and target, and design a clean re-migration strategy that:
+Audit the current orders migration state from TRUE legacy sources, identify all gaps, and design a clean re-migration strategy that:
 
 1. **Maps every order to an identity-based user** via `customer_id` FK → `users_identity.identity_id`
-2. **Resolves raw phone numbers** to proper `ESH*`/`ID*` identity IDs
-3. **Preserves order lineage** via source `order_id` and collection origin
-4. **Handles null customer gracefully** (walk-ins, third-party orders, estimates without identity)
+2. **Enriches tenant fields** (bg_code, div_code, branch_code) for all kuropurchase records
+3. **Resolves raw phone numbers** to proper `ESH*`/`ID*` identity IDs
+4. **Preserves order lineage** via source `order_id` and collection origin
+5. **Handles null customer gracefully** (walk-ins, third-party orders, estimates without identity)
 
 ---
 
-## 1. Source → Target Mapping (Current State)
+## 1. Source → Target Mapping (CORRECTED: TRUE Legacy Counts)
 
 ### 1.1 Collection Mapping Overview
 
-| Source Collection | Source DB | Source Count | Target `order_type` | Target Count | Detail Table | Detail Count | Gap |
+| Source Collection | Source DB | Legacy Count | Target `order_type` | Target Count | Detail Table | Detail Count | Gap (Legacy → Target) |
 |---|---|---|---|---|---|---|---|
-| `estimates` | KungOS_Mongo_One | 4,308 | `estimate` | 4,308 | `estimate_detail` | 4,308 | **0** ✅ |
-| `kgorders` | KungOS_Mongo_One | 9,162 | `in_store` | 9,172 | `in_store_detail` | 9,162 | **+10** ⚠️ |
-| `tporders` | KungOS_Mongo_One | 229 | `tp` | 229 | `tp_order_detail` | 229 | **0** ✅ |
-| `serviceRequest` | KungOS_Mongo_One | 1,625 | `service` | 1,623 | `service_detail` | 1,623 | **-2** ⚠️ |
-| `orders_orders` | kg_eshop_latest | 1,206 | `eshop` | 992 | `eshop_detail` | 993 | **-214** 🔴 |
-| (live kiosk) | — | — | `cafe_fnb` | 3 | `cafe_fnb_detail` | 3 | **N/A** |
-| **TOTAL** | — | **15,525+** | — | **16,327** | — | **16,318** | **+802** |
+| `kgorders` | kuropurchase | 12,134 | `in_store` | 9,172 | `in_store_detail` | 9,162 | **−2,962** 🔴 |
+| `estimates` | kuropurchase | 5,052 | `estimate` | 4,308 | `estimate_detail` | 4,308 | **−744** 🔴 |
+| `tporders` | kuropurchase | 229 | `tp` | 229 | `tp_order_detail` | 229 | **0** ✅ |
+| `serviceRequest` | kuropurchase | 1,627 | `service` | 1,623 | `service_detail` | 1,623 | **−4** ⚠️ |
+| `orders_orders` | kg_eshop_latest | 1,206 (975 active) | `eshop` | 992 | `eshop_detail` | 993 | **+17** 🔴 |
+| (live kiosk) | — | — | `cafe_fnb` | 3 | `cafe_fnb_detail` | 12 | **N/A** |
+| **TOTAL** | — | **19,248** | — | **16,327** | — | **16,318** | **−2,921** |
 
-### 1.2 Gap Analysis
+### 1.2 Critical Finding: KungOS_Mongo_One is a FILTERED SUBSET
 
-#### 1.2.1 eShop: 1,206 source → 992 target (−214 missing) 🔴
+The previous handoff used `KungOS_Mongo_One` counts which were already filtered. The TRUE gaps are:
 
-**Root cause:** eShop source has `delete_flag=true` on 231 records. The migration script filters these out.
+| Collection | kuropurchase | KungOS_Mongo_One | Target | Missing (kuropurchase → KungOS) | Missing (KungOS → Target) |
+|---|---|---|---|---|---|
+| `kgorders` | 12,134 | 9,162 | 9,172 | **2,972** | +10 (web app) |
+| `estimates` | 5,052 | 4,308 | 4,308 | **744** | 0 |
+| `tporders` | 229 | 229 | 229 | 0 | 0 |
+| `serviceRequest` | 1,627 | 1,625 | 1,623 | **2** | −2 |
 
-```sql
--- Source breakdown
-SELECT count(*) as total,
-       count(*) FILTER (WHERE delete_flag = true) as deleted,
-       count(*) FILTER (WHERE delete_flag = false) as active
-FROM orders_orders;
--- total: 1206, deleted: 231, active: 975
+**KungOS_Mongo_One is a strict subset of kuropurchase** (0 records exist in KungOS that aren't in kuropurchase). The records missing from KungOS were excluded during the initial consolidation (likely due to missing tenant fields or data quality issues).
+
+### 1.3 Gap Analysis
+
+#### 1.3.1 kgorders: 12,134 legacy → 9,172 target (−2,962 missing) 🔴
+
+**Root cause:** 2,972 `kgorders` exist in `kuropurchase` but were NOT migrated to `KungOS_Mongo_One` (and therefore not to target). The +10 in target are web app orders (hex order_ids, `channel = 'Online Orders'`).
+
+**Investigation:**
+```javascript
+// kuropurchase kgorders NOT in KungOS_Mongo_One
+// 2,972 records — need to inspect why they were excluded
+db.kgorders.find({orderid: {$nin: kungosOrderIds}}).limit(5).forEach(doc => printjson(doc));
 ```
-
-**Remaining gap:** 975 active − 992 target = **+17 extra in target** (likely from re-runs with `ON CONFLICT DO UPDATE` creating duplicates, or orders migrated via different process).
-
-**Investigation needed:**
-- Check if 17 extra target orders have `order_id` not in source
-- Verify `eshop_detail` count (993) vs `orders_core` eshop count (992) — **1 orphan detail row**
-
-```sql
--- Find orphan eshop_detail
-SELECT d.order_id
-FROM eshop_detail d
-LEFT JOIN orders_core o ON d.order_id = o.id
-WHERE o.id IS NULL;
-```
-
-**Recommendation:** During clean re-migration, use `ON CONFLICT (order_id) DO UPDATE` and verify detail table counts match core table counts.
-
-#### 1.2.2 kgorders: 9,162 source → 9,172 target (+10 extra) ⚠️
-
-**Root cause:** 10 extra `in_store` orders in target have non-standard order_id prefixes:
-- 9 orders with `channel = 'Online Orders'` (hex order_ids like `673DF4897D`, `CBADFF99D6`)
-- 1 order with `FNB` prefix (cafe order misclassified as `in_store`)
-
-```sql
--- Non-KG prefix in_store orders
-SELECT order_id, customer_name, channel, total_amount
-FROM orders_core
-WHERE order_type = 'in_store'
-AND order_id NOT LIKE 'KG%';
--- Returns 9 hex + 10 FNB = 19 total
-```
-
-**These are NOT from kgorders.** They appear to be:
-- **9 hex-prefixed orders:** Created via the web app (not migrated from MongoDB). These are live orders from the current system, not legacy data.
-- **10 FNB-prefixed orders:** Cafe/F&B orders that were misclassified as `in_store` (should be `cafe_fnb`).
 
 **Recommendation:** During clean re-migration:
-- Exclude orders with `channel = 'Online Orders'` and hex order_ids from legacy migration (they're live system data)
-- Reclassify FNB-prefixed orders to `cafe_fnb` type
-- Only migrate `kgorders` from `KungOS_Mongo_One` (9,162 records, all with `bg_code`)
+1. Enrich ALL 12,134 kuropurchase kgorders with tenant fields
+2. Migrate directly from kuropurchase (bypass KungOS_Mongo_One)
+3. Exclude web app orders (hex order_ids, `channel = 'Online Orders'`) from legacy migration
+4. Reclassify FNB-prefixed orders to `cafe_fnb` type
 
-#### 1.2.3 serviceRequest: 1,625 source → 1,623 target (−2 missing) ⚠️
+#### 1.3.2 estimates: 5,052 legacy → 4,308 target (−744 missing) 🔴
 
-**Root cause:** 2 service requests were skipped during migration (likely missing `srid` or duplicate detection).
+**Root cause:** 744 `estimates` exist in `kuropurchase` but were NOT migrated to `KungOS_Mongo_One`.
 
+**Investigation:**
 ```javascript
-// Source: all have srid
-db.serviceRequest.countDocuments({srid: {$ne: ''}})  // 1625
+// kuropurchase estimates NOT in KungOS_Mongo_One
+// 744 records — need to inspect why they were excluded
+db.estimates.find({estimate_no: {$nin: kungosEstimateNos}}).limit(5).forEach(doc => printjson(doc));
 ```
 
-**Investigation needed:** Find which 2 `srid` values are missing from target.
+**Recommendation:** During clean re-migration:
+1. Enrich ALL 5,052 kuropurchase estimates with tenant fields
+2. Migrate directly from kuropurchase
 
-```sql
--- Find missing service orders
-SELECT sr.srid
-FROM (
-  SELECT DISTINCT srid FROM KungOS_Mongo_One.serviceRequest
-) sr
-LEFT JOIN orders_core o ON sr.srid = o.order_id AND o.order_type = 'service'
-WHERE o.order_id IS NULL;
-```
+#### 1.3.3 serviceRequest: 1,627 legacy → 1,623 target (−4 missing) ⚠️
 
-**Recommendation:** During clean re-migration, log skipped records with reason (missing srid, FK violation, etc.).
+**Root cause:** 2 service requests missing from KungOS_Mongo_One, plus 2 more missing from target.
 
-#### 1.2.4 kuropurchase kgorders: 12,134 records (not migrated)
-
-**Status:** `kuropurchase.kgorders` has 12,134 records (all with `bg_code: 'KURO0001'`). These were NOT included in the target migration.
-
-**Question:** Are these a superset of `KungOS_Mongo_One.kgorders` (9,162)? Or do they contain additional orders?
-
+**Investigation:**
 ```javascript
-// Check overlap
-// kuropurchase kgorders: 12,134 (all with bg_code)
-// KungOS_Mongo_One kgorders: 9,162 (all with bg_code)
-// Gap: 2,972 orders in kuropurchase not in KungOS_Mongo_One
+// kuropurchase serviceRequest NOT in KungOS_Mongo_One
+// 2 records
+db.serviceRequest.find({srid: {$nin: kungosSrids}}).forEach(doc => printjson(doc));
 ```
 
-**Recommendation:** Before re-migration, verify if kuropurchase kgorders contain orders not in KungOS_Mongo_One. If yes, merge into KungOS_Mongo_One first (with dedup by `orderid`).
+**Recommendation:** During clean re-migration, log skipped records with reason.
+
+#### 1.3.4 eShop: 1,206 legacy (975 active) → 992 target 🔴
+
+**Root cause:** Complex migration error with two components:
+
+1. **172 deleted orders migrated** (should have been skipped): Orders with `delete_flag=true` were migrated before the filter was applied consistently. All 172 have `order_status = 'Payment Method Changed'`.
+
+2. **155 active orders missing** (should have been migrated): Orders with `delete_flag=false` were NOT migrated. All have `order_status = 'Payment Pending'`.
+
+```
+Source: 1,206 total (975 active, 231 deleted)
+Target: 992 total
+  - 820 common (correctly migrated active orders)
+  - 172 extra (migrated from deleted source — should be removed)
+  - 155 missing (active orders not migrated — should be migrated)
+```
+
+**Recommendation:** During clean re-migration:
+1. Filter `delete_flag = false` strictly
+2. Migrate ALL 975 active orders
+3. Remove 172 deleted orders from target
+4. Include `orders_orderitems` (1,350 items across 1,198 orders) in `products` JSONB
+
+#### 1.3.5 FNB Order Misclassification 🔴
+
+**10 FNB-prefixed orders** are in `orders_core` as `in_store` type but should be `cafe_fnb`:
+- 9 have detail rows in `cafe_fnb_detail` (data inconsistency)
+- 1 (FNB20260628122055) has NO detail row anywhere
+- All have empty customer fields (name, phone, customer_id)
+- All have small amounts (₹90-100) — typical F&B orders
+
+**Impact:**
+- `in_store_detail`: 9,162 vs 9,172 in_store core (10 missing = FNB orders)
+- `cafe_fnb_detail`: 12 vs 3 cafe_fnb core (9 extra = FNB orders with wrong type)
+
+**Recommendation:** During clean re-migration:
+1. Reclassify FNB-prefixed orders to `cafe_fnb` type
+2. Ensure detail rows match core type
+3. Handle the 1 FNB order without detail row (skip or create minimal detail)
 
 ---
 
-## 2. Target Schema (orders_core + detail tables)
+## 2. Tenant Mapping (Critical Gap)
 
-### 2.1 orders_core Schema
+### 2.1 kuropurchase: ZERO Tenant Fields
+
+**ALL kuropurchase collections have NO `bg_code`, `div_code`, or `branch_code`:**
+
+| Collection | Count | bg_code | div_code | branch_code |
+|---|---|---|---|---|
+| `kgorders` | 12,134 | 0 | 0 | 0 |
+| `estimates` | 5,052 | 0 | 0 | 0 |
+| `tporders` | 229 | 0 | 0 | 0 |
+| `serviceRequest` | 1,627 | 0 | 0 | 0 |
+| `tpbuilds` | 123 | 0 | 0 | 0 |
+| `outward` | 781 | 0 | 0 | 0 |
+| `purchaseorders` | 5,555 | 0 | 0 | 0 |
+
+### 2.2 kg_eshop_latest: NO Tenant Fields
+
+`orders_orders` schema has NO `bg_code`, `div_code`, or `branch_code` columns.
+
+### 2.3 Target: Partial Tenant Coverage
+
+| Order Type | Total | With bg_code | With div_code | With branch_code | Empty div/branch |
+|---|---|---|---|---|---|
+| `in_store` | 9,172 | 9,172 | 9,162 | 9,162 | 10 (FNB + web app) |
+| `estimate` | 4,308 | 4,308 | 4,308 | 4,308 | 0 |
+| `service` | 1,623 | 4,308 | 4,308 | 4,308 | 0 |
+| `eshop` | 992 | 992 | 992 | 992 | 0 |
+| `tp` | 229 | 229 | 229 | 229 | 0 |
+| `cafe_fnb` | 3 | 3 | 2 | 2 | 1 |
+
+### 2.4 Tenant Enrichment Strategy
+
+**For clean re-migration, apply default tenant fields to ALL legacy records:**
+
+```python
+DEFAULT_TENANT = {
+    'bg_code': 'KURO0001',
+    'div_code': 'KURO0001_001',
+    'branch_code': 'KURO0001_001_001'
+}
+```
+
+**Caveat:** If multi-tenant data is discovered (e.g., `entity` field in kuropurchase indicates different tenants), adjust accordingly. Current evidence suggests single-tenant (`kurogaming` / `KURO0001`).
+
+```javascript
+// Check for multi-tenant indicators
+db.kgorders.distinct('entity');  // Returns: ['kurogaming'] (all same)
+```
+
+---
+
+## 3. Target Schema (orders_core + detail tables)
+
+### 3.1 orders_core Schema
 
 ```sql
 Table "public.orders_core"
@@ -187,9 +245,7 @@ Indexes:
   orders_core_customer_id_9867986d_fk_users_identity_identity_id (FK)
 ```
 
-**Key constraint:** `customer_id` is a **nullable FK** to `users_identity.identity_id`. This allows orders without a resolved identity (walk-ins, third-party orders).
-
-### 2.2 Detail Tables Schema
+### 3.2 Detail Tables Schema
 
 #### estimate_detail
 ```sql
@@ -266,58 +322,59 @@ Indexes:
 
 **Note:** `cafe_fnb_detail` has its own `identity_id` FK (separate from `orders_core.customer_id`). This is a design inconsistency — consider consolidating.
 
+### 3.3 FK Constraints
+
+| Constraint | Table | Column | References |
+|---|---|---|---|
+| `orders_core_customer_id_...` | `orders_core` | `customer_id` | `users_identity(identity_id)` |
+| `*_detail_order_id_...` | All detail tables | `order_id` | `orders_core(id)` |
+| `cafe_fnb_detail_identity_id_...` | `cafe_fnb_detail` | `identity_id` | `users_identity(identity_id)` |
+| `cafe_fnb_detail_session_id_...` | `cafe_fnb_detail` | `session_id` | `caf_platform_sessions(id)` |
+
 ---
 
-## 3. Customer ID Resolution (The Critical Issue)
+## 4. Customer ID Resolution (The Critical Issue)
 
-### 3.1 Current Distribution
+### 4.1 Current Distribution
 
-```sql
-SELECT
-  count(*) as total,
-  count(*) FILTER (WHERE customer_id ~ '^ID[0-9]+$') as id_prefix,
-  count(*) FILTER (WHERE customer_id ~ '^[0-9]{10}$') as raw_numeric,
-  count(*) FILTER (WHERE customer_id ~ '^ESH[0-9]+$') as esh_prefix,
-  count(*) FILTER (WHERE customer_id IS NULL OR customer_id = '') as null_empty
-FROM orders_core;
+| Order Type | Total | With Customer | `ID*` prefix | `ESH*` prefix | Raw Numeric | NULL |
+|---|---|---|---|---|---|---|
+| `in_store` | 9,172 | 9,090 | 9,090 | 0 | 0 | 82 |
+| `estimate` | 4,308 | 4,172 | 4,172 | 0 | 0 | 136 |
+| `service` | 1,623 | 1,622 | 1,622 | 0 | 0 | 1 |
+| `eshop` | 992 | 992 | 0 | 0 | 992 | 0 |
+| `tp` | 229 | 91 | 91 | 0 | 0 | 138 |
+| `cafe_fnb` | 3 | 3 | 3 | 0 | 0 | 0 |
+
+**Key issue:** All 992 eShop orders have **raw numeric `customer_id`** (10-digit phone) instead of `ESH*` prefix. This works because 2,468 raw numeric identities exist in `users_identity`, but it's inconsistent with the target design.
+
+### 4.2 eShop Phone Format (Critical for Normalization)
+
+**ALL 3,378 eShop user phones have format:** `"0" + 5 digits + space + 5 digits` (12 chars total)
+
+Examples:
+- `087298 26164` → normalize to `8729826164`
+- `095112 20403` → normalize to `9511220403`
+
+**Normalization function:**
+```python
+def normalize_phone(phone: str) -> str:
+    """Normalize phone to 10-digit Indian number."""
+    if not phone:
+        return ''
+    # Remove spaces, dashes, +91 prefix
+    cleaned = str(phone).replace(' ', '').replace('-', '').replace('+', '')
+    if cleaned.startswith('91') and len(cleaned) == 12:
+        cleaned = cleaned[2:]  # Remove 91 prefix
+    if cleaned.startswith('0') and len(cleaned) == 11:
+        cleaned = cleaned[1:]  # Remove leading 0
+    # eShop special case: "0" + 5 digits + 5 digits = 11 chars after space removal
+    if cleaned.startswith('0') and len(cleaned) == 11:
+        cleaned = cleaned[1:]  # Remove leading 0
+    return cleaned[:10]  # Ensure 10 digits
 ```
 
-| Category | Count | Description |
-|---|---|---|
-| `ID*` prefix | 14,978 | Proper identity IDs (MongoDB walk-ins, estimates, service, TP) |
-| Raw 10-digit | 992 | eShop orders with raw phone number as `customer_id` |
-| `ESH*` prefix | 0 | **None** — eShop orders NOT mapped to ESH identities |
-| NULL/empty | 357 | Orders without customer identity |
-| **TOTAL** | **16,327** | |
-
-### 3.2 Why Raw Numeric `customer_id` Works (Currently)
-
-The 992 eShop orders with raw numeric `customer_id` (e.g., `8123300583`) **do satisfy the FK constraint** because:
-
-- There are 2,468 identities with raw numeric `identity_id` in `users_identity`
-- These were created by the pre-script migration process (before `migrate_legacy_eshop.py`)
-- The FK `orders_core_customer_id_..._fk_users_identity_identity_id` resolves successfully
-
-```sql
--- Verification: all non-null customer_id resolve
-SELECT
-  count(*) as total,
-  count(*) FILTER (WHERE i.identity_id IS NOT NULL) as resolved,
-  count(*) FILTER (WHERE i.identity_id IS NULL) as unresolved
-FROM orders_core o
-LEFT JOIN users_identity i ON o.customer_id = i.identity_id;
--- total: 16327, resolved: 15970, unresolved: 0
-```
-
-### 3.3 The Problem
-
-**The raw numeric identity_id is inconsistent with the target design.** The user migration handoff (`779286`) identifies that these 2,468 raw numeric identities should be converted to proper `ESH*` or `ID*` prefix format.
-
-**Impact on orders:**
-- If raw numeric identities are converted to `ESH*`/`ID*`, all 992 eShop orders must be updated to reference the new `identity_id`
-- If raw numeric identities are deleted and re-created with proper prefix, the FK constraint will break unless orders are updated atomically
-
-### 3.4 Resolution Strategy (Clean Re-migration)
+### 4.3 Resolution Strategy (Clean Re-migration)
 
 **Prerequisite:** User migration must complete first (Phases 1-5 of user handoff `779286`). All identities must have proper `ESH*`/`ID*` prefix.
 
@@ -327,32 +384,33 @@ LEFT JOIN users_identity i ON o.customer_id = i.identity_id;
 # After user migration, build lookup:
 phone_to_identity = {}
 for identity in users_identity:
-    normalized_phone = normalize_phone(identity.phone)  # remove spaces, +91 prefix
-    phone_to_identity[normalized_phone] = identity.identity_id
+    normalized_phone = normalize_phone(identity.phone)
+    if normalized_phone:
+        phone_to_identity[normalized_phone] = identity.identity_id
 ```
 
 **Step 2: Resolve customer_id during order migration**
 
 ```python
-def resolve_customer_id(order_phone, order_type):
+def resolve_customer_id(order_phone, order_type, phone_lookup):
     """Resolve customer_id from phone number to identity_id."""
     if not order_phone:
         return None  # walk-in / anonymous order
-    
+
     normalized = normalize_phone(order_phone)
-    
+
     if order_type == 'eshop':
         # Try ESH* identity first
         identity = find_identity_by_phone(normalized, prefix='ESH')
         if identity:
             return identity.identity_id
-        # Fall back to raw numeric (pre-script migration)
-        identity = find_identity_by_phone(normalized, prefix=None)
+        # Fall back to any identity
+        identity = find_identity_by_phone(normalized)
         if identity:
             return identity.identity_id
         # Last resort: create new ESH* identity
         return create_eshop_identity(normalized)
-    
+
     elif order_type in ('in_store', 'estimate', 'service'):
         # Try ID* identity first
         identity = find_identity_by_phone(normalized, prefix='ID')
@@ -364,11 +422,11 @@ def resolve_customer_id(order_phone, order_type):
             return identity.identity_id
         # Walk-in: leave customer_id NULL
         return None
-    
+
     elif order_type == 'tp':
         # TP orders: try any identity, leave NULL if not found
         return find_identity_by_phone(normalized)
-    
+
     return None
 ```
 
@@ -383,34 +441,105 @@ def resolve_customer_id(order_phone, order_type):
 
 **These are intentionally anonymous.** The FK constraint allows NULL. No action needed.
 
-### 3.5 Phone Normalization
+---
 
-**Source formats:**
-- eShop: `095829 44439` (10 digits with space)
-- MongoDB: `7517831567` (10 digits, no prefix)
-- Target: `+918799708065` (with +91 prefix) or `095829 44439` (as-is from eShop)
+## 5. Data Quality Issues
 
-**Normalization function:**
-```python
-def normalize_phone(phone: str) -> str:
-    """Normalize phone to 10-digit Indian number."""
-    if not phone:
-        return ''
-    # Remove spaces, dashes, +91 prefix
-    cleaned = phone.replace(' ', '').replace('-', '').replace('+', '')
-    if cleaned.startswith('91') and len(cleaned) == 12:
-        cleaned = cleaned[2:]  # Remove 91 prefix
-    if cleaned.startswith('0') and len(cleaned) == 11:
-        cleaned = cleaned[1:]  # Remove leading 0
-    return cleaned[:10]  # Ensure 10 digits
-```
+### 5.1 eShop Order Items
+
+| Metric | Value |
+|---|---|
+| Total items | 1,350 |
+| Orders with items | 1,198 |
+| Orders without items | 8 |
+| Unique products | 444 |
+| Min quantity | −1 (data error) |
+| Max quantity | 10 |
+
+**8 orders without items:**
+- 7 are `Payment Pending` (abandoned carts)
+- 1 is `Payment Method Changed` with `delete_flag=true`
+
+**1 item with negative quantity:** Needs investigation (likely a return/adjustment).
+
+### 5.2 eShop Address Data
+
+| Table | Count | With User |
+|---|---|---|
+| `accounts_addresslist` | 1,064 | 1,064 |
+| `accounts_cart` | 748 | 748 |
+| `accounts_wishlist` | 450 | 450 |
+
+**Recommendation:** Migrate `accounts_addresslist` to `eshop_detail.shipping_address` / `billing_address` via `shp_addressid` / `bill_addressid` FK.
+
+### 5.3 FNB Order Misclassification (Detailed)
+
+| Order ID | Current Type | Correct Type | Detail Location | Amount |
+|---|---|---|---|---|
+| FNB20260628122055 | `in_store` | `cafe_fnb` | NONE (missing) | ₹100 |
+| FNB20260628123155 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹100 |
+| FNB20260628123205 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628123807 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628123954 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628132143 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628132149 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628132650 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628132811 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+| FNB20260628133001 | `in_store` | `cafe_fnb` | `cafe_fnb_detail` | ₹90 |
+
+### 5.4 Web App Orders (Not Legacy)
+
+9 orders with hex `order_id` and `channel = 'Online Orders'` are live system data, NOT legacy data. They should be excluded from legacy migration:
+
+| Order ID | Customer | Amount | Channel |
+|---|---|---|---|
+| 673DF4897D | Arhaan Khurana | ₹130,876 | (empty) |
+| CBADFF99D6 | Adithya A | ₹45,465 | (empty) |
+| F03BB0ADAE | Vineet Suneja | ₹78,003 | (empty) |
+| d23d337c1f | Dinesh V Raut | ₹146,574 | Online Orders |
+| 28f3fc5e82 | Priyatam Singh | ₹98,822 | Online Orders |
+| d2d777f326 | Reza Tholalu | ₹115,018 | Online Orders |
+| 2a215246d6 | ONGC | ₹115,503 | Online Orders |
+| ce3b400abc | Unmesh Moosad | ₹44,528 | Online Orders |
+| ceeb0f6919 | VIVEK KUMAR SINHA | ₹1,427 | Online Orders |
 
 ---
 
-## 4. Clean Re-Migration Plan (7 Phases)
+## 6. Clean Re-Migration Plan (8 Phases)
 
 **Prerequisite:** Target DB wiped and reset (Phase 0 of user handoff `779286`).
 **Dependency:** User migration complete (all identities have proper `ESH*`/`ID*` prefix).
+
+### Phase 0: Source Data Enrichment (kuropurchase)
+
+**Goal:** Add tenant fields to ALL kuropurchase order collections.
+
+```python
+def enrich_kuropurchase_tenant_fields(mongo_client):
+    """Add default tenant fields to kuropurchase collections."""
+    db = mongo_client['kuropurchase']
+    default_tenant = {
+        'bg_code': 'KURO0001',
+        'div_code': 'KURO0001_001',
+        'branch_code': 'KURO0001_001_001'
+    }
+
+    collections = ['kgorders', 'estimates', 'tporders', 'serviceRequest']
+    for col_name in collections:
+        col = db[col_name]
+        result = col.update_many(
+            {'bg_code': {'$exists': False}},
+            {'$set': default_tenant}
+        )
+        print(f'{col_name}: {result.modified_count} records enriched')
+```
+
+**Validation:**
+```javascript
+// Verify all records have tenant fields
+db.kgorders.countDocuments({bg_code: 'KURO0001'})  // Should be 12,134
+db.estimates.countDocuments({bg_code: 'KURO0001'})  // Should be 5,052
+```
 
 ### Phase 1: Pre-Migration Validation
 
@@ -419,10 +548,10 @@ def normalize_phone(phone: str) -> str:
 ```python
 # Validate source collections
 sources = {
-    'estimates': ('KungOS_Mongo_One', 'estimates', 'estimate_no'),
-    'kgorders': ('KungOS_Mongo_One', 'kgorders', 'orderid'),
-    'tporders': ('KungOS_Mongo_One', 'tporders', 'orderid'),
-    'serviceRequest': ('KungOS_Mongo_One', 'serviceRequest', 'srid'),
+    'kgorders': ('kuropurchase', 'kgorders', 'orderid'),
+    'estimates': ('kuropurchase', 'estimates', 'estimate_no'),
+    'tporders': ('kuropurchase', 'tporders', 'orderid'),
+    'serviceRequest': ('kuropurchase', 'serviceRequest', 'srid'),
     'eshop_orders': ('kg_eshop_latest', 'orders_orders', 'orderid'),
 }
 
@@ -430,7 +559,7 @@ for name, (db, collection, id_field) in sources.items():
     count = get_collection_count(db, collection)
     with_bg_code = get_count_with_field(db, collection, 'bg_code')
     print(f'{name}: {count} total, {with_bg_code} with bg_code')
-    
+
     # Check for duplicate order_ids
     duplicates = find_duplicates(db, collection, id_field)
     if duplicates:
@@ -439,44 +568,35 @@ for name, (db, collection, id_field) in sources.items():
 
 **Validation criteria:**
 - [ ] All source collections have expected counts
-- [ ] All records have `bg_code` (or default to `KURO0001`)
+- [ ] All records have `bg_code` (after enrichment)
 - [ ] No duplicate `order_id` values within each collection
-- [ ] Cross-collection `order_id` uniqueness verified (no collisions between sources)
+- [ ] Cross-collection `order_id` uniqueness verified
 
 ### Phase 2: Phone → Identity Lookup Table
 
 **Goal:** Build a lookup table for phone → identity_id resolution.
 
 ```python
-# Build lookup from users_identity
-cur.execute("""
-    SELECT identity_id, phone, name
-    FROM users_identity
-    WHERE identity_id ~ '^(ID|ESH)[0-9]+$'
-""")
-phone_to_identity = {}
-for identity_id, phone, name in cur.fetchall():
-    normalized = normalize_phone(phone)
-    if normalized:
-        phone_to_identity[normalized] = {
-            'identity_id': identity_id,
-            'name': name,
-            'phone': phone
-        }
-
-print(f'Built lookup: {len(phone_to_identity)} phone → identity mappings')
-```
-
-**Verification:**
-```sql
--- Verify all phones in orders source have matching identity
-SELECT count(DISTINCT user.phone) as unique_phones_in_source
-FROM KungOS_Mongo_One.kgorders;
-
--- Compare with identity lookup
-SELECT count(*) as identities_with_phone
-FROM users_identity
-WHERE phone IS NOT NULL AND phone != '';
+def build_phone_lookup(pg_conn):
+    """Build phone → identity_id lookup from users_identity."""
+    cur = pg_conn.cursor()
+    cur.execute("""
+        SELECT identity_id, phone, name
+        FROM users_identity
+        WHERE identity_id ~ '^(ID|ESH)[0-9]+$'
+          AND phone IS NOT NULL AND phone != ''
+    """)
+    lookup = {}
+    for identity_id, phone, name in cur.fetchall():
+        normalized = normalize_phone(phone)
+        if normalized:
+            lookup[normalized] = {
+                'identity_id': identity_id,
+                'name': name,
+                'phone': phone
+            }
+    cur.close()
+    return lookup
 ```
 
 ### Phase 3: eShop Orders Migration
@@ -492,44 +612,68 @@ def migrate_eshop_orders(source_conn, target_conn, phone_lookup):
     """Migrate eShop orders with identity resolution."""
     cur = source_conn.cursor()
     target_cur = target_conn.cursor()
-    
-    # Get all active orders
+
+    # Get all ACTIVE orders only
     cur.execute("""
         SELECT orderid, userid, order_status, order_total, channel,
                delete_flag, order_created, order_placed, order_confirmed,
                order_packed, order_shipped, order_delivered,
                pkg_fees, build_fees, shp_fees, tax_total, kuro_discount,
                shp_agency, shp_awb, shp_status, shp_addressid, bill_addressid,
-               fail_orderid
+               fail_orderid, payment_option, upi_address, pay_reference
         FROM orders_orders
         WHERE delete_flag = false
         ORDER BY orderid
     """)
-    
+
     orders = cur.fetchall()
     print(f'Found {len(orders)} active eShop orders')
-    
+
+    # Load address data
+    cur.execute("SELECT addressid, fullname, phone, addressline1, addressline2, city, state, pincode FROM accounts_addresslist WHERE delete_flag = false")
+    addresses = {row[0]: row for row in cur.fetchall()}
+
+    # Load order items
+    cur.execute("SELECT orderid, productid, title, price, quantity, hsn_code, tax_cgst, tax_sgst, tax_igst, components FROM orders_orderitems")
+    items_by_order = {}
+    for row in cur.fetchall():
+        oid = row[0]
+        if oid not in items_by_order:
+            items_by_order[oid] = []
+        items_by_order[oid].append({
+            'productid': row[1], 'title': row[2], 'price': row[3],
+            'quantity': row[4], 'hsn_code': row[5],
+            'tax_cgst': row[6], 'tax_sgst': row[7], 'tax_igst': row[8],
+            'components': row[9]
+        })
+
     migrated = 0
     skipped = 0
-    
+
     for order in orders:
         orderid = order[0]
-        userid = order[1]  # raw phone number
-        
+        userid = order[1]  # raw phone number (format: "0XXXXX XXXXX")
+
         # Resolve customer_id from phone
         normalized_phone = normalize_phone(userid)
         identity_info = phone_lookup.get(normalized_phone)
-        
+
         if identity_info:
             customer_id = identity_info['identity_id']
             customer_name = identity_info['name']
             customer_phone = identity_info['phone']
         else:
-            # Fallback: use raw data
-            customer_id = None  # Will be resolved later
+            customer_id = None
             customer_name = ''
             customer_phone = userid
-        
+
+        # Build products JSONB from order items
+        products_json = json.dumps(items_by_order.get(orderid, []))
+
+        # Build shipping/billing address JSONB
+        shp_addr = addresses.get(order[20], {})  # shp_addressid
+        bill_addr = addresses.get(order[21], {})  # bill_addressid
+
         try:
             # Insert into orders_core
             target_cur.execute("""
@@ -540,37 +684,44 @@ def migrate_eshop_orders(source_conn, target_conn, phone_lookup):
                     active, delete_flag, created_by, created_date, updated_by, updated_date,
                     customer_id
                 ) VALUES (%s, 'eshop', %s, %s, %s, '', 'KURO0001', 'KURO0001_001', 'KURO0001_001_001',
-                          %s, 'INR', %s, '{}', '{}', true, false, %s, NOW(), '', NOW(), %s)
+                          %s, 'INR', %s, %s, %s, true, false, %s, NOW(), '', NOW(), %s)
                 ON CONFLICT (order_id) DO UPDATE SET status = EXCLUDED.status
                 RETURNING id
             """, (
                 orderid, order[2][:20], customer_name, customer_phone,
-                order[7], order[8], userid, customer_id
+                order[3] or 0, order[4],
+                json.dumps(bill_addr) if bill_addr else '{}',
+                products_json, userid, customer_id
             ))
-            order_id = target_cur.fetchone()[0]
-            
+            core_id = target_cur.fetchone()[0]
+
             # Insert into eshop_detail
             target_cur.execute("""
                 INSERT INTO eshop_detail (
                     order_id, status, payment_method, shipping_address, billing_address,
                     package_fees, build_fees, shipping_fees, tax_amount, discount_amount,
-                    product_total, shipping_agency, tracking_number, failed_order_id
-                ) VALUES (%s, %s, 'UPI', '{}', '{}', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    product_total, shipping_agency, tracking_number, failed_order_id,
+                    payment_reference
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (order_id) DO NOTHING
             """, (
-                order_id, order[2][:20],
-                order[9] or 0, order[10] or 0, order[11] or 0,
-                order[12] or 0, order[13] or 0, order[7],
-                order[14] or '', order[15] or '', order[19] or ''
+                core_id, order[2][:20],
+                order[23] or 'UPI',  # payment_option
+                json.dumps(shp_addr) if shp_addr else '{}',
+                json.dumps(bill_addr) if bill_addr else '{}',
+                order[12] or 0, order[13] or 0, order[14] or 0,
+                order[15] or 0, order[16] or 0, order[3] or 0,
+                order[17] or '', order[18] or '', order[22] or '',
+                order[25] or ''  # pay_reference
             ))
-            
+
             migrated += 1
-            
+
         except Exception as e:
             print(f'  ERROR migrating order {orderid}: {e}')
             target_conn.rollback()
             skipped += 1
-    
+
     target_conn.commit()
     print(f'eShop orders: {migrated} migrated, {skipped} skipped')
     return migrated
@@ -581,20 +732,18 @@ def migrate_eshop_orders(source_conn, target_conn, phone_lookup):
 -- Verify eShop orders
 SELECT count(*) as total,
        count(*) FILTER (WHERE customer_id IS NOT NULL) as with_identity,
-       count(*) FILTER (WHERE customer_id ~ '^ESH[0-9]+$') as esh_prefix,
-       count(*) FILTER (WHERE customer_id ~ '^ID[0-9]+$') as id_prefix,
-       count(*) FILTER (WHERE customer_id ~ '^[0-9]+$') as raw_numeric
+       count(*) FILTER (WHERE customer_id ~ '^ESH[0-9]+$') as esh_prefix
 FROM orders_core
 WHERE order_type = 'eshop';
 ```
 
-**Expected:** All 975 active eShop orders migrated, all with `ESH*` prefix `customer_id`.
+**Expected:** 975 active eShop orders migrated, all with `ESH*` prefix `customer_id`.
 
 ### Phase 4: MongoDB Orders Migration (estimates, kgorders, tporders, serviceRequest)
 
 **Goal:** Migrate all MongoDB order collections with identity resolution.
 
-**Source collections:**
+**Source collections (from kuropurchase directly):**
 - `estimates` → `orders_core` (order_type='estimate') + `estimate_detail`
 - `kgorders` → `orders_core` (order_type='in_store') + `in_store_detail`
 - `tporders` → `orders_core` (order_type='tp') + `tp_order_detail`
@@ -607,74 +756,84 @@ def migrate_mongo_orders(mongo_db, pg_conn, collection, order_type, id_field, ph
     col = mongo_db[collection]
     docs = list(col.find())
     print(f'Found {len(docs)} {collection} documents')
-    
+
     cur = pg_conn.cursor()
-    
+
     # Get existing order IDs
     cur.execute("SELECT order_id FROM orders_core")
     existing_orders = {row[0] for row in cur.fetchall()}
-    
+
     migrated = 0
     skipped = 0
     unresolved_customers = 0
-    
+
     for doc in docs:
         order_id = doc.get(id_field)
         if not order_id:
-            print(f'  Skipping doc without {id_field}: {doc.get("_id")}')
             skipped += 1
             continue
-        
+
         if order_id in existing_orders:
             skipped += 1
             continue
-        
-        # Extract customer info
-        user = doc.get('user', {})
-        customer_name = user.get('name', '')
-        customer_phone = user.get('phone', '')
-        
+
+        # Extract customer info (varies by collection)
+        if collection == 'serviceRequest':
+            customer_name = doc.get('name', '')
+            customer_phone = doc.get('phone', '')
+        else:
+            user = doc.get('user', {})
+            customer_name = user.get('name', '')
+            customer_phone = user.get('phone', '')
+
         # Resolve customer_id
         normalized_phone = normalize_phone(customer_phone)
         identity_info = phone_lookup.get(normalized_phone)
-        
+
         if identity_info:
             resolved_customer_id = identity_info['identity_id']
-            # Update name from identity if source is empty
             if not customer_name and identity_info['name']:
                 customer_name = identity_info['name']
         else:
             resolved_customer_id = None
             if customer_phone:
                 unresolved_customers += 1
-        
+
+        # Extract tenant fields (enriched in Phase 0)
+        bg_code = doc.get('bg_code', 'KURO0001')
+        div_code = doc.get('div_code', 'KURO0001_001')
+        branch_code = doc.get('branch_code', 'KURO0001_001_001')
+
         # ... (insert into orders_core + detail table)
-        # Same pattern as Phase 3
-    
+        # Collection-specific field mapping below
+
     print(f'{collection}: {migrated} migrated, {skipped} skipped, {unresolved_customers} unresolved')
     return migrated
 ```
 
 **Collection-specific field mapping:**
 
-| Source | ID Field | Status Field | Total Field | Detail Fields |
-|---|---|---|---|---|
-| `estimates` | `estimate_no` | `status` | `totalprice` | `validity`, `warranty_terms`, `items` |
-| `kgorders` | `orderid` | `order_status` | `totalprice` | `invoice_no`, `invoice_generated`, `po_ref`, `dispatchby_date` |
-| `tporders` | `orderid` | `order_status` | `totalprice` | `channel`, `tporderid`, `dispatchby_date`, `fin_year`, `items` |
-| `serviceRequest` | `srid` | `status` | `0` (N/A) | `servicetype`, `issue`, `device`, `logs` |
+| Source | ID Field | Status Field | Total Field | Phone Field | Detail Fields |
+|---|---|---|---|---|---|
+| `estimates` | `estimate_no` | `status` | `totalprice` | `user.phone` | `validity`, `warranty_terms`, `items` |
+| `kgorders` | `orderid` | `order_status` | `totalprice` | `user.phone` | `invoice_no`, `invoice_generated`, `po_ref`, `dispatchby_date` |
+| `tporders` | `orderid` | `order_status` | `totalprice` | `user.phone` | `channel`, `tporderid`, `dispatchby_date`, `fin_year`, `items` |
+| `serviceRequest` | `srid` | `status` | `0` (N/A) | `phone` (direct) | `servicetype`, `issue`, `device`, `logs` |
 
-**Validation:**
-```sql
--- Verify all MongoDB orders
-SELECT order_type, count(*) as total,
-       count(*) FILTER (WHERE customer_id IS NOT NULL) as with_identity,
-       count(*) FILTER (WHERE customer_id ~ '^ID[0-9]+$') as id_prefix,
-       count(*) FILTER (WHERE customer_id IS NULL) as null_customer
-FROM orders_core
-WHERE order_type IN ('estimate', 'in_store', 'tp', 'service')
-GROUP BY order_type
-ORDER BY order_type;
+**FNB order handling:**
+```python
+# During kgorders migration, check for FNB prefix
+if order_id.startswith('FNB'):
+    order_type = 'cafe_fnb'  # Reclassify
+    # Insert into cafe_fnb_detail instead of in_store_detail
+```
+
+**Web app order exclusion:**
+```python
+# Exclude web app orders (hex order_ids, channel = 'Online Orders')
+if order_id not in kuro_order_ids and doc.get('channel') == 'Online Orders':
+    skipped += 1
+    continue
 ```
 
 ### Phase 5: Cross-Validation
@@ -685,19 +844,32 @@ ORDER BY order_type;
 def validate_migration(pg_conn):
     """Validate orders migration completeness."""
     cur = pg_conn.cursor()
-    
+
     # 1. Count validation
+    expected = {
+        'in_store': 12134,  # All kuropurchase kgorders (minus web app)
+        'estimate': 5052,   # All kuropurchase estimates
+        'tp': 229,          # All kuropurchase tporders
+        'service': 1627,    # All kuropurchase serviceRequest
+        'eshop': 975,       # Active eShop orders only
+        'cafe_fnb': 3,      # Live kiosk (not from legacy)
+    }
+
     cur.execute("""
         SELECT order_type, count(*) as total
         FROM orders_core
         GROUP BY order_type
         ORDER BY order_type
     """)
+    actual = {row[0]: row[1] for row in cur.fetchall()}
+
     print('Order counts:')
-    for row in cur.fetchall():
-        print(f'  {row[0]}: {row[1]}')
-    
-    # 2. FK validation (all non-null customer_id must resolve)
+    for order_type, exp_count in expected.items():
+        act_count = actual.get(order_type, 0)
+        status = '✅' if act_count == exp_count else '🔴'
+        print(f'  {status} {order_type}: expected={exp_count}, actual={act_count}')
+
+    # 2. FK validation
     cur.execute("""
         SELECT count(*) as unresolved
         FROM orders_core o
@@ -707,93 +879,47 @@ def validate_migration(pg_conn):
     unresolved = cur.fetchone()[0]
     print(f'\nUnresolved customer_id: {unresolved}')
     assert unresolved == 0, 'FK constraint violation!'
-    
-    # 3. Detail table validation (all orders must have detail)
-    cur.execute("""
-        SELECT 'estimate' as type, count(*) as gap
-        FROM orders_core o
-        LEFT JOIN estimate_detail d ON o.id = d.order_id
-        WHERE o.order_type = 'estimate' AND d.order_id IS NULL
-        UNION ALL
-        SELECT 'in_store', count(*)
-        FROM orders_core o
-        LEFT JOIN in_store_detail d ON o.id = d.order_id
-        WHERE o.order_type = 'in_store' AND d.order_id IS NULL
-        UNION ALL
-        SELECT 'tp', count(*)
-        FROM orders_core o
-        LEFT JOIN tp_order_detail d ON o.id = d.order_id
-        WHERE o.order_type = 'tp' AND d.order_id IS NULL
-        UNION ALL
-        SELECT 'service', count(*)
-        FROM orders_core o
-        LEFT JOIN service_detail d ON o.id = d.order_id
-        WHERE o.order_type = 'service' AND d.order_id IS NULL
-        UNION ALL
-        SELECT 'eshop', count(*)
-        FROM orders_core o
-        LEFT JOIN eshop_detail d ON o.id = d.order_id
-        WHERE o.order_type = 'eshop' AND d.order_id IS NULL
-    """)
-    print('\nMissing detail rows:')
-    for row in cur.fetchall():
-        if row[1] > 0:
-            print(f'  {row[0]}: {row[1]} missing')
-    
+
+    # 3. Detail table validation
+    detail_tables = {
+        'estimate': 'estimate_detail',
+        'in_store': 'in_store_detail',
+        'tp': 'tp_order_detail',
+        'service': 'service_detail',
+        'eshop': 'eshop_detail',
+        'cafe_fnb': 'cafe_fnb_detail',
+    }
+
+    print('\nDetail table completeness:')
+    for order_type, detail_table in detail_tables.items():
+        cur.execute(f"""
+            SELECT count(*) as missing
+            FROM orders_core o
+            LEFT JOIN {detail_table} d ON o.id = d.order_id
+            WHERE o.order_type = %s AND d.order_id IS NULL
+        """, (order_type,))
+        missing = cur.fetchone()[0]
+        status = '✅' if missing == 0 else '🔴'
+        print(f'  {status} {order_type}: {missing} missing detail rows')
+
     # 4. Orphan detail rows
-    cur.execute("""
-        SELECT 'estimate' as type, count(*) as orphan
-        FROM estimate_detail d
-        LEFT JOIN orders_core o ON d.order_id = o.id
-        WHERE o.id IS NULL
-        UNION ALL
-        SELECT 'in_store', count(*)
-        FROM in_store_detail d
-        LEFT JOIN orders_core o ON d.order_id = o.id
-        WHERE o.id IS NULL
-        -- ... (repeat for other types)
-    """)
     print('\nOrphan detail rows:')
-    for row in cur.fetchall():
-        if row[1] > 0:
-            print(f'  {row[0]}: {row[1]} orphan')
-    
+    for order_type, detail_table in detail_tables.items():
+        cur.execute(f"""
+            SELECT count(*) as orphan
+            FROM {detail_table} d
+            LEFT JOIN orders_core o ON d.order_id = o.id
+            WHERE o.id IS NULL
+        """)
+        orphan = cur.fetchone()[0]
+        status = '✅' if orphan == 0 else '🔴'
+        print(f'  {status} {detail_table}: {orphan} orphan rows')
+
     cur.close()
     print('\n✅ Validation complete')
 ```
 
-### Phase 6: kuropurchase kgorders Merge (if needed)
-
-**Goal:** If kuropurchase contains orders not in KungOS_Mongo_One, merge them.
-
-```python
-def merge_kuropurchase_orders(kuropurchase_db, kungos_db, pg_conn, phone_lookup):
-    """Merge kuropurchase kgorders into KungOS_Mongo_One and migrate."""
-    # Get order IDs already in KungOS_Mongo_One
-    kungos_order_ids = set(doc['orderid'] for doc in kungos_db.kgorders.find({}, {'orderid': 1}))
-    
-    # Find orders in kuropurchase not in KungOS_Mongo_One
-    missing = []
-    for doc in kuropurchase_db.kgorders.find():
-        if doc.get('orderid') not in kungos_order_ids:
-            missing.append(doc)
-    
-    print(f'Found {len(missing)} kuropurchase orders not in KungOS_Mongo_One')
-    
-    if missing:
-        # Insert into KungOS_Mongo_One (with lineage tracking)
-        for doc in missing:
-            doc['migrated_from'] = 'kuropurchase'
-            doc['migrated_at'] = datetime.now().isoformat()
-            kungos_db.kgorders.insert_one(doc)
-        
-        # Then migrate as normal (Phase 4)
-        migrate_mongo_orders(kungos_db, pg_conn, 'kgorders', 'in_store', 'orderid', phone_lookup)
-```
-
-**Pre-condition:** Verify kuropurchase kgorders overlap with KungOS_Mongo_One kgorders before executing.
-
-### Phase 7: Production Validation
+### Phase 6: Production Validation
 
 **Goal:** Final validation before marking migration complete.
 
@@ -823,43 +949,60 @@ LEFT JOIN users_identity i ON o.customer_id = i.identity_id
 WHERE o.customer_id IS NOT NULL AND i.identity_id IS NULL;
 
 -- 5. Detail table completeness
-SELECT 
-  'estimate' as type,
-  (SELECT count(*) FROM orders_core WHERE order_type = 'estimate') as core,
-  (SELECT count(*) FROM estimate_detail) as detail
-UNION ALL
-SELECT 'in_store',
-  (SELECT count(*) FROM orders_core WHERE order_type = 'in_store'),
-  (SELECT count(*) FROM in_store_detail)
-UNION ALL
-SELECT 'tp',
-  (SELECT count(*) FROM orders_core WHERE order_type = 'tp'),
-  (SELECT count(*) FROM tp_order_detail)
-UNION ALL
-SELECT 'service',
-  (SELECT count(*) FROM orders_core WHERE order_type = 'service'),
-  (SELECT count(*) FROM service_detail)
-UNION ALL
-SELECT 'eshop',
-  (SELECT count(*) FROM orders_core WHERE order_type = 'eshop'),
-  (SELECT count(*) FROM eshop_detail)
-UNION ALL
-SELECT 'cafe_fnb',
-  (SELECT count(*) FROM orders_core WHERE order_type = 'cafe_fnb'),
-  (SELECT count(*) FROM cafe_fnb_detail);
+SELECT
+  order_type,
+  count(*) as core_count,
+  CASE order_type
+    WHEN 'estimate' THEN (SELECT count(*) FROM estimate_detail)
+    WHEN 'in_store' THEN (SELECT count(*) FROM in_store_detail)
+    WHEN 'tp' THEN (SELECT count(*) FROM tp_order_detail)
+    WHEN 'service' THEN (SELECT count(*) FROM service_detail)
+    WHEN 'eshop' THEN (SELECT count(*) FROM eshop_detail)
+    WHEN 'cafe_fnb' THEN (SELECT count(*) FROM cafe_fnb_detail)
+  END as detail_count
+FROM orders_core
+GROUP BY order_type;
 
--- 6. Top customers by order count
-SELECT i.identity_id, i.name, i.phone, count(*) as order_count
-FROM orders_core o
-JOIN users_identity i ON o.customer_id = i.identity_id
-GROUP BY i.identity_id, i.name, i.phone
-ORDER BY order_count DESC
-LIMIT 10;
+-- 6. Tenant field coverage
+SELECT
+  bg_code,
+  count(*) as total,
+  count(*) FILTER (WHERE div_code = '' OR div_code IS NULL) as empty_div,
+  count(*) FILTER (WHERE branch_code = '' OR branch_code IS NULL) as empty_branch
+FROM orders_core
+GROUP BY bg_code;
+```
+
+### Phase 7: Cleanup & Lineage Tracking
+
+**Goal:** Ensure all migrated records retain source lineage.
+
+```sql
+-- Add lineage tracking columns (if not already present)
+ALTER TABLE orders_core ADD COLUMN IF NOT EXISTS source_db VARCHAR(50);
+ALTER TABLE orders_core ADD COLUMN IF NOT EXISTS source_collection VARCHAR(100);
+ALTER TABLE orders_core ADD COLUMN IF NOT EXISTS migrated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Update lineage
+UPDATE orders_core SET source_db = 'kuropurchase', source_collection = 'kgorders'
+WHERE order_type = 'in_store' AND order_id LIKE 'KG%';
+
+UPDATE orders_core SET source_db = 'kuropurchase', source_collection = 'estimates'
+WHERE order_type = 'estimate';
+
+UPDATE orders_core SET source_db = 'kuropurchase', source_collection = 'tporders'
+WHERE order_type = 'tp';
+
+UPDATE orders_core SET source_db = 'kuropurchase', source_collection = 'serviceRequest'
+WHERE order_type = 'service';
+
+UPDATE orders_core SET source_db = 'kg_eshop_latest', source_collection = 'orders_orders'
+WHERE order_type = 'eshop';
 ```
 
 ---
 
-## 5. Implementation Units
+## 7. Implementation Units
 
 ### Unit 1: Create `migrate_orders_canonical.py`
 
@@ -868,118 +1011,115 @@ LIMIT 10;
 **Dependencies:**
 - User migration complete (all identities have proper prefix)
 - Target DB schema exists (orders_core + detail tables)
+- kuropurchase tenant fields enriched (Phase 0)
 
 **Features:**
+- Phase 0: Tenant field enrichment for kuropurchase
 - Phone → identity lookup table
 - Collection-specific migration functions
+- eShop order items and address integration
+- FNB order reclassification
+- Web app order exclusion
 - Cross-validation after each collection
 - Error logging with retry capability
+- Lineage tracking
 
 **Acceptance criteria:**
-- [ ] All 6 order types migrated with correct counts
-- [ ] All non-null `customer_id` resolve to `users_identity`
+- [ ] All kuropurchase kgorders migrated (12,134 minus web app)
+- [ ] All kuropurchase estimates migrated (5,052)
+- [ ] All kuropurchase tporders migrated (229)
+- [ ] All kuropurchase serviceRequest migrated (1,627)
+- [ ] All active eShop orders migrated (975)
+- [ ] No deleted eShop orders migrated
+- [ ] All non-null `customer_id` resolve to `users_identity` with proper prefix
 - [ ] No orphan detail rows
 - [ ] No missing detail rows
 - [ ] Source order_id preserved in target
+- [ ] Tenant fields populated for all records
+- [ ] FNB orders reclassified to `cafe_fnb`
+- [ ] eShop order items included in `products` JSONB
+- [ ] eShop addresses mapped to detail tables
 
-### Unit 2: Update `migrate_legacy_eshop.py` (optional)
-
-**Goal:** Fix eShop orders migration to use proper `ESH*` identity resolution.
-
-**Changes:**
-- Replace raw `userid` with resolved `customer_id` from identity lookup
-- Add phone normalization
-- Handle `delete_flag=true` orders explicitly (skip with log)
-
-**Acceptance criteria:**
-- [ ] All active eShop orders have `ESH*` prefix `customer_id`
-- [ ] Detail table count matches core table count
-- [ ] No raw numeric `customer_id` in eShop orders
-
-### Unit 3: Validation Script
+### Unit 2: Validation Script
 
 **Location:** `plat/management/commands/validate_orders_migration.py`
 
 **Features:**
-- Source → target count comparison
+- Source → target count comparison (TRUE legacy counts)
 - FK integrity check
 - Detail table completeness check
 - Orphan detection
 - Customer ID resolution audit
+- Tenant field coverage audit
+- Lineage tracking verification
 
 **Acceptance criteria:**
 - [ ] Zero FK violations
 - [ ] Zero orphan detail rows
 - [ ] Zero missing detail rows
-- [ ] All expected order types present
+- [ ] All expected order types present with correct counts
+- [ ] All records have tenant fields
+- [ ] All eShop orders have `ESH*` prefix `customer_id`
 
 ---
 
-## 6. Risk Assessment
+## 8. Risk Assessment
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Raw numeric identity_id conversion breaks FK | HIGH | Atomic transaction: update identity_id + update all orders in same TX |
-| Phone normalization mismatch | MEDIUM | Test normalization against all source phone formats before migration |
-| Duplicate order_id across collections | LOW | Verify cross-collection uniqueness pre-migration |
-| kuropurchase orders not in KungOS_Mongo_One | MEDIUM | Investigate before re-migration; merge if needed |
-| eShop order items not migrated | LOW | Verify `orders_orderitems` (1,350) are included in `products` JSONB |
-| Service request logs lost | LOW | Ensure `logs` array migrated to `service_detail` |
+| kuropurchase tenant enrichment modifies source data | HIGH | Run enrichment in a separate collection or use `$setOnInsert` with upsert to new collection |
+| Phone normalization mismatch (eShop format) | HIGH | Test normalization against ALL 3,378 eShop phone formats before migration |
+| eShop order items not migrated | MEDIUM | Include `orders_orderitems` in migration (1,350 items) |
+| FNB order reclassification breaks existing data | MEDIUM | Handle during clean re-migration (target wipe first) |
+| Deleted eShop orders already in target | MEDIUM | Remove before re-migration or use `ON CONFLICT DO UPDATE` |
+| 155 active eShop orders missing | HIGH | Ensure `delete_flag = false` filter is strict |
+| 2,972 kgorders missing from KungOS | HIGH | Migrate directly from kuropurchase (bypass KungOS) |
+| 744 estimates missing from KungOS | HIGH | Migrate directly from kuropurchase (bypass KungOS) |
 
 ---
 
-## 7. Open Questions
+## 9. Open Questions
 
-1. **kuropurchase kgorders (12,134) vs KungOS_Mongo_One kgorders (9,162):** Are kuropurchase orders a superset? Need to verify overlap before deciding whether to merge.
+1. **2,972 kuropurchase kgorders not in KungOS:** Why were these excluded? Need to inspect data quality before migration.
 
-2. **eShop order items (1,350 in `orders_orderitems`):** Are these included in the `products` JSONB field during migration? Need to verify.
+2. **744 kuropurchase estimates not in KungOS:** Why were these excluded? Need to inspect data quality before migration.
 
-3. **10 FNB-prefixed orders in `in_store`:** Should these be reclassified to `cafe_fnb`? Or are they legitimate in_store orders with FNB prefix?
+3. **2 kuropurchase serviceRequest not in KungOS:** Which `srid` values were excluded?
 
-4. **2 missing service requests:** Which `srid` values were skipped? Need to investigate root cause.
+4. **eShop order items (1,350):** Should these be migrated as `products` JSONB or as separate detail rows?
 
-5. **17 extra eShop orders in target:** Where did these come from? Need to trace source.
+5. **eShop addresses (1,064):** Should these be mapped to `eshop_detail` shipping/billing address?
 
-6. **`tpbuilds` (123 records):** Should these be migrated separately? They represent TP build configurations, not orders.
+6. **1 item with negative quantity:** Is this a return/adjustment? Should it be excluded or handled specially?
 
-7. **`outward` collection (754/781):** Purpose unknown — may contain order-related outward entries.
+7. **8 eShop orders without items:** Should these be migrated (they represent abandoned carts)?
+
+8. **`tpbuilds` (123 records):** Should these be migrated separately? They represent TP build configurations, not orders.
+
+9. **`outward` collection (781 records):** Purpose unknown — may contain order-related outward entries.
+
+10. **`indentpos` (283) + `indentproduct` (1,649):** These are purchase indent requests, not customer orders. Should they be in a separate migration?
 
 ---
 
-## 8. Execution Order
+## 10. Execution Order
 
 1. **Complete user migration first** (Phases 1-5 of `779286`)
 2. **Verify all identities have proper prefix** (`ESH*` or `ID*`)
-3. **Execute Phase 1:** Pre-migration validation
-4. **Execute Phase 2:** Build phone → identity lookup
-5. **Execute Phase 3:** eShop orders migration
-6. **Execute Phase 4:** MongoDB orders migration
-7. **Execute Phase 5:** Cross-validation
-8. **Execute Phase 6:** kuropurchase merge (if needed)
-9. **Execute Phase 7:** Production validation
+3. **Execute Phase 0:** Enrich kuropurchase tenant fields
+4. **Execute Phase 1:** Pre-migration validation
+5. **Execute Phase 2:** Build phone → identity lookup
+6. **Execute Phase 3:** eShop orders migration (975 active only)
+7. **Execute Phase 4:** MongoDB orders migration (from kuropurchase directly)
+8. **Execute Phase 5:** Cross-validation
+9. **Execute Phase 6:** Production validation
+10. **Execute Phase 7:** Cleanup & lineage tracking
 
 ---
 
 ## Appendix A: Source Data Samples
 
-### A.1 estimates (KungOS_Mongo_One)
-```json
-{
-  "_id": "643d47244473b9382072fbdc",
-  "estimate_no": "KGE-210000110",
-  "status": "quoted",
-  "user": { "name": "K Venkat Ram", "phone": "7207435848" },
-  "billadd": { "name": "K Venkat Ram", "phone": "7207435848", "city": "Hyderabad", "state": "Telangana" },
-  "totalprice": 52208,
-  "builds": [...],
-  "products": [...],
-  "bg_code": "KURO0001",
-  "div_code": "KURO0001_001",
-  "branch_code": "KURO0001_001_001"
-}
-```
-
-### A.2 kgorders (KungOS_Mongo_One)
+### A.1 kgorders (kuropurchase — NO tenant fields)
 ```json
 {
   "_id": "663220db0c7135126b77816f",
@@ -991,13 +1131,30 @@ LIMIT 10;
   "billadd": { "company": "Royal Public School", "name": "Roshan Samuel", "phone": "7517831567", "city": "Bhandara" },
   "totalprice": 179550,
   "builds": [...],
-  "bg_code": "KURO0001",
-  "div_code": "KURO0001_001",
-  "branch_code": "KURO0001_001_001"
+  "bg_code": undefined,
+  "div_code": undefined,
+  "branch_code": undefined,
+  "entity": "kurogaming"
 }
 ```
 
-### A.3 tporders (KungOS_Mongo_One)
+### A.2 estimates (kuropurchase — NO tenant fields, NO status)
+```json
+{
+  "_id": "643d47244473b9382072fbdc",
+  "estimate_no": "KGE-210000110",
+  "status": null,
+  "user": { "name": "K Venkat Ram", "phone": "7207435848" },
+  "billadd": { "name": "K Venkat Ram", "phone": "7207435848", "city": "Hyderabad", "state": "Telangana" },
+  "totalprice": 52208,
+  "builds": [...],
+  "bg_code": undefined,
+  "div_code": undefined,
+  "branch_code": undefined
+}
+```
+
+### A.3 tporders (kuropurchase — NO tenant fields)
 ```json
 {
   "_id": "668a574209a99aaa33fde350",
@@ -1009,13 +1166,13 @@ LIMIT 10;
   "shpadd": { "name": "Akash Kumar", "city": "PUNE", "state": "Maharashtra" },
   "totalprice": 10120,
   "products": [...],
-  "bg_code": "KURO0001",
-  "div_code": "KURO0001_001",
-  "branch_code": "KURO0001_001_001"
+  "bg_code": undefined,
+  "div_code": undefined,
+  "branch_code": undefined
 }
 ```
 
-### A.4 serviceRequest (KungOS_Mongo_One)
+### A.4 serviceRequest (kuropurchase — NO tenant fields, direct phone)
 ```json
 {
   "_id": "670a3db12649df38c382af78",
@@ -1027,13 +1184,13 @@ LIMIT 10;
   "device": "Third Party Warranty Service",
   "issue": "SMPS Replacement",
   "logs": [...],
-  "bg_code": "KURO0001",
-  "div_code": "KURO0001_001",
-  "branch_code": "KURO0001_001_001"
+  "bg_code": undefined,
+  "div_code": undefined,
+  "branch_code": undefined
 }
 ```
 
-### A.5 orders_orders (kg_eshop_latest)
+### A.5 orders_orders (kg_eshop_latest — NO tenant fields)
 ```sql
 -- Sample row
 orderid: '6569ac1f42'
@@ -1042,6 +1199,22 @@ order_status: 'Payment Pending'
 order_total: 1288.00
 delete_flag: false
 channel: 'online'
+-- NO bg_code, div_code, branch_code columns
+```
+
+### A.6 orders_orderitems (kg_eshop_latest)
+```sql
+-- Sample row
+orderid: '6569ac1f42'
+productid: 'PROD001'
+title: 'Product Name'
+price: 1288.00
+quantity: 1
+hsn_code: '84713000'
+tax_cgst: 103.84
+tax_sgst: 103.84
+tax_igst: 0.00
+components: '{"custom": true}'
 ```
 
 ---
@@ -1051,15 +1224,21 @@ channel: 'online'
 ```python
 #!/usr/bin/env python3
 """
-Canonical Orders Migration — All Sources → KungOS_PG_One
+Canonical Orders Migration — ALL Legacy Sources → KungOS_PG_One
+
+Sources:
+- kuropurchase (MongoDB): kgorders, estimates, tporders, serviceRequest
+- kg_eshop_latest (PostgreSQL): orders_orders, orders_orderitems, accounts_addresslist
 
 Prerequisites:
 - User migration complete (all identities have ESH*/ID* prefix)
 - Target DB schema exists (orders_core + detail tables)
+- kuropurchase tenant fields enriched (Phase 0)
 
 Usage:
-  python manage.py migrate_orders_canonical --source-db KungOS_Mongo_One
-  python manage.py migrate_orders_canonical --source-db kg_eshop_latest
+  python manage.py migrate_orders_canonical --phase 0  # Enrich tenant fields
+  python manage.py migrate_orders_canonical --phase 3  # eShop orders
+  python manage.py migrate_orders_canonical --phase 4  # MongoDB orders
   python manage.py migrate_orders_canonical --all
 """
 import os
@@ -1105,13 +1284,23 @@ def build_phone_lookup(pg_conn):
     cur.close()
     return lookup
 
-# Resolve customer_id
-def resolve_customer_id(phone, order_type, phone_lookup):
-    """Resolve customer_id from phone to identity_id."""
-    if not phone:
-        return None
-    normalized = normalize_phone(phone)
-    return phone_lookup.get(normalized, {}).get('identity_id')
+# Enrich kuropurchase tenant fields
+def enrich_kuropurchase_tenant_fields(mongo_client):
+    """Add default tenant fields to kuropurchase collections."""
+    db = mongo_client['kuropurchase']
+    default_tenant = {
+        'bg_code': 'KURO0001',
+        'div_code': 'KURO0001_001',
+        'branch_code': 'KURO0001_001_001'
+    }
+    collections = ['kgorders', 'estimates', 'tporders', 'serviceRequest']
+    for col_name in collections:
+        col = db[col_name]
+        result = col.update_many(
+            {'bg_code': {'$exists': False}},
+            {'$set': default_tenant}
+        )
+        print(f'{col_name}: {result.modified_count} records enriched')
 
 # Migration functions (one per collection)
 # ... (see Phase 3-4 for detailed implementations)
@@ -1120,31 +1309,36 @@ def main():
     """Main migration entry point."""
     # Connect to sources
     mongo_client = pymongo.MongoClient('mongodb://127.0.0.1:27017/')
-    mongo_db = mongo_client['KungOS_Mongo_One']
-    
+    kuropurchase_db = mongo_client['kuropurchase']
+
     eshop_conn = psycopg2.connect(
         dbname='kg_eshop_latest', user='postgres', host='/var/run/postgresql'
     )
-    
+
     pg_conn = psycopg2.connect(
         dbname='kuro-cadence', user='postgres', host='/var/run/postgresql'
     )
-    
+
     try:
-        # Build lookup
+        # Phase 0: Enrich tenant fields
+        enrich_kuropurchase_tenant_fields(mongo_client)
+
+        # Phase 2: Build lookup
         phone_lookup = build_phone_lookup(pg_conn)
         print(f'Built phone lookup: {len(phone_lookup)} entries')
-        
-        # Migrate collections
+
+        # Phase 3: eShop orders
         migrate_eshop_orders(eshop_conn, pg_conn, phone_lookup)
-        migrate_mongo_orders(mongo_db, pg_conn, 'estimates', 'estimate', 'estimate_no', phone_lookup)
-        migrate_mongo_orders(mongo_db, pg_conn, 'kgorders', 'in_store', 'orderid', phone_lookup)
-        migrate_mongo_orders(mongo_db, pg_conn, 'tporders', 'tp', 'orderid', phone_lookup)
-        migrate_mongo_orders(mongo_db, pg_conn, 'serviceRequest', 'service', 'srid', phone_lookup)
-        
-        # Validate
+
+        # Phase 4: MongoDB orders
+        migrate_mongo_orders(kuropurchase_db, pg_conn, 'estimates', 'estimate', 'estimate_no', phone_lookup)
+        migrate_mongo_orders(kuropurchase_db, pg_conn, 'kgorders', 'in_store', 'orderid', phone_lookup)
+        migrate_mongo_orders(kuropurchase_db, pg_conn, 'tporders', 'tp', 'orderid', phone_lookup)
+        migrate_mongo_orders(kuropurchase_db, pg_conn, 'serviceRequest', 'service', 'srid', phone_lookup)
+
+        # Phase 5: Validate
         validate_migration(pg_conn)
-        
+
     finally:
         eshop_conn.close()
         pg_conn.close()
@@ -1163,5 +1357,21 @@ if __name__ == '__main__':
 | `30-06-2026_user-data-migration-canonical_779286.md` | User migration handoff (prerequisite) |
 | `30-06-2026_architecture-v15-execution_e02526.md` | Architecture v1.5 execution plan |
 | `30-06-2026_business-logic-data-audit_7111e7.md` | Business logic data audit |
-| `/tmp/migrate_orders.py` | Existing orders migration script (reference) |
-| `plat/management/commands/migrate_legacy_eshop.py` | eShop migration script (reference) |
+
+---
+
+## Appendix D: Audit Evidence Summary
+
+| Finding | Source | Evidence |
+|---|---|---|
+| kuropurchase has NO tenant fields | kuropurchase MongoDB | All 4 order collections: 0 records with bg_code/div_code/branch_code |
+| kgorders gap: 12,134 → 9,172 | kuropurchase vs target | 2,972 in kuropurchase only (verified via orderid comparison) |
+| estimates gap: 5,052 → 4,308 | kuropurchase vs target | 744 in kuropurchase only (verified via estimate_no comparison) |
+| serviceRequest gap: 1,627 → 1,623 | kuropurchase vs target | 2 in kuropurchase only + 2 missing from target |
+| eShop: 172 deleted migrated | kg_eshop_latest vs target | All 172 have `delete_flag=true` and `order_status='Payment Method Changed'` |
+| eShop: 155 active missing | kg_eshop_latest vs target | All 155 have `delete_flag=false` and `order_status='Payment Pending'` |
+| eShop phone format: "0XXXXX XXXXX" | kg_eshop_latest | All 3,378 users have 12-char format with space |
+| FNB misclassification | kuro-cadence | 10 FNB orders in `in_store`, 9 detail rows in `cafe_fnb_detail` |
+| Web app orders (9) | kuro-cadence | Hex order_ids, `channel='Online Orders'`, not in any legacy source |
+| eShop items: 1 negative qty | kg_eshop_latest | `orders_orderitems` has 1 row with `quantity = -1` |
+| eShop orders without items: 8 | kg_eshop_latest | 7 `Payment Pending` + 1 `Payment Method Changed` (deleted) |
