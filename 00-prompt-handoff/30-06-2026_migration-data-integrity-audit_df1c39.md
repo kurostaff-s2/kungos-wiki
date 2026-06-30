@@ -93,8 +93,13 @@ This handoff defines the remediation work across five phases.
    | `outwardcreditnotes` | 150 | **106** | **❌ 44 lost** |
    | `outwarddebitnotes` | 13 | 13 | ✅ |
    | `paymentvouchers` | 3,459 | **0** | **❌ 3,459 NOT migrated** |
-   | `settlements` | (dropped) | — | — |
-   | `bulkpayments` | (dropped) | — | — |
+   | `outwardpayments` | **DROPPED** | **0** | **❌ Data lost — check backup** |
+   | `settlements` | **DROPPED** | **0** | **❌ Data lost — check backup** |
+   | `bulkpayments` | **DROPPED** | **0** | **❌ Data lost — check backup** |
+
+   **Action:** For the 44 missing `outward_credit_note` documents, find their `_id` values in `KungOS_Mongo_One.outwardcreditnotes` that are NOT in `financial_documents`. Save to `/tmp/data_audit/missing_outward_credit_notes.json`.
+
+   **Action:** For the three DROPPED collections (`outwardpayments`, `settlements`, `bulkpayments`), check if data exists in `latest-mongo-backup.dump` or `kuropurchase` database. Save findings to `/tmp/data_audit/dropped_collections_recovery.md`.
 
    **Action:** For the 44 missing `outward_credit_note` documents, find their `_id` values in `KungOS_Mongo_One.outwardcreditnotes` that are NOT in `financial_documents`. Save to `/tmp/data_audit/missing_outward_credit_notes.json`.
 
@@ -128,7 +133,7 @@ This handoff defines the remediation work across five phases.
 6. **Check `indentpos` and `indentproduct` status:**
 
    - Migration plan mentions `indentpos` → `inventory_indent` (bonus)
-   - `inventory_indent` table does NOT exist in PostgreSQL
+   - `inventory_indent` and `inventory_indentitem` tables DO exist (Django `Indent`/`IndentItem` models present at `domains/inventory/models.py:422`) but contain **0 rows** — data was never migrated
    - `indentproduct` (1,649 docs) was not mentioned in any plan
    - Determine if these should be migrated or are deprecated.
 
@@ -169,6 +174,14 @@ This handoff defines the remediation work across five phases.
    - Map fields: `po_no`, `vendor`, `amount`, `paid_by`, `pay_method`, `pay_account`, `pay_date`
    - **Files:** Modify `/tmp/consolidate_finance.py` or create repair script
 
+2b. **Recover dropped collections (`outwardpayments`, `settlements`, `bulkpayments`):**
+
+   - Check `latest-mongo-backup.dump` for these collections
+   - Check `kuropurchase` database for equivalent collections
+   - If recoverable: migrate to `financial_documents` with appropriate doc_types
+   - If NOT recoverable: document as permanent data loss, mark ViewSets as deprecated (410 Gone)
+   - **Files:** Create recovery script or deprecation notice
+
 3. **Fix `kuropurchase` → `KungOS_Mongo_One` gaps:**
 
    - Re-migrate 744 missing estimates, 14 missing vendors, 2,972 missing kgorders, 551 missing reb_users, 36 missing indentpos, 2 missing serviceRequest
@@ -189,21 +202,24 @@ This handoff defines the remediation work across five phases.
    - If skips were bugs, re-run with corrected logic
    - **Files:** Modify `/tmp/migrate_eshop_users.py` or `plat/management/commands/migrate_legacy_eshop.py`
 
-6. **Create `inventory_indent` table and migrate `indentpos`/`indentproduct`:**
+6. **Migrate `indentpos`/`indentproduct` to existing tables:**
 
-   - Design schema based on actual data structure
+   - `inventory_indent` and `inventory_indentitem` tables already exist (Django `Indent`/`IndentItem` models at `domains/inventory/models.py:422`)
+   - Map `indentpos` → `inventory_indent` and `indentproduct` → `inventory_indentitem`
    - Migrate 247 indentpos + 1,649 indentproduct records
-   - **Files:** Create migration script + Django migration
+   - **Files:** Create data migration script (no Django migration needed — tables exist)
 
 **Tests:**
 - [ ] `financial_documents` has 150 `outward_credit_note` (was 106)
 - [ ] `financial_documents` has 3,459 `payment_voucher` (was 0)
+- [ ] Dropped collections (`outwardpayments`, `settlements`, `bulkpayments`) recovered or documented as permanent loss
 - [ ] `KungOS_Mongo_One` has 5,052 estimates (was 4,308)
 - [ ] `KungOS_Mongo_One` has 423 vendors (was 409)
 - [ ] `KungOS_Mongo_One` has 12,134 kgorders (was 9,162)
 - [ ] `KungOS_Mongo_One` has 2,533 reb_users (was 1,982)
 - [ ] eShop skip rates documented or fixed
-- [ ] `inventory_indent` table exists with data
+- [ ] `inventory_indent` table has data (was 0 rows)
+- [ ] Dropped collection ViewSets (`OutwardPaymentViewSet`, `BulkPaymentViewSet`, `SettlementsViewSet`) either restored or deprecated
 
 **Constraints:**
 - **Never delete source data** — only add missing records via upsert
@@ -216,7 +232,7 @@ This handoff defines the remediation work across five phases.
 
 **What:** Create Django models for all PG tables that lack them, and fix schema mismatches.
 
-**Dependencies:** Phase 1 (audit complete), Phase 2 (data fixed).
+**Dependencies:** Phase 1 (audit complete). Phase 2 (data fixes) can run in parallel.
 
 ### 3A: Fix `inv_vendors` Model Mismatch
 
@@ -280,24 +296,41 @@ acct_loans: id, loan_code, partner_id (FK→acct_partners), loan_type,
 
 ### 4A: Finance ViewSets — Rewrite to Read `financial_documents`
 
-**Current state:** All finance ViewSets (`InwardInvoiceViewSet`, `OutwardInvoiceViewSet`, `InwardPaymentViewSet`, `OutwardPaymentViewSet`, `InwardCreditNoteViewSet`, `InwardDebitNoteViewSet`, `OutwardCreditNoteViewSet`, `OutwardDebitNoteViewSet`) use `COLLECTION_NAME = 'inwardinvoices'` etc. (old MongoDB collections).
+**Current state:** All finance ViewSets use `COLLECTION_NAME` pointing to old MongoDB collections:
 
-**Change:** Replace MongoDB queries with queries against `financial_documents` filtered by `doc_type`.
+| ViewSet | COLLECTION_NAME | Collection Status |
+|---|---|---|
+| `InwardInvoiceViewSet` | `inwardinvoices` | ✅ Exists (4,631 docs) |
+| `OutwardInvoiceViewSet` | `outwardinvoices` | ✅ Exists (1,165 docs) |
+| `InwardPaymentViewSet` | `inwardpayments` | ✅ Exists (21,026 docs) |
+| `OutwardPaymentViewSet` | `outwardpayments` | ❌ **DROPPED** — data lost |
+| `InwardCreditNoteViewSet` | `inwardcreditnotes` | ✅ Exists (106 docs) |
+| `InwardDebitNoteViewSet` | `inwarddebitnotes` | ✅ Exists (3 docs) |
+| `OutwardCreditNoteViewSet` | `outwardcreditnotes` | ✅ Exists (150 docs) |
+| `OutwardDebitNoteViewSet` | `outwarddebitnotes` | ✅ Exists (13 docs) |
+| `PaymentVoucherViewSet` | `paymentvouchers` | ✅ Exists (3,459 docs) |
+| `BulkPaymentViewSet` | `bulk_payments` | ❌ **DROPPED** — data lost |
+| `SettlementsViewSet` | `settlements` | ❌ **DROPPED** — data lost |
 
-**Approach options:**
-- **A:** Create a Django model for `financial_documents` (MongoDB document model via djongo or similar)
-- **B:** Keep as raw MongoDB queries but target `financial_documents` collection
-- **C:** Migrate `financial_documents` to PostgreSQL and create proper Django models
+**Change:** For collections that still exist, replace MongoDB queries with queries against `financial_documents` filtered by `doc_type`. For DROPPED collections (`OutwardPaymentViewSet`, `BulkPaymentViewSet`, `SettlementsViewSet`), either restore from backup or mark endpoints as deprecated (410 Gone).
 
-**Recommendation:** Option B for immediate fix (minimal code change). Option C for long-term architecture (consistent with PG-first strategy).
+**Approach:** Use Option B (raw MongoDB queries targeting `financial_documents`) for Phase 4 execution. Create a separate handoff for Option C (migrate `financial_documents` to PostgreSQL) after Phase 5 is complete.
 
 **Files:** `domains/accounts/viewsets.py`
 
-### 4B: Orders ViewSets — Rewrite to Read `orders_core`
+### 4B: Orders ViewSets — Rewrite to Read PG Tables
 
-**Current state:** All order ViewSets (`EstimateViewSet`, `InStoreOrderViewSet`, `TpOrderViewSet`, `ServiceRequestViewSet`) use MongoDB collections (`estimates`, `kgorders`, `tporders`, `serviceRequest`).
+**Current state:** Order ViewSets read from MongoDB collections:
 
-**Change:** Replace MongoDB queries with Django ORM queries against `orders_core` filtered by `order_type`, joined with detail tables.
+| ViewSet | COLLECTION_NAME | Target PG Table |
+|---|---|---|
+| `EstimateViewSet` | `estimates` | `orders_core` (order_type='estimate') + `estimate_detail` |
+| `InStoreViewSet` | `kgorders` | `orders_core` (order_type='in_store') + `in_store_detail` |
+| `TPOrderViewSet` | `tporders` | `orders_core` (order_type='tp_order') + `tp_order_detail` |
+| `ServiceRequestViewSet` | `service_detail` (MongoDB, 0 docs) | `service_detail` (PG, 1,623 rows) |
+| `OrdersViewSet` | aggregates `estimates`+`tporders`+`kgorders` | `orders_core` (all types) |
+
+**Change:** Replace MongoDB queries with Django ORM queries. `ServiceRequestViewSet` must read from the PG `service_detail` table (schema: `order_id`, `service_type`, `description`, `scheduled_date`, `completed_date`), NOT from `orders_core`.
 
 **Files:** `domains/orders/viewsets.py`
 
@@ -317,13 +350,17 @@ acct_loans: id, loan_code, partner_id (FK→acct_partners), loan_type,
 - `domains/inventory/urls.py` — Add vendor, purchase-order routes
 - `domains/accounts/urls.py` — Add partner, bank, loan routes
 
-### 4D: Purchase Order ViewSet Migration
+### 4D: Purchase Order ViewSet Consolidation
 
-**Current state:** `PurchaseOrderViewSet` exists in `accounts/viewsets.py` and reads from MongoDB `purchaseorders`.
+**Current state:** Two `PurchaseOrderViewSet` classes exist:
+- `accounts/viewsets.py:436` — registered at `/accounts/purchase-orders`, reads MongoDB `purchaseorders`
+- `orders/viewsets.py:682` — registered at `/orders/purchase-orders`, reads MongoDB `purchaseorders`
 
-**Change:** Move to `inventory/viewsets.py` and read from `inv_purchase_orders` via Django ORM.
+Both are functionally identical (same collection, same logic).
 
-**Files:** `domains/accounts/viewsets.py` (remove), `domains/inventory/viewsets.py` (add), `domains/accounts/urls.py` (remove route), `domains/inventory/urls.py` (add route)
+**Change:** Consolidate to a single `PurchaseOrderViewSet` in `inventory/viewsets.py` reading from `inv_purchase_orders` via Django ORM, registered at `/inventory/purchase-orders`. Deprecate the two existing copies (return 410 Gone with migration notice).
+
+**Files:** `domains/accounts/viewsets.py` (deprecate), `domains/orders/viewsets.py` (deprecate), `domains/inventory/viewsets.py` (add), `domains/accounts/urls.py` (deprecate route), `domains/orders/urls.py` (deprecate route), `domains/inventory/urls.py` (add route)
 
 **Tests:**
 - [ ] All finance endpoints return data from `financial_documents`
@@ -379,8 +416,12 @@ acct_loans: id, loan_code, partner_id (FK→acct_partners), loan_type,
 - [ ] Purchase Order endpoints read from `inv_purchase_orders` (PG, not MongoDB)
 - [ ] Vendor endpoints functional (`/vendors/`)
 - [ ] Partner, Bank, Loan endpoints functional
+- [ ] Duplicate `PurchaseOrderViewSet` consolidated to single location (`/inventory/purchase-orders`)
+- [ ] `ServiceRequestViewSet` reads from PG `service_detail` (not empty MongoDB)
+- [ ] Dropped collection ViewSets (`OutwardPaymentViewSet`, `BulkPaymentViewSet`, `SettlementsViewSet`) either restored or return 410 Gone
 - [ ] `financial_documents` has 150 `outward_credit_note` (gap fixed)
 - [ ] `financial_documents` has 3,459 `payment_voucher` (gap fixed)
+- [ ] Dropped collections (`outwardpayments`, `settlements`, `bulkpayments`) recovered or ViewSets deprecated
 - [ ] All existing tests still pass (no regression)
 - [ ] Server starts and responds to requests on all routes
 - [ ] Documentation updated with correct counts and status
@@ -444,3 +485,7 @@ acct_loans: id, loan_code, partner_id (FK→acct_partners), loan_type,
 4. **`indentpos`/`indentproduct` purpose:** These collections contain procurement indent data. It's unclear if they're still in active use or deprecated. **The executing agent should verify with the business before investing in migration.**
 
 5. **`financial_documents` as MongoDB vs PG:** The consolidation script put `financial_documents` in MongoDB, but the long-term architecture seems to prefer PostgreSQL. **The executing agent should confirm whether Option B (keep MongoDB) or Option C (migrate to PG) is the intended direction.**
+
+6. **Dropped collections (`outwardpayments`, `settlements`, `bulkpayments`):** These three MongoDB collections were dropped during consolidation WITHOUT being migrated to `financial_documents`. The ViewSets that read them (`OutwardPaymentViewSet`, `SettlementsViewSet`, `BulkPaymentViewSet`) are silently broken. **The executing agent must check `latest-mongo-backup.dump` and `kuropurchase` database for recoverable data before deciding whether to restore or deprecate.**
+
+7. **Duplicate `PurchaseOrderViewSet`:** Two identical ViewSets exist at `/accounts/purchase-orders` and `/orders/purchase-orders`. **The executing agent must consolidate to a single location and deprecate the duplicate.**
