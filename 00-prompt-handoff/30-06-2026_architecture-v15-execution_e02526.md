@@ -22,9 +22,16 @@
 **Key files for this task:**
 - `domains/cafe_fnb/models.py` — Remove CafeMenuItems, CafeMenuBranchAvailability
 - `domains/cafe_fnb/views.py` — Rewrite menu endpoint to read from MongoDB
+- `domains/cafe_fnb/serializers.py` — Remove menu-related serializers
 - `domains/inventory/models.py` — Add purchase order models
-- `domains/accounts/viewsets.py` — Add PartnersViewSet, BanksViewSet, LoansViewSet
+- `domains/inventory/views.py` — Add PurchaseOrderViewSet
+- `domains/inventory/urls.py` — Add PO URL patterns
+- `domains/inventory/serializers.py` — Add PO serializers
+- `domains/accounts/viewsets.py` — Add PartnersViewSet, BanksViewSet, LoansViewSet, remove PurchaseOrderViewSet
+- `domains/accounts/urls.py` — Update URL patterns
 - `users/models.py` — Verify EmployeeProfile, Identity models
+- `users/views.py` — Update employee endpoints
+- `users/serializers.py` — Update employee serializers
 
 ## Clarification Needed Before Drafting
 
@@ -106,7 +113,7 @@
    - `settlements` → `financial_documents` (`doc_type='settlement'`)
    - `bulkpayments` → `financial_documents` (`doc_type='bulk_payment'`)
 3. Create `FinancialDocument` service class with discriminator filtering
-4. Create consolidated ViewSets (or keep existing ViewSets but route to unified collection)
+4. Update existing finance ViewSets to read from `financial_documents` with discriminator filtering
 5. Update URL patterns
 6. Add indexes on `financial_documents` (`doc_type`, `bg_code`, `div_code`)
 7. Test finance endpoints
@@ -152,7 +159,7 @@
 3. PO listing filters by tenant
 4. PO items reference inventory items correctly
 
-**Dependencies:** Phase 1 (cafe menu) should be complete, but Phase 3 is otherwise independent
+**Dependencies:** None (Phase 3 is independent)
 
 ---
 
@@ -196,18 +203,19 @@
 - MongoDB — Migrate `employees`, `empadminlist`, `empdashlist` data
 
 **Steps:**
-1. Verify `EmployeeProfile` model exists in `users/models.py`
+1. Verify `EmployeeProfile` model exists in `users/models.py` (should have FK → users_identity)
 2. Verify `users_employee` table exists in PostgreSQL
-3. Migrate data from MongoDB `employees`, `empadminlist`, `empdashlist` to PG
-4. Update employee ViewSets to read from PG `users_employee`
-5. Test employee endpoints
+3. Migrate data from MongoDB `employees`, `empadminlist`, `empdashlist` to PG (deduplicate by userid)
+4. Update employee ViewSets in `users/views.py` to read from PG `users_employee`
+5. Update employee serializers in `users/serializers.py` if needed
+6. Test employee endpoints
 
 **Tests:**
 1. Employee endpoints return data from PG
 2. Employee filtering by role works
 3. Employee filtering by is_active works
 
-**Dependencies:** Phase 1 (cafe menu) should be complete, but Phase 5 is otherwise independent
+**Dependencies:** None (Phase 5 is independent)
 
 ---
 
@@ -218,14 +226,12 @@ Phase 1 (Cafe Menu) ────────────────────
                                                        │
 Phase 2 (Finance Consolidation) ──────────────────────┤
                                                        ├── All phases independent
-Phase 3 (Purchase Orders) ────────────────────────────┤
-                                                       │
-Phase 4 (Accounts Master Data) ───────────────────────┤
-                                                       │
+Phase 3 (Purchase Orders) ────────────────────────────┤  ⚠️  Phase 3 & 5 both modify domains/accounts/*
+Phase 4 (Accounts Master Data) ───────────────────────┤     Coordinate file access
 Phase 5 (Employee Migration) ─────────────────────────┘
 ```
 
-**Note:** All phases are independent and can be executed in parallel by separate agents.
+**Note:** Phases 1, 2, 4 are fully independent. Phases 3 & 5 both modify `domains/accounts/*` files — execute sequentially or coordinate file access to avoid conflicts.
 
 ---
 
@@ -236,10 +242,10 @@ Phase 5 (Employee Migration) ─────────────────
 | Modify | `domains/cafe_fnb/models.py` | Remove CafeMenuItems, CafeMenuBranchAvailability |
 | Modify | `domains/cafe_fnb/views.py` | Rewrite menu endpoint to read from MongoDB |
 | Modify | `domains/cafe_fnb/serializers.py` | Remove menu-related serializers |
-| Create | `domains/cafe_fnb/migrations/000X_drop_menu_tables.py` | Migration to drop menu tables |
+| Create | `domains/cafe_fnb/migrations/000X_drop_menu_tables.py` | Migration to drop menu tables (use next available number) |
 | Modify | `domains/accounts/services.py` | Add finance document service |
-| Modify | `domains/accounts/viewsets.py` | Add consolidated ViewSets, remove PurchaseOrderViewSet |
-| Modify | `domains/accounts/urls.py` | Update URL patterns |
+| Modify | `domains/accounts/viewsets.py` | Add finance ViewSets, Partners/Banks/Loans ViewSets, remove PurchaseOrderViewSet |
+| Modify | `domains/accounts/urls.py` | Update URL patterns (add finance, partners, banks, loans; remove PO) |
 | Modify | `domains/inventory/models.py` | Add PurchaseOrder, PurchaseOrderItem models |
 | Modify | `domains/inventory/views.py` | Add PurchaseOrderViewSet |
 | Modify | `domains/inventory/urls.py` | Add PO URL patterns |
@@ -266,30 +272,34 @@ Phase 5 (Employee Migration) ─────────────────
 - [ ] Cafe menu endpoint reads from MongoDB `products` (collection='cafe-food', 'cafe-beverage')
 - [ ] Cafe menu endpoint reads from MongoDB `custom_catalog` (custom_type='preset')
 - [ ] Cafe menu endpoint filters by branch availability from PostgreSQL `inventory_inventorystock`
-- [ ] `CafeMenuItems` and `CafeMenuBranchAvailability` tables dropped
+- [ ] `CafeMenuItems` and `CafeMenuBranchAvailability` tables dropped (verify with `psql -c '\dt cafe_menu*'`)
 - [ ] Finance endpoints read from unified `financial_documents` collection
-- [ ] Purchase OrderViewSet in Inventory domain, not Accounts
-- [ ] Partners/Banks/Loans ViewSets in Accounts domain, reading from PG
+- [ ] Purchase OrderViewSet in Inventory domain (`domains/inventory/views.py`), not Accounts
+- [ ] Partners/Banks/Loans ViewSets in Accounts domain, reading from PG `acct_*` tables
 - [ ] Employee endpoints read from PostgreSQL `users_employee`
-- [ ] All endpoints return correct data
-- [ ] No database errors
+- [ ] All endpoints return correct data (verify with sample requests)
+- [ ] No database errors (check Django logs)
 - [ ] All existing tests still pass (no regression)
+- [ ] MongoDB connection verified (test with `python manage.py shell` → `from mongoengine import connect; connect('KungOS_Mongo_One')`)
+- [ ] PostgreSQL connection verified (test with `python manage.py shell` → `from django.db import connection; connection.cursor()`)
 
 ---
 
 ## Post-Wiring Tests (GATE — must pass before marking complete)
 
-- [ ] Menu endpoint responds to HTTP requests
-- [ ] Menu endpoint returns F&B items from MongoDB
-- [ ] Menu endpoint returns arcade packages from MongoDB
-- [ ] Menu endpoint filters by branch availability
-- [ ] Finance endpoints respond to HTTP requests
-- [ ] Finance endpoints return data from unified collection
-- [ ] PO endpoints respond to HTTP requests
-- [ ] PO creation works
-- [ ] Partners/Banks/Loans endpoints respond to HTTP requests
-- [ ] Employee endpoints respond to HTTP requests
+- [ ] Menu endpoint responds to HTTP requests (`GET /api/v1/cafe-fnb/menu/`)
+- [ ] Menu endpoint returns F&B items from MongoDB (verify `collection='cafe-food'` or `'cafe-beverage'`)
+- [ ] Menu endpoint returns arcade packages from MongoDB (verify `custom_type='preset'`)
+- [ ] Menu endpoint filters by branch availability (test with different `branch_code` params)
+- [ ] Finance endpoints respond to HTTP requests (`GET /api/v1/accounts/inward-invoices/`)
+- [ ] Finance endpoints return data from unified collection (verify no `inwardinvoices` collection queries)
+- [ ] PO endpoints respond to HTTP requests (`GET /api/v1/inventory/purchase-orders/`)
+- [ ] PO creation works (`POST /api/v1/inventory/purchase-orders/`)
+- [ ] Partners/Banks/Loans endpoints respond to HTTP requests (`GET /api/v1/accounts/partners/`)
+- [ ] Employee endpoints respond to HTTP requests (`GET /api/v1/users/employees/`)
 - [ ] All existing tests still pass (no regression)
+- [ ] No migration errors (`python manage.py migrate --check`)
+- [ ] No import errors (`python manage.py check`)
 
 **Marking Complete:** The task is NOT complete until all post-wiring tests pass. A component that exists as code but cannot be started and verified end-to-end is incomplete.
 
@@ -300,8 +310,10 @@ Phase 5 (Employee Migration) ─────────────────
 1. **MongoDB integration:** Menu endpoint requires MongoDB read integration. Verify `TenantCollection` wrapper is available for reads.
 2. **Data migration:** Finance consolidation requires migrating 9 collections to 1. Estimate: ~50,000 documents. Plan for batch migration (1000 docs/batch).
 3. **Purchase order data:** `purchase_orders` MongoDB collection structure needs verification. May require schema mapping.
-4. **Employee data:** `employees`, `empadminlist`, `empdashlist` MongoDB collections may have overlapping data. Plan for deduplication.
+4. **Employee data:** `employees`, `empadminlist`, `empdashlist` MongoDB collections may have overlapping data. Plan for deduplication by `userid`.
 5. **Backward compatibility:** Removing `CafeMenuItems` tables is a breaking change. Coordinate with frontend team if needed.
+6. **File conflicts:** Phases 3 & 5 both modify `domains/accounts/*` files. Execute sequentially or coordinate to avoid merge conflicts.
+7. **Database connections:** Verify MongoDB and PostgreSQL connections are working before starting migrations.
 
 ---
 
