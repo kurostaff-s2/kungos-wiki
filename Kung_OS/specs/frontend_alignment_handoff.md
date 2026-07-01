@@ -1,7 +1,7 @@
 # Frontend-Backend Alignment Handoff
 
 **Date:** 2026-06-29
-**Project:** `kteam-fe-chief` (Frontend) → `kteam-dj-chief` (Backend)
+**Project:** `KungOS-FE-Team` (Frontend) → `KungOS-dj` (Backend)
 **Branch:** `develop`
 **Status:** Active — Review findings require attention (see §Review Findings)
 **Last Reviewed:** 2026-06-29
@@ -10,14 +10,14 @@
 
 ## Executive Summary
 
-The frontend (`kteam-fe-chief`) has been migrated to align with the KungOS target state backend (`kteam-dj-chief`). Core alignment work is verified complete, but a review against the spec and live codebases uncovered **6 P0 issues, 3 P1 issues, and several open questions** that need resolution before the migration can be considered fully aligned.
+The frontend (`KungOS-FE-Team`) has been migrated to align with the KungOS target state backend (`KungOS-dj`). Core alignment work is verified complete, but a review against the spec and live codebases uncovered **6 P0 issues, 3 P1 issues, and several open questions** that need resolution before the migration can be considered fully aligned.
 
 ### Issue Ownership Legend
 
 | Owner | Description |
 |-------|-------------|
-| **Frontend** | Issues in `kteam-fe-chief` codebase — fixable by frontend team |
-| **Backend** | Issues in `kteam-dj-chief` codebase or spec — fixable by backend team |
+| **Frontend** | Issues in `KungOS-FE-Team` codebase — fixable by frontend team |
+| **Backend** | Issues in `KungOS-dj` codebase or spec — fixable by backend team |
 | **Shared** | Cross-cutting issues requiring coordination between both teams |
 
 > **Note:** Some items labeled "P0" in the headline list below are backend defects discovered during frontend alignment (e.g., legacy cafe session route, Mongo tenant filtering, missing Accounts spec). They are listed here for visibility but are **owned by the backend team**.
@@ -571,7 +571,7 @@ The following components are **correctly implemented** and working:
 
 ## Frontend Code Quality Review (2026-06-29)
 
-A thorough review of the frontend codebase (`kteam-fe-chief`) for duplicate implementations, faulty logic, and naming inconsistencies.
+A thorough review of the frontend codebase (`KungOS-FE-Team`) for duplicate implementations, faulty logic, and naming inconsistencies.
 
 ---
 
@@ -1297,7 +1297,7 @@ See **RF-6** for the consolidated phase mapping table. All phase references in t
 ### 5.1 Build Verification
 
 ```bash
-cd /home/chief/Coding-Projects/kteam-fe-chief
+cd /home/chief/Coding-Projects/KungOS-FE-Team
 npx vite build  # Should pass with no errors
 ```
 
@@ -1475,8 +1475,8 @@ grep -A 3 "'permissions'" users/api/viewsets.py | head -10
 - `/home/chief/llm-wiki/Kung_OS/specs/database_schemas/migration_spec.md`
 
 ### Codebase
-- **Frontend:** `/home/chief/Coding-Projects/kteam-fe-chief` (branch: `develop`)
-- **Backend:** `/home/chief/Coding-Projects/kteam-dj-chief`
+- **Frontend:** `/home/chief/Coding-Projects/KungOS-FE-Team` (branch: `develop`)
+- **Backend:** `/home/chief/Coding-Projects/KungOS-dj`
 
 ---
 

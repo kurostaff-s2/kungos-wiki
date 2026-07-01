@@ -2,7 +2,7 @@
 
 **Status:** DRAFT — Source of Truth  
 **Date:** 2026-07-01  
-**Version:** 1.5  
+**Version:** 1.6  
 **Purpose:** Authoritative reference for all database collections, tables, data flow, and migration status
 
 ### Status Legend
@@ -22,6 +22,7 @@
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.6 | 2026-07-01 | Added §8.4 Investigation Findings: `cafe_menu_items` created accidentally (to be dropped), preset migration incomplete (38/354), 0 legacy F&B orders confirmed, 82 F&B products complete in inventory. Proposed architecture: MongoDB `custom_catalog` = cafe menu, PostgreSQL = inventory/stock only. |
 | 1.5 | 2026-07-01 | Vendors moved from `users_organization` to `inv_vendors` (Inventory domain). `vendor_code` preserved as PK. Phase 2 (MongoDB canonicalization) added as prerequisite. Phase ordering re-aligned. |
 
 ### Field Naming Convention
@@ -607,6 +608,91 @@ def get_menu(branch_code: str):
 
 > **Note:** Phase 8 (Cafe Menu Sync) is removed. Menu is derived dynamically, not synced to PG.
 
+### 8.4 Investigation Findings (2026-07-01)
+
+> **Status:** REVIEW REQUIRED — Proposed changes based on live database inspection.
+
+#### 8.4.1 `cafe_menu_items` Created Accidentally
+
+**Finding:** The `cafe_menu_items` table (50 rows) and `cafe_menu_branch_availability` (99 rows) were created accidentally during the previous migration run. They should be **dropped**.
+
+**Evidence (live inspection of `KungOS_PG_One`):**
+
+| Table | Count | Source Type | Status |
+|-------|-------|-------------|--------|
+| `cafe_menu_items` | 50 | `fnb` (19) + `arcade` (31) | **DROP** — accidental |
+| `cafe_menu_branch_availability` | 99 | FK → `cafe_menu_items.id` | **DROP** — depends on above |
+| `cafe_fnb_detail` | 12 | Test data (`identity_id: ID004748`) | **KEEP** — truncate in Phase 0 |
+| `inventory_inventoryitem` (category='fnb') | 82 | All legacy F&B products | **KEEP** — correct inventory master |
+| `inventory_inventorystock` | 372 | All items × branches | **KEEP** — stock levels |
+
+**Correct Architecture:**
+
+| Layer | Storage | Purpose |
+|-------|---------|--------|
+| **Cafe Menu (Sellable Items)** | MongoDB `custom_catalog` | Pricing, display names, availability — source of truth for what's sellable |
+| **Cafe Inventory** | PostgreSQL `inventory_inventoryitem` + `inventory_inventorystock` | Physical stock tracking, quantities, branch allocation |
+
+**Dependency Chain:**
+- `cafe_menu_branch_availability.menu_item_id` → `cafe_menu_items.id` (FK)
+- `cafe_fnb_detail` uses JSONB `product_code` (NOT FK to `cafe_menu_items`) — safe to keep
+- `inventory_inventoryitem` is independent — no FK to `cafe_menu_items`
+
+#### 8.4.2 Preset Migration Incomplete
+
+**Finding:** The preset migration to `custom_catalog` is broken. Current state: 38 items vs expected 354.
+
+| Source | Expected | Actual | Issue |
+|--------|----------|--------|-------|
+| `kg_mongo.presets` (16 category indexes → 321 flattened) | 321 | 32 (no titles) | Flattened but lost `title`/`name` fields |
+| `kc_mongo.presets` (6 category indexes → 33 flattened) | 33 | 6 (category indexes, not flattened) | Inserted as-is without flattening `list[]` arrays |
+| **Total** | **354** | **38** | **316 missing** |
+
+**`kc_mongo.presets` structure (6 category indexes):**
+
+| Type | Items in `list[]` | Category |
+|------|-------------------|----------|
+| `grace` | 2 | Grace timing packages |
+| `pc144hz` | 11 | 144Hz PC topup/membership/happypass |
+| `pc240hz` | 11 | 240Hz PC topup/membership/happypass |
+| `vr` | 1 | VR package |
+| `ps5` | 4 | PS5 topup/membership |
+| `controller` | 4 | Controller packages |
+| **Total** | **33** | |
+
+**Fix Required:**
+1. Drop `cafe_menu_items` + `cafe_menu_branch_availability` (CASCADE)
+2. Re-run preset migration with correct flattening logic
+3. Update Phase 8 (Cafe Menu Derivation) to reflect MongoDB-only menu source
+
+#### 8.4.3 Legacy F&B Orders: Zero
+
+**Finding:** Confirmed 0 legacy cafe F&B orders exist in any source dump.
+
+| Source Collection | Count | F&B Orders? |
+|-------------------|-------|-------------|
+| `kgorders` | 12,174 | ❌ All PC builds/hardware (KG2 prefix) |
+| `tporders` | 229 | ❌ All TP e-commerce (Amazon/Flipkart) |
+| `serviceRequest` | 1,627 | ❌ PC repair/warranty requests |
+| All other `kc_mongo` collections | — | ❌ No FNB-prefixed orders found |
+
+**`cafe_fnb_detail` (12 rows) is test data only** — all reference `identity_id: ID004748` ("Login User", phone 1111111111). Will be truncated in Phase 0.
+
+#### 8.4.4 F&B Products: 82 Legacy, Complete in Inventory
+
+**Finding:** All 82 F&B products from `kc_mongo.products` are migrated to `inventory_inventoryitem` (category='fnb').
+
+| Collection | Count | Examples |
+|------------|-------|----------|
+| `beverage` | 20 | Water, Coke, Pepsi, Red Bull, Monster, Coffee |
+| `food` | 62 | Kit Kat, Maggi, Lays, Haldiram's, sandwiches, ice cream |
+| **Total** | **82** | |
+
+**Migration status:**
+- `kc_mongo.products` (82) → `inventory_inventoryitem` (category='fnb') ✅ **COMPLETE**
+- `kc_mongo.products` (82) → `cafe_menu_items` (source_type='fnb') ⚠️ **PARTIAL (19/82)** — to be dropped
+- `kc_mongo.products` (82) → `products` (collection='cafe-food'/'cafe-beverage') 🔜 **PENDING** — correct target
+
 ---
 
 ## 9. Migration Plan
@@ -960,6 +1046,7 @@ CREATE UNIQUE INDEX uq_identity_tenant_phone
 | 2026-07-01 | 1.2 | Finance consolidation: 9 collections → 1 (`financial_documents`). Purchase orders moved to Inventory domain (`inv_purchase_orders`). Partners/banks/loans moved to PG (`acct_*`). Employee collections migrated to PG (`users_employee`, `employee_attendance`). Added Accounts domain (§3.1a). Updated migration plan (Phases 0-8 with 5.5/5.6 sub-phases). Updated data flow diagram with Accounts domain. |
 | 2026-07-01 | 1.3 | Cafe menu redesign: Removed `CafeMenuItems` and `CafeMenuBranchAvailability` PG tables. Added `cafe-food` and `cafe-beverage` discriminators to `products`. Cafe combos merged into `custom_catalog` (`custom_type='preset'`). Menu derived dynamically from MongoDB — no sync command needed. Updated data flow diagram, §3.3, §5.1, §5.3, §8, Phase 8. Removed dual-read middleware references — all code paths use canonical field names (no legacy support). |
 | 2026-07-01 | 1.4 | Three-lane structure: Separated all sections into LIVE (current state), TARGET (future state), and contract-stable (storage-agnostic APIs). Removed redundant §2.2/§2.3 sections. Updated §1, §2, §3, §6 to use clear LIVE/TARGET separation. Removed mixed status rows. Fixed naming drift: `rbac_user_roles` scoped by `bg_code + div_code` (not `division`). |
+| 2026-07-01 | 1.6 | Added §8.4 Investigation Findings: `cafe_menu_items` accidental creation (to be dropped), preset migration incomplete (38/354), 0 legacy F&B orders, 82 F&B products complete in inventory. Proposed: MongoDB `custom_catalog` = cafe menu, PG = inventory/stock only. |
 | 2026-07-01 | 1.5 | Naming consistency pass: Fixed `resolve_permission()` cascades description ("exact division" → "exact div_code"). Fixed index names (`idx_inv_po_division` → `idx_inv_po_div_code`, `idx_orders_division` → `idx_orders_div_code`). Fixed §1 mixed status ("LIVE + TARGET" → "LIVE"). |
 
 ---
@@ -967,4 +1054,4 @@ CREATE UNIQUE INDEX uq_identity_tenant_phone
 **Status:** DRAFT — Review Required  
 **Owner:** Backend Architecture Team  
 **Reviewers:** Tech Lead, Backend Developer  
-**Last Updated:** 2026-07-01 (v1.5)
+**Last Updated:** 2026-07-01 (v1.6)

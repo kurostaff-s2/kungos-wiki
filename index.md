@@ -2,12 +2,12 @@
 
 ## Projects
 - [[rebellion-nextjs]] — Next.js 14 App Router landing page for Rebellion Esports gaming cafes (Tailwind CSS, Framer Motion, Lucide React)
-- [[kteam-dj-be]] — Django backend API server for Kuro Gaming ecosystem (PostgreSQL, MongoDB, Meilisearch, REST Framework, Knox auth)
-- [[kteam-fe-react]] — React 19 + Vite staff portal "kg-staff" (Radix UI, Redux Toolkit, Tailwind CSS v4, React Router v7, Jest)
+- [[KungOS-dj]] — Django backend API server for Kuro Gaming ecosystem (PostgreSQL, MongoDB, Meilisearch, REST Framework, Knox auth)
+- [[KungOS-FE-Team]] — React 19 + Vite staff portal "kg-staff" (Radix UI, Redux Toolkit, Tailwind CSS v4, React Router v7, Jest)
 - [[renderedge-nextjs]] — Next.js project (separate web presence)
 
 ## Architecture
-- [[kteam-system-architecture]] — Full system architecture: kteam-dj-be (Django/DRF/PostgreSQL/MongoDB/MeiliSearch) + kteam-fe-chief (React 19/Vite 8/Redux 5/Tailwind v4), 155+ API endpoints, 129+ pages, data flow, multi-tenant model, known issues, prioritized recommendations (P1-P4)
+- [[KungOS-system-architecture]] — Full system architecture: KungOS-dj (Django/DRF/PostgreSQL/MongoDB/MeiliSearch) + KungOS-FE-Team (React 19/Vite 8/Redux 5/Tailwind v4), 155+ API endpoints, 129+ pages, data flow, multi-tenant model, known issues, prioritized recommendations (P1-P4)
 - [[alignment_audit]] — Architectural constitution vs. integration & identity plans alignment audit
 - [[eshop_legacy_review]] — Detailed legacy codebase audit for Kuro Gaming e-commerce backend
 
@@ -22,8 +22,8 @@
 - [[kungos-migration-tools]] — Production migration tools: Django management commands for MongoDB dump restore, entity population, and tenant isolation (restore_kuropurchase, backup_kuropurchase, deploy_restore)
 
 ## Entities
-- [[kteam-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across kteam-dj-be + kteam-fe-chief
-- [[kteam-system-architecture]] — Full system architecture: kteam-dj-be + kteam-fe-chief, 155+ API endpoints, 129+ pages
+- [[KungOS-architecture-audit]] — Full system audit: 97 issues (12 Critical, 24 High, 31 Medium, 30 Low) across KungOS-dj + KungOS-FE-Team
+- [[KungOS-system-architecture]] — Full system architecture: KungOS-dj + KungOS-FE-Team, 155+ API endpoints, 129+ pages
 - [[local-ai-stack]] — Local LLM inference: endpoints, models, RAG, search
 - [[Local-Hardware]] — Hardware specs, performance benchmarks, optimization recommendations
 
@@ -33,17 +33,17 @@
 - **OpenCode** — Uses local endpoint at 127.0.0.1:8001
 
 ## Infrastructure
-- [[Knox Auth]] — Authentication system used in kteam-dj-be
+- [[Knox Auth]] — Authentication system used in KungOS-dj
 - [[PostgreSQL]] — Primary relational database
 - [[MongoDB]] — Document database, daily backups at 22:30
-- [[Meilisearch]] — Search engine for kteam-dj-be
+- [[Meilisearch]] — Search engine for KungOS-dj
 - [[MinIO]] — Object storage for RAGFlow
 
 ## Decisions
 - [[ADR-001-local-llm]] — Use local models instead of cloud APIs for privacy and cost
 - [[ADR-002-dual-model]] — Fast model for boilerplate, reasoning model for hard bugs/architecture
 - [[ADR-003-llama-cpp]] — Use llama.cpp with CUDA for inference instead of vLLM/Ollama
-- [[ADR-004-llm-integration-assessment]] — Open-source LLM integration assessment for kteam (invoice OCR, chat bot, automations, architecture, model recommendations, roadmap)
+- [[ADR-004-llm-integration-assessment]] — Open-source LLM integration assessment for KungOS (invoice OCR, chat bot, automations, architecture, model recommendations, roadmap)
 - [[ADR-005-debug-tools]] — Keep errorLogger, ErrorBadge, and Playwright test scripts as permanent debugging/audit tools (enabled/disabled as needed)
 - [[subagent_council_integration]] — Deploy isolated Subagent LLM Council & MemSearch on a single RTX 3090 GPU (Ryzen 7700, 96GB RAM) with sequential slot persistence
 
@@ -55,12 +55,12 @@
 - [[nextjs-dark-theme]] — Dark theme implementation with Tailwind CSS
 - [[nextjs-app-router]] — Next.js 14/16 App Router conventions
 - [[django-module-structure]] — Django module organization (users, careers, kurostaff, kuroadmin)
-- [[redux-toolkit-state]] — Redux Toolkit state management patterns (kteam-fe-react)
-- [[radix-ui-components]] — Radix UI headless component patterns (kteam-fe-react)
+- [[redux-toolkit-state]] — Redux Toolkit state management patterns (KungOS-FE-Team)
+- [[radix-ui-components]] — Radix UI headless component patterns (KungOS-FE-Team)
 - [[docker-compose-deploy]] — Docker Compose deployment patterns
 
 ## Comparisons
-- [[kteam-fe-react-vs-minimal-material-kit]] — Tailwind CSS v4 vs MUI v5 design system comparison, 26 prioritized UI/UX improvements
+- [[KungOS-FE-Team-vs-minimal-material-kit]] — Tailwind CSS v4 vs MUI v5 design system comparison, 26 prioritized UI/UX improvements
 
 ## Anti-patterns
 - [[no-inline-api-keys]] — Never hardcode credentials or API keys

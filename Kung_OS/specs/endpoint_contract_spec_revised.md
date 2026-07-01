@@ -942,7 +942,7 @@ Shared schemas (referenced across domains):
 ### A.1 Axios Configuration (LIVE)
 
 ```javascript
-// kteam-fe-chief/src/lib/api.jsx
+// KungOS-FE-Team/src/lib/api.jsx
 const api = axios.create({
     baseURL: '/api/v1',
     withCredentials: true,
@@ -953,7 +953,7 @@ const api = axios.create({
 ### A.2 Vite Dev Proxy (LIVE)
 
 ```javascript
-// kteam-fe-chief/vite.config.js
+// KungOS-FE-Team/vite.config.js
 server: {
     proxy: {
         '/api': {
@@ -1007,6 +1007,6 @@ server: {
 
 ---
 
-> **Implementation state:** This spec defines the TARGET endpoint contract. Current LIVE endpoints use legacy paths (`kuro/`, `auth/login` with old response shape). Migration tracked in `migration_spec.md`. Frontend client (`kteam-fe-chief`) must be updated per Appendix A checklist before legacy endpoints are removed.
+> **Implementation state:** This spec defines the TARGET endpoint contract. Current LIVE endpoints use legacy paths (`kuro/`, `auth/login` with old response shape). Migration tracked in `migration_spec.md`. Frontend client (`KungOS-FE-Team`) must be updated per Appendix A checklist before legacy endpoints are removed.
 >
 > **Critical:** The middleware extraction bug (legacy field names) is tracked in `tenant-context-audit_a72921.md` (P0). The switch endpoint JWT emission gap is tracked as P1. Both MUST be fixed before this spec can be considered fully implemented.
