@@ -1,4 +1,4 @@
-# Frontend-Backend Coverage Audit (Revised)
+# Frontend-Backend Coverage Audit (Final)
 
 **Date:** 2026-07-02  
 **Status:** ⚠️ **GAPS IDENTIFIED**  
@@ -12,11 +12,13 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 **Domain Mapping:**
 - HR → **Teams** domain
 - Products → Related to **Eshop** and **Inventory** domains
-- Cafe-FNB & Cafe-Arcade → Should be covered
+- Cafe-FNB & Cafe-Arcade → Separate domains
+- Docs, SMS, Counters → **Shared** domain (implemented, NOT in handoff)
+- Platform utilities → **plat** domain (middleware, filters, outbox, PDF)
 
 ---
 
-## 📊 **Coverage Summary (Revised)**
+## 📊 **Coverage Summary**
 
 | Domain | Frontend Pages | Backend Endpoints | Handoff Coverage | Status |
 |--------|---------------|-------------------|------------------|--------|
@@ -26,11 +28,11 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 | **Vendors** | 1 page | 2 endpoints | 1/2 | ✅ Complete |
 | **Shared** | 1 page | 11 endpoints | 1/11 | ⚠️  Missing 10 |
 | **Inventory** | 6 pages | 18 endpoints | 0/18 | ❌ Not covered |
-| **Eshop** | 3 pages | 7 endpoints | 0/7 | ❌ Not covered |
-| **Cafe Arcade** | 12 pages | 25 endpoints | 0/25 | ❌ Not covered |
-| **Cafe FNB** | 2 pages | 9 endpoints | 0/9 | ❌ Not covered |
+| **Eshop** | 3 pages | 9 endpoints | 0/9 | ❌ Not covered |
+| **Cafe Arcade** | 13 pages | 31 endpoints | 0/31 | ❌ Not covered |
+| **Cafe FNB** | 1 page | 9 endpoints | 0/9 | ❌ Not covered |
 | **Products** | 5 pages | 6 endpoints | 0/6 | ❌ Not covered |
-| **Tenant/Settings** | 6 pages | 19 endpoints | 0/19 | ❌ Not covered |
+| **Tenant/Settings** | 6 pages | 23 endpoints | 0/23 | ❌ Not covered |
 
 **Total:** 61 frontend pages, 135 backend endpoints, 17/135 covered (13%)
 
@@ -100,16 +102,18 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 | Frontend Page | Backend Endpoint | Handoff Coverage |
 |--------------|------------------|------------------|
 | Home | `/api/v1/shared/home` | ✅ Covered |
-| DocGenerator | `/api/v1/shared/doc-generator` | ❌ Not in handoff |
-| SMS | `/api/v1/shared/sms` | ❌ Not in handoff |
-| Misc | `/api/v1/shared/misc` | ❌ Not in handoff |
+| DocGenerator | `/api/v1/shared/doc-generator` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
+| SMS | `/api/v1/shared/sms` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
+| Misc | `/api/v1/shared/misc` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
 | CreateCollection | `/api/v1/shared/create-collection` | ❌ Not in handoff |
 | GetCollection | `/api/v1/shared/get-collection` | ❌ Not in handoff |
-| AdminPortal | `/api/v1/shared/adminportal` | ❌ Not in handoff |
-| Counters | `/api/v1/shared/counters` | ❌ Not in handoff |
-| SMSHeaders | `/api/v1/shared/sms-headers` | ❌ Not in handoff |
+| AdminPortal | `/api/v1/shared/adminportal` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
+| Counters | `/api/v1/shared/counters` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
+| SMSHeaders | `/api/v1/shared/sms-headers` | ❌ Not in handoff (implemented in `domains/shared/viewsets.py`) |
 | Analytics | `/api/v1/shared/analytics` | ⚠️  Alias for accounts/analytics |
 | Checklist | `/api/v1/shared/checklist` | ❌ Not in handoff |
+
+**Note:** Shared domain methods (doc_generator, sms, misc, adminportal, counters, sms_headers) are **implemented** in `domains/shared/viewsets.py` but NOT documented in handoff.
 
 ---
 
@@ -162,7 +166,7 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 
 ---
 
-### Eshop Domain (7 endpoints, 0 covered)
+### Eshop Domain (9 endpoints, 0 covered)
 
 **Frontend Pages:**
 - (No dedicated frontend pages — uses Products pages)
@@ -186,7 +190,7 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 
 ---
 
-### Cafe Arcade Domain (25 endpoints, 0 covered)
+### Cafe Arcade Domain (31 endpoints, 0 covered)
 
 **Frontend Pages:**
 - CafeDashboard (`/cafe/dashboard`)
@@ -288,7 +292,7 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 
 ---
 
-### Tenant/Settings Domain (19 endpoints, 0 covered)
+### Tenant/Settings Domain (23 endpoints, 0 covered)
 
 **Frontend Pages:**
 - BusinessGroupsPage (`/settings/business-groups`)
@@ -329,6 +333,25 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 
 ---
 
+## 🏗️ **Platform Domain (plat)**
+
+The `plat` domain provides platform-level utilities used across all domains:
+
+| Module | Purpose | Used By |
+|--------|---------|---------|
+| `plat/django/filters.py` | FilterParserMixin for query param parsing | All viewsets |
+| `plat/events/bus.py` | Event bus for domain events | Orders, Accounts |
+| `plat/outbox/` | Outbox pattern for reliable messaging | All domains |
+| `plat/pdf/export.py` | PDF/CSV export utilities | Accounts, Orders |
+| `plat/shared/helpers.py` | Shared helper functions | All viewsets |
+| `plat/shared/validation.py` | Input validation utilities | All viewsets |
+| `plat/observability/` | Correlation ID, tenant context middleware | All requests |
+| `plat/health/` | Health check endpoints | All domains |
+
+**Note:** These are infrastructure components, not API endpoints. They support the domain endpoints but are not tested in the hydration test.
+
+---
+
 ## 📋 **Handoff Document Gaps**
 
 ### Missing Sections
@@ -339,10 +362,9 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 4. ❌ **Cafe FNB Domain** — 9 endpoints, 1 frontend page, 2 PostgreSQL tables
 5. ❌ **Products Domain** — 6 endpoints, 5 frontend pages, MongoDB collections
 6. ❌ **Tenant/Settings Domain** — 23 endpoints, 6 frontend pages, 13 PostgreSQL tables
-7. ❌ **RBAC Domain** — 6 endpoints (part of Tenant/Settings)
-8. ❌ **Missing Orders endpoints** — OrderCreate, OrderDetail, ServiceRequestsDetail
-9. ❌ **Missing Accounts endpoints** — InvoiceCreate, InvoiceDetail, ITCGST, Ledgers, etc.
-10. ❌ **Missing Shared endpoints** — DocGenerator, SMS, Counters, etc.
+7. ❌ **Missing Orders endpoints** — OrderCreate, OrderDetail, ServiceRequestsDetail
+8. ❌ **Missing Accounts endpoints** — InvoiceCreate, InvoiceDetail, ITCGST, Ledgers, etc.
+9. ❌ **Missing Shared endpoints** — DocGenerator, SMS, Counters, etc. (implemented but not documented)
 
 ### Missing Data Volumes
 
@@ -361,7 +383,7 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 1. **Expand handoff to cover ALL domains** — Add Inventory, Eshop, Cafe Arcade, Cafe FNB, Products, Tenant/Settings
 2. **Add missing Orders endpoints** — OrderCreate, OrderDetail, ServiceRequestsDetail
 3. **Add missing Accounts endpoints** — InvoiceCreate, InvoiceDetail, ITCGST, Ledgers, etc.
-4. **Add missing Shared endpoints** — DocGenerator, SMS, Counters, etc.
+4. **Document Shared domain endpoints** — DocGenerator, SMS, Counters (implemented but not in handoff)
 
 ### Medium Priority
 5. **Add data volumes for all databases** — Inventory, Cafe, Products, HR
@@ -408,7 +430,8 @@ Verify that all frontend pages have corresponding backend endpoints and are cove
 
 ### Shared Domain (11 endpoints)
 - ✅ Covered: home
-- ❌ Missing: doc-generator, sms, misc, create-collection, get-collection, adminportal, counters, sms-headers, checklist
+- ❌ Missing: doc-generator, sms, misc, adminportal, counters, sms-headers (implemented but not documented)
+- ❌ Missing: create-collection, get-collection, checklist
 
 ### Inventory Domain (18 endpoints)
 - ❌ NOT COVERED — All 18 endpoints missing
