@@ -618,8 +618,19 @@ return Response({
 | `GET /inventory/indents` | ✅ 200 | 4 items | Working |
 | `GET /inventory/stock-audit` | ✅ 200 | 4 items | Working |
 | `GET /teams/employees` | ✅ 200 | 68 items | Working |
-| `GET /inventory/purchase-orders` | ❌ 500 | 0 items | Bug 2 (auth error) |
-| `GET /teams/emp-attendance` | ❌ 500 | 0 items | Bug 3 (missing `month` param) |
-| `GET /accounts/export` | ❌ 500 | 0 items | Bug 4 (`request_id` kwarg) |
-| `GET /orders/in-store` | ❌ 500 | 0 items | Bug 1 (`order_date` field) |
+| `GET /inventory/purchase-orders` | ✅ 200 | 7,148 items | Fixed (Bug 2) |
+| `GET /teams/emp-attendance` | ✅ 200 | 68 items | Fixed (Bug 3) |
+| `GET /accounts/export` | ✅ 200 | 0 items | Fixed (Bug 4) |
+| `GET /orders/in-store` | ✅ 200 | 12,174 items | Fixed (Bug 1) |
 | Legacy redirect | ✅ 301 | N/A | Working (deprecation warning logged) |
+
+### Backend Bugs Resolution
+
+**All 4 pre-existing backend bugs FIXED** (commit `d593409` on `develop`):
+
+| Bug | Status | Fix |
+|-----|--------|-----|
+| Bug 1: `order_date` field | ✅ Fixed | `order_date` → `created_date`, `order_status` → `status`, `instore_detail` → `in_store_detail`, added `hasattr()` guard |
+| Bug 2: Purchase Orders auth | ✅ Fixed | Changed permission from `inventory.purchase` → `inventory.indent` (perm didn't exist), added missing `bg_code`/`created_by` to serializer output |
+| Bug 3: `emp_attendance` month param | ✅ Fixed | Added default `datetime.now().month`/`year` values, added `identity__name` to query |
+| Bug 4: `reporting_response` request_id | ✅ Fixed | Removed invalid `request_id` kwarg from `Response()` |
