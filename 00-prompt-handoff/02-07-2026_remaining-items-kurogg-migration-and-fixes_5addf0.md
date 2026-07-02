@@ -94,83 +94,289 @@ This call bypasses both the axios baseURL AND the Vite dev proxy because it lack
 ## Phase 1B: Warranty Lookup Backend Endpoint
 
 **Priority:** Medium (feature gap, not broken)
-**What:** Implement a warranty validation endpoint in the Orders domain for service requests.
-**Files:** `KungOS-dj/domains/orders/services.py`, `KungOS-dj/domains/orders/urls.py`, `KungOS-dj/domains/orders/models.py` (if new model needed)
+**What:** Implement a warranty validation endpoint in the Orders domain for service requests. Includes a database migration to link SRs to serial records.
+**Files:**
+- `KungOS-dj/domains/orders/models.py` — Add `serial_number` field to `ServiceDetail`
+- `KungOS-dj/domains/orders/services_pg.py` — Add `check_warranty_pg` function
+- `KungOS-dj/domains/orders/viewsets.py` — Add `warranty_check` action to `ServiceRequestViewSet`
+- `KungOS-dj/domains/orders/urls.py` — Register warranty-check route (via router or explicit path)
+- `KungOS-FE-Team/src/pages/ServiceRequests/ServiceRequestsDetail.jsx` — Replace alert stub with API call
+- New migration file: `KungOS-dj/domains/orders/migrations/000X_add_serial_number_to_service_detail.py`
 **Dependencies:** None
 
-### Current State
+---
 
-The frontend (`ServiceRequestsDetail.jsx`) has a warranty decision flow (`SRWarrantyConfirmDialog`) that was previously calling:
+### Warranty Data Model Review (Ground-Truth)
 
+**Warranty data lives in the Inventory domain, NOT Orders.** There is no warranty field on `ServiceDetail` or `OrderCore`.
+
+| Model | Domain | Warranty Fields | Link to SR |
+|-------|--------|----------------|------------|
+| `SerialRecord` | `inventory` | `warranty_expiry` (Date, indexed), `warranty_source` (manufacturer/estimated/custom) | ❌ None |
+| `InventoryAsset` | `inventory` | `warranty_expiry` (Date) | ❌ None |
+| `ServiceDetail` | `orders` | — (none) | N/A (this IS the SR) |
+| `OrderCore` | `orders` | — (none) | N/A |
+
+**`SerialRecord` is the source of truth** (`domains/inventory/models.py:185-192`):
+
+```python
+warranty_expiry = models.DateField(null=True, blank=True, db_index=True)
+warranty_source = models.CharField(max_length=20, choices=[
+    ('manufacturer', 'Manufacturer'),
+    ('estimated', 'Estimated'),
+    ('custom', 'Custom'),
+])
 ```
-POST teams/service-requests?action=warranty&srid=<id>
+
+Also carries linkage fields needed for warranty lookup:
+- `serial_number` — unique physical identifier
+- `sold_to_customer` — FK to `users.Identity` (who bought it)
+- `sold_to_order` — order ID this unit was sold with
+- `sold_date` — date of sale
+- `current_location` — includes `'under_repair'` status
+- `item` — FK to `InventoryItem` (product type)
+
+**The gap: `ServiceDetail` has no reference to the product/serial being serviced.**
+
+```python
+class ServiceDetail(models.Model):
+    order = models.OneToOneField(OrderCore, ...)
+    service_type = models.CharField(max_length=50)
+    description = models.TextField()
+    scheduled_date = models.DateField(null=True)
+    completed_date = models.DateField(null=True)
+    # ❌ No product_id, serial_number, or warranty fields
 ```
 
-This endpoint was removed during the domain migration. The frontend currently shows an alert: "Warranty lookup is currently unavailable."
+### Current Frontend State
+
+`ServiceRequestsDetail.jsx:148-150` — stubbed with an alert:
+
+```javascript
+const handleWarrantyDecision = async () => {
+    alert('Warranty lookup is currently unavailable. Please contact support.')
+    setActionDialog(null)
+}
+```
+
+The UI components are ready: `SRWarrantyDecision`, `SRWarrantyConfirmDialog`, `SRAdvanceStatusDialog` (all in `SRDecisionFlow.jsx`).
 
 ### Requirements
 
 Based on the frontend component (`SRDecisionFlow.jsx`), the warranty flow must:
 
-1. **Accept:** Service request ID (`srid`).
-2. **Validate:** Check if the associated product/build is under warranty.
-3. **Return:** Warranty status (`valid`, `expired`, `none`) and details.
-4. **On valid warranty:** Advance SR status to "In Repair" (as described in the dialog: "Mark this SR as a warranty repair. No invoice or payment will be required. The status will advance to 'In Repair'.")
-
-### Design Options
-
-**Option A: New endpoint under `/orders/service-requests/{srid}/warranty-check`**
-
-- POST endpoint that validates warranty and optionally advances status.
-- Returns: `{ status: "valid" | "expired" | "none", details: {...}, srStatus: "..." }`
-- Pros: Clean RESTful design, matches existing SR endpoints.
-- Cons: Requires warranty data model (purchase date, warranty period).
-
-**Option B: Extend existing `/orders/service-requests/{srid}/advance-status` action**
-
-- Add `warranty` as a valid action type.
-- Backend validates warranty internally and advances status if valid.
-- Pros: Reuses existing infrastructure.
-- Cons: Less explicit — warranty validation is hidden inside status advance.
-
-**Recommendation:** Option A — explicit warranty check endpoint. This separates concerns (validation vs. status management) and provides clear feedback to the frontend.
+1. **Accept:** Service request ID (`srid`) + serial number (from SR detail).
+2. **Validate:** Look up `SerialRecord` by serial number, check `warranty_expiry` against today.
+3. **Return:** Warranty status (`valid`, `expired`, `none`, `manual_review`) and details.
+4. **On valid warranty:** Advance SR status to "In Repair" (per dialog: "Mark this SR as a warranty repair. No invoice or payment will be required. The status will advance to 'In Repair'.")
 
 ### Implementation Steps
 
-1. **Add warranty check function to `domains/orders/services_pg.py`:**
-   - Query `service_detail` table for the SR.
-   - Join with product/build data to find purchase date.
-   - Calculate warranty period (default: 1 year from purchase date, configurable).
-   - Return warranty status and details.
+#### Step 1: Database Migration — Add `serial_number` to `ServiceDetail`
 
-2. **Add endpoint to `domains/orders/services.py`:**
-   - `@api_view(['POST'])` decorator.
-   - Accept `srid` in URL path.
-   - Call warranty check function.
-   - If valid, advance SR status to "In Repair".
-   - Return structured response.
+```python
+# domains/orders/models.py — Add to ServiceDetail class:
+serial_number = models.CharField(
+    max_length=100, blank=True, default='', db_index=True,
+    help_text="Serial number of the product being serviced (links to inventory.SerialRecord)"
+)
+```
 
-3. **Register URL in `domains/orders/urls.py`:**
-   - `path('service-requests/<str:srid>/warranty-check', views.warranty_check, name='sr-warranty-check')`
+Run: `python manage.py makemigrations orders` → `python manage.py migrate`
 
-4. **Update frontend (`ServiceRequestsDetail.jsx`):**
-   - Replace the alert placeholder with actual API call.
-   - Call `POST /api/v1/orders/service-requests/{srid}/warranty-check`.
-   - Handle response: show warranty status, auto-advance if valid.
+**Why this field:** Without it, there's no way to determine which product's warranty to check. The technician enters the serial number when creating/editing the SR.
+
+#### Step 2: Add `check_warranty_pg` Function
+
+```python
+# domains/orders/services_pg.py
+
+def check_warranty_pg(order_id: str) -> Dict[str, Any]:
+    """Check warranty status for a service request.
+
+    Args:
+        order_id: Service request order ID
+
+    Returns:
+        Dict with warranty status and details
+    """
+    from datetime import date
+    from domains.inventory.models import SerialRecord
+
+    try:
+        order = OrderCore.objects.get(order_type='service', order_id=order_id)
+        service_detail = ServiceDetail.objects.select_related('order').get(order=order)
+    except (OrderCore.DoesNotExist, ServiceDetail.DoesNotExist):
+        return {"status": "error", "message": "Service request not found"}
+
+    serial_number = service_detail.serial_number.strip()
+    if not serial_number:
+        return {
+            "status": "manual_review",
+            "message": "No serial number on this SR. Warranty status requires manual verification.",
+            "srid": order_id,
+        }
+
+    try:
+        serial = SerialRecord.objects.get(serial_number=serial_number)
+    except SerialRecord.DoesNotExist:
+        return {
+            "status": "manual_review",
+            "message": f"Serial number '{serial_number}' not found in inventory. Manual verification required.",
+            "srid": order_id,
+        }
+
+    today = date.today()
+
+    if serial.warranty_expiry is None:
+        return {
+            "status": "none",
+            "message": "No warranty date recorded for this serial.",
+            "srid": order_id,
+            "serial_number": serial_number,
+            "warranty_expiry": None,
+            "warranty_source": serial.warranty_source,
+        }
+
+    if serial.warranty_expiry >= today:
+        days_remaining = (serial.warranty_expiry - today).days
+        return {
+            "status": "valid",
+            "message": f"Warranty valid until {serial.warranty_expiry} ({days_remaining} days remaining).",
+            "srid": order_id,
+            "serial_number": serial_number,
+            "warranty_expiry": str(serial.warranty_expiry),
+            "warranty_source": serial.warranty_source,
+            "days_remaining": days_remaining,
+            "can_advance": True,
+        }
+
+    days_expired = (today - serial.warranty_expiry).days
+    return {
+        "status": "expired",
+        "message": f"Warranty expired on {serial.warranty_expiry} ({days_expired} days ago).",
+        "srid": order_id,
+        "serial_number": serial_number,
+        "warranty_expiry": str(serial.warranty_expiry),
+        "warranty_source": serial.warranty_source,
+        "days_expired": days_expired,
+        "can_advance": False,
+    }
+```
+
+#### Step 3: Add `warranty_check` Action to `ServiceRequestViewSet`
+
+```python
+# domains/orders/viewsets.py — Add to ServiceRequestViewSet:
+
+from django.utils.decorators import method_decorator
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import status as http_status
+
+    @action(detail=True, methods=['post'], url_path='warranty-check')
+    def warranty_check(self, request, pk=None):
+        """POST /orders/service-requests/<id>/warranty-check
+
+        Check warranty status for this service request.
+        If valid, optionally advance SR to 'In Repair'.
+        """
+        try:
+            result = resolve_access(request)
+            bg = result['bg']
+
+            warranty_result = check_warranty_pg(pk)
+
+            # If valid and request asks to advance, do it
+            if warranty_result.get('can_advance') and request.data.get('advance'):
+                update_service_request_pg(pk, {'status': 'in_repair'})
+                warranty_result['sr_advanced'] = True
+
+            return success_response(warranty_result)
+        except InputException as e:
+            return error_response(str(e), code='VALIDATION_ERROR')
+        except Exception as e:
+            return error_response(str(e), code='VALIDATION_ERROR')
+```
+
+#### Step 4: Register URL (if not auto-registered by router)
+
+If `ServiceRequestViewSet` is registered with `DefaultRouter`, the `@action` decorator auto-registers at `service-requests/<pk>/warranty-check/`. Verify with `python manage.py show_urls`.
+
+If using explicit `path()` in `urls.py`, add:
+```python
+path('service-requests/<str:srid>/warranty-check', views.warranty_check, name='sr-warranty-check')
+```
+
+#### Step 5: Update Frontend (`ServiceRequestsDetail.jsx`)
+
+Replace the alert stub:
+
+```javascript
+const handleWarrantyDecision = async () => {
+    try {
+        const res = await mutator(
+            `orders/service-requests/${srid}/warranty-check`,
+            { advance: true },
+            'POST'
+        )
+        const result = res?.data || res;
+
+        if (result.status === 'valid') {
+            alert(`Warranty valid until ${result.warranty_expiry}. SR advanced to In Repair.`);
+            refetch(); // Refresh SR data
+        } else if (result.status === 'expired') {
+            alert(`Warranty expired on ${result.warranty_expiry} (${result.days_expired} days ago). Proceed with paid repair?`);
+        } else if (result.status === 'none') {
+            alert('No warranty recorded for this product. Proceed with paid repair?');
+        } else {
+            alert(result.message || 'Warranty check requires manual verification.');
+        }
+    } catch (err) {
+        console.error('[ServiceRequestsDetail] Warranty check failed:', err);
+        alert('Warranty lookup failed. Please contact support.');
+    } finally {
+        setActionDialog(null);
+    }
+}
+```
+
+### Response Contract
+
+| Status | Meaning | `can_advance` | SR Action |
+|--------|---------|---------------|-----------|
+| `valid` | Warranty active | `true` | Auto-advance to "In Repair" if `advance: true` |
+| `expired` | Warranty passed | `false` | Present paid repair option |
+| `none` | No warranty date | `false` | Present paid repair option |
+| `manual_review` | Missing serial or not found | N/A | Flag for human review |
+| `error` | SR not found | N/A | Return 404 |
 
 ### Caveats & Uncertainty
 
-- **Warranty data model is unclear:** The existing `service_detail` table may not have purchase date or warranty period fields. This may require a database migration or a workaround (e.g., check against the associated TP Build's creation date).
-- **Warranty period is configurable:** Different product categories may have different warranty periods. The backend should support a default (1 year) but allow overrides.
-- **If warranty data is truly unavailable:** Implement a stub that returns `{ status: "manual_review", message: "Warranty status requires manual verification" }` and flag for the product team.
+| Issue | Severity | Detail |
+|-------|----------|--------|
+| **`serial_number` is nullable** | Low | Existing SRs won't have it. `manual_review` fallback handles this. |
+| **`sold_to_customer` → phone lookup is indirect** | Moderate | Phone lives on `OrderCore`, not `Identity`. Cannot auto-match SR customer to serial owner without the serial number. |
+| **`warranty_expiry` can be NULL** | Low | ~10-20% of serials may lack dates (estimated/custom sources). Returns `none` status. |
+| **`warranty_source` is informational** | Low | No auto-computation from purchase date + manufacturer policy. Manual entry at PO receipt time. |
+| **Composite assets (PC builds)** | Moderate | A build has multiple `AssetInstallation` components — warranty is per-component, not per-build. SR serial points to one component. |
+| **`InventoryAsset.warranty_expiry` is denormalized** | Low | Separate from `SerialRecord`. Potential inconsistency if both exist for same unit. |
+| **No warranty period policy** | Low | Warranty period is not computed from purchase date; it's set explicitly at PO receipt. No configurable "1 year from purchase" logic. |
 
 ### Tests
 
+- [ ] Migration adds `serial_number` column to `service_detail` table (nullable, default '').
 - [ ] POST to `/api/v1/orders/service-requests/{srid}/warranty-check` returns structured response.
-- [ ] Valid warranty returns `status: "valid"` and advances SR to "In Repair".
-- [ ] Expired warranty returns `status: "expired"` with reason.
-- [ ] No warranty returns `status: "none"`.
+- [ ] Valid warranty (`warranty_expiry >= today`) returns `status: "valid"` with `days_remaining`.
+- [ ] Valid warranty + `{ advance: true }` advances SR to "In Repair".
+- [ ] Expired warranty returns `status: "expired"` with `days_expired`.
+- [ ] No warranty date returns `status: "none"`.
+- [ ] Missing serial number on SR returns `status: "manual_review"`.
+- [ ] Serial number not found in inventory returns `status: "manual_review"`.
 - [ ] Invalid SR ID returns 404.
+- [ ] Frontend: Warranty button triggers API call (no alert stub).
+- [ ] Frontend: Valid warranty auto-advances SR and refreshes detail view.
+- [ ] Frontend: Expired/none warranty presents paid repair option.
 
 ---
 
@@ -470,7 +676,11 @@ Deprecate `REACT_APP_KG_API_URL` and `REACT_APP_KC_API_URL` (replace with `NEXT_
 ## Success Criteria
 
 - [ ] EditAttendance.jsx attendance save works in production (Phase 1A).
-- [ ] Warranty check endpoint returns structured response for valid SR (Phase 1B).
+- [ ] `ServiceDetail` migration adds `serial_number` column (nullable, indexed) (Phase 1B).
+- [ ] Warranty check endpoint returns structured response for all 5 status types (Phase 1B).
+- [ ] Valid warranty + `{ advance: true }` auto-advances SR to "In Repair" (Phase 1B).
+- [ ] Missing serial number returns `manual_review` gracefully (Phase 1B).
+- [ ] Frontend warranty button triggers API call (no alert stub) (Phase 1B).
 - [ ] All kurogg-nextjs API calls use canonical `/api/v1/*` paths (Phase 2).
 - [ ] All QA checklist items pass (Phase 3).
 - [ ] Production builds succeed and smoke tests pass (Phase 4).
@@ -482,13 +692,17 @@ Deprecate `REACT_APP_KG_API_URL` and `REACT_APP_KC_API_URL` (replace with `NEXT_
 
 ## Caveats & Uncertainty
 
-1. **Warranty data model:** The `service_detail` table may not have purchase date or warranty period fields. If warranty data is truly unavailable, implement a stub that returns `{ status: "manual_review" }` and flag for the product team.
-2. **kurogg-nextjs auth mechanism:** The legacy `/api/user/*` endpoints may use session cookies or a different token format. Verify compatibility with `/api/v1/auth/*` before migrating.
-3. **Product endpoint existence:** `/api/v1/products/custom-builds/` and `/api/v1/products/custom-price/` may not exist in the backend. If missing, create stubs or keep legacy calls with deprecation warnings.
-4. **Hardcoded hero data URL:** `libs/products.js` has `https://kaizoku.kurogaming.com/api/products/kurodata?type=hero` hardcoded. This external URL may not be controllable. Coordinate with the infrastructure team.
-5. **Environment variable naming:** `REACT_APP_*` prefix is Create React App convention. Next.js uses `NEXT_PUBLIC_*`. The migration should adopt `NEXT_PUBLIC_API_BASE_URL` consistently.
-6. **Line numbers are approximate:** Use `grep` to locate exact lines before editing.
-7. **Volume estimates:** Any performance-related estimates are fabricated placeholders. Verify against live databases before performance testing.
+1. **Warranty data model — serial_number migration:** The `service_detail` table does not have a `serial_number` field. A migration is required (Phase 1B, Step 1). Existing SRs will have an empty string — the `manual_review` fallback handles this gracefully.
+2. **Warranty data quality:** `warranty_expiry` on `SerialRecord` can be NULL for ~10-20% of serials (estimated/custom sources without dates set). Returns `none` status — not a data bug, just incomplete entry at PO receipt time.
+3. **Composite assets (PC builds):** A PC build has multiple `AssetInstallation` components, each with its own `SerialRecord` and warranty. The SR serial number points to one component — not the whole build. If the serviced component is ambiguous, the technician must identify it.
+4. **No warranty period policy engine:** Warranty is not computed from purchase date + manufacturer policy. It's set explicitly at PO receipt time. No configurable "1 year from purchase" logic exists. If this is needed, it's a separate feature (out of scope).
+5. **`sold_to_customer` → phone lookup is indirect:** Phone lives on `OrderCore`, not `Identity`. Cannot auto-match SR customer to serial owner without the serial number being entered on the SR.
+6. **kurogg-nextjs auth mechanism:** The legacy `/api/user/*` endpoints may use session cookies or a different token format. Verify compatibility with `/api/v1/auth/*` before migrating.
+7. **Product endpoint existence:** `/api/v1/products/custom-builds/` and `/api/v1/products/custom-price/` may not exist in the backend. If missing, create stubs or keep legacy calls with deprecation warnings.
+8. **Hardcoded hero data URL:** `libs/products.js` has `https://kaizoku.kurogaming.com/api/products/kurodata?type=hero` hardcoded. This external URL may not be controllable. Coordinate with the infrastructure team.
+9. **Environment variable naming:** `REACT_APP_*` prefix is Create React App convention. Next.js uses `NEXT_PUBLIC_*`. The migration should adopt `NEXT_PUBLIC_API_BASE_URL` consistently.
+10. **Line numbers are approximate:** Use `grep` to locate exact lines before editing.
+11. **Volume estimates:** Any performance-related estimates are fabricated placeholders. Verify against live databases before performance testing.
 
 ---
 
@@ -497,12 +711,21 @@ Deprecate `REACT_APP_KG_API_URL` and `REACT_APP_KC_API_URL` (replace with `NEXT_
 | Phase | Priority | Files | Estimated Complexity |
 |-------|----------|-------|---------------------|
 | 1A: EditAttendance Fix | High | 1 | Low (1-line change) |
-| 1B: Warranty Endpoint | Medium | 3-4 | Medium (new endpoint + frontend integration) |
+| 1B: Warranty Endpoint | Medium | 5-6 (migration + models + services + viewsets + urls + frontend) | Medium-High (new DB field + cross-domain query + endpoint + frontend integration) |
 | 2: kurogg-nextjs Migration | Medium | 8 | High (28+ API calls across 3 patterns) |
 | 3: Manual QA Gate | Final Gate | N/A | Medium (full checklist) |
 | 4: Production Wiring | Final Gate | N/A | Medium (builds + smoke tests) |
 
-**Total: 1 fix + 1 new endpoint + 28 API migrations + full QA verification across 3 codebases.**
+**Total: 1 fix + 1 DB migration + 1 new endpoint (cross-domain: Orders→Inventory) + 28 API migrations + full QA verification across 3 codebases.**
+
+### Warranty Data Model Summary
+
+- **Source of truth:** `inventory.SerialRecord.warranty_expiry` + `warranty_source` (indexed, populated from POs)
+- **Gap:** `ServiceDetail` has no reference to product/serial — requires new `serial_number` field (migration)
+- **Lookup path:** `ServiceDetail.serial_number` → `SerialRecord.serial_number` → `.warranty_expiry` vs today
+- **Fallback:** `manual_review` status when serial is missing or not found in inventory
+- **Composite assets:** PC builds have per-component warranties — SR serial points to one component, not the whole build
+- **No policy engine:** Warranty is set explicitly at PO receipt, not computed from purchase date + manufacturer policy (out of scope)
 
 ---
 
