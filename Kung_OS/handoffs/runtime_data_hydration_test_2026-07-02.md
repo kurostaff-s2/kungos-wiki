@@ -22,8 +22,12 @@ Verify all migrated API endpoints return **real data** from PostgreSQL/MongoDB b
 | **PostgreSQL** | `users_customuser` | Users | 3,532 records |
 | **PostgreSQL** | `inv_vendors` | Vendors | 424 records |
 | **PostgreSQL** | `users_employee` | Employees | 68 records |
+| **PostgreSQL** | `tenant_business_groups` | Business Groups | 2 |
+| **PostgreSQL** | `tenant_divisions` | Divisions | 4 |
+| **PostgreSQL** | `tenant_branches` | Branches | 4 |
+| **PostgreSQL** | `users_user_tenant_context` | User-Tenant Mapping | 3,531 |
 
-**Total Data Points:** ~37,789 records across both databases
+**Total Data Points:** ~41,320 records across both databases
 
 ---
 
@@ -141,6 +145,55 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:7000/api/v1/shared/an
 | `kungos_tenant_profile` | Tenants | 0 (placeholder) |
 
 **Key Fields (orders_core):** `id`, `order_type`, `order_status`, `customer_name`, `total_amount`, `created_date`, `updated_date`, `delete_flag`, `active`
+
+---
+
+### Tenant Data (PostgreSQL)
+
+| Table | Type | Volume |
+|-------|------|--------|
+| `tenant_business_groups` | Business Groups | **2** |
+| └─ `KURO0001` | Kuro Cadence | Active |
+| └─ `DUNE0003` | Dune Labs | Active |
+| `tenant_divisions` | Divisions | **4** |
+| └─ `KURO0001_001` | Kuro Gaming | Active |
+| └─ `KURO0001_002` | Rebellion | Active |
+| └─ `KURO0001_003` | RenderEdge | Active |
+| └─ `DUNE0003_001` | Rebellion (Dune) | Active |
+| `tenant_branches` | Branches | **4** |
+| └─ `KURO0001_001_001` | KG Madhapur | Active |
+| └─ `KURO0001_002_001` | RB Madhapur | Active |
+| └─ `KURO0001_002_002` | RB LB Nagar | Active |
+| └─ `KURO0001_003_001` | RE Madhapur | Active |
+| `users_user_tenant_context` | User-Tenant Mapping | **3,531** |
+| `kungos_tenant_profile` | Tenant Profile | 0 (placeholder) |
+
+**Key Fields (tenant_business_groups):** `bg_code`, `bg_label`, `legal_name`, `registered_address`, `is_active`, `created_at`
+
+**Key Fields (tenant_divisions):** `div_code`, `div_label`, `brand_name`, `bg_code`, `is_active`, `created_at`
+
+**Key Fields (tenant_branches):** `branch_code`, `branch_label`, `branch_name`, `div_code`, `is_active`, `created_at`
+
+**Key Fields (users_user_tenant_context):** `userid`, `bg_code`, `div_codes`, `branch_codes`, `scope`, `created_at`
+
+**Sample Data:**
+```sql
+-- Business Groups
+SELECT bg_code, bg_label, legal_name, is_active FROM tenant_business_groups;
+-- Result: KURO0001 (Kuro Cadence), DUNE0003 (Dune Labs)
+
+-- Divisions
+SELECT div_code, div_label, bg_code, is_active FROM tenant_divisions;
+-- Result: KURO0001_001 (Kuro Gaming), KURO0001_002 (Rebellion), etc.
+
+-- Branches
+SELECT branch_code, branch_label, div_code, is_active FROM tenant_branches;
+-- Result: KURO0001_001_001 (KG Madhapur), KURO0001_002_001 (RB Madhapur), etc.
+
+-- User-Tenant Context (sample)
+SELECT userid, bg_code, div_codes, branch_codes FROM users_user_tenant_context LIMIT 3;
+-- Result: userid=4927093804, bg_code=KURO0001, div_codes=[], branch_codes=[]
+```
 
 ---
 
@@ -425,6 +478,26 @@ SELECT * FROM users_employeeprofile LIMIT 1;
 ```sql
 SELECT COUNT(*) FROM inv_vendors;
 SELECT * FROM inv_vendors LIMIT 1;
+```
+
+### PostgreSQL (Tenant Data)
+
+```sql
+-- Business Groups
+SELECT COUNT(*) FROM tenant_business_groups;
+SELECT bg_code, bg_label, legal_name, is_active FROM tenant_business_groups;
+
+-- Divisions
+SELECT COUNT(*) FROM tenant_divisions;
+SELECT div_code, div_label, bg_code, is_active FROM tenant_divisions;
+
+-- Branches
+SELECT COUNT(*) FROM tenant_branches;
+SELECT branch_code, branch_label, div_code, is_active FROM tenant_branches;
+
+-- User-Tenant Context
+SELECT COUNT(*) FROM users_user_tenant_context;
+SELECT userid, bg_code, div_codes, branch_codes FROM users_user_tenant_context LIMIT 5;
 ```
 
 ---
