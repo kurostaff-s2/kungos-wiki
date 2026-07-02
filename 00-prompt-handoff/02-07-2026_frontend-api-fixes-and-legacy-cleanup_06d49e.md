@@ -507,3 +507,119 @@ Phase 3 (Routing Bugs) ───────────────────
 - Warranty lookup backend implementation (requires new backend endpoint)
 - `CreatePO.jsx` indent data intent verification (removed with comment)
 - Full manual test suite (requires QA team)
+
+---
+
+## Pre-existing Backend Bugs (Discovered During Testing)
+
+**Discovered:** 02-07-2026 during endpoint hydration testing  
+**Status:** Not related to frontend fixes — these are pre-existing backend bugs that block data hydration on specific endpoints  
+**Impact:** 4 endpoints return 500 errors despite correct frontend API paths
+
+### Bug 1: `order_date` field missing on `OrderCore`
+
+| Field | Value |
+|-------|-------|
+| File | `domains/orders/services_pg.py` |
+| Line | 113 |
+| Error | `FieldError: Cannot resolve keyword 'order_date' into field` |
+| Root Cause | `OrderCore` model uses `created_date` (line 80 in `models.py`), not `order_date` |
+| Affected Endpoint | `GET /api/v1/orders/in-store` |
+| Fix | Change `qs.order_by('-order_date')` to `qs.order_by('-created_date')` |
+| Effort | Low (1-line change) |
+
+**Evidence:**
+```python
+# services_pg.py:113
+qs = qs.order_by('-order_date')  # ❌ FieldError
+
+# models.py:80
+created_date = models.DateTimeField(auto_now_add=True, db_index=True)  # ✅ Correct field
+```
+
+### Bug 2: Purchase Orders authentication error
+
+| Field | Value |
+|-------|-------|
+| File | `domains/inventory/viewsets.py` |
+| Error | `Unauthorized` (500 Internal Server Error) |
+| Root Cause | Viewset authentication/permission logic error — returns 500 instead of 401 |
+| Affected Endpoint | `GET /api/v1/inventory/purchase-orders` |
+| Fix | Investigate viewset permission classes and error handling |
+| Effort | Medium (requires debugging) |
+
+**Evidence:**
+```
+{"level": "ERROR", "message": "Unhandled exception: Unauthorized", "path": "/api/v1/inventory/purchase-orders"}
+```
+
+### Bug 3: `emp_attendance` requires `month` query parameter
+
+| Field | Value |
+|-------|-------|
+| File | `domains/teams/views.py` |
+| Line | 77 |
+| Error | `TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'` |
+| Root Cause | `month` query param is required but not validated — crashes when missing |
+| Affected Endpoint | `GET /api/v1/teams/emp-attendance` |
+| Fix | Add default value or return 400 when `month` is missing |
+| Effort | Low (1-2 line change) |
+
+**Evidence:**
+```python
+# views.py:77
+month = int(request.query_params.get('month'))  # ❌ Crashes when month is None
+```
+
+### Bug 4: `reporting_response` passes `request_id` to `Response()`
+
+| Field | Value |
+|-------|-------|
+| File | `domains/accounts/viewsets.py` |
+| Line | 1358 |
+| Error | `TypeError: Response.__init__() got an unexpected keyword argument 'request_id'` |
+| Root Cause | `reporting_response()` in `backend/response_utils.py:218` passes `request_id` kwarg to DRF `Response()` which doesn't accept it |
+| Affected Endpoint | `GET /api/v1/accounts/export` |
+| Fix | Remove `request_id` from `Response()` kwargs or use custom Response class |
+| Effort | Low (1-line change) |
+
+**Evidence:**
+```python
+# response_utils.py:218
+return Response({
+    ...
+    'request_id': request_id  # ❌ DRF Response doesn't accept this
+})
+```
+
+### Data Model Notes
+
+**Service Requests Data Model:**
+- `OrderCore` table stores all orders with `order_type` discriminator (`estimate`, `in_store`, `tp`, `service`, `purchase`)
+- `ServiceDetail` table stores service-specific data (OneToOne with `OrderCore` via `order` field)
+- Database currently has **0 service requests** (only `in_store`: 12,174, `eshop`: 1,200, `tp`: 229)
+- Test data created: `SR20260001` (KURO0001, pending, repair)
+- `get_service_requests_pg()` filters by `order_type='service'` and `bg_code`
+
+**Order Type Distribution:**
+| Type | Count | Notes |
+|------|-------|-------|
+| `in_store` | 12,174 | Customer in-store orders |
+| `eshop` | 1,200 | E-commerce orders |
+| `tp` | 229 | Third-party orders |
+| `service` | 0 | Service requests (no data yet) |
+| `purchase` | 0 | Purchase orders (stored in Inventory domain) |
+
+### Testing Results Summary
+
+| Endpoint | Status | Data | Notes |
+|----------|--------|------|-------|
+| `GET /orders/service-requests` | ✅ 200 | 1 item (test data) | Working after test data created |
+| `GET /inventory/indents` | ✅ 200 | 4 items | Working |
+| `GET /inventory/stock-audit` | ✅ 200 | 4 items | Working |
+| `GET /teams/employees` | ✅ 200 | 68 items | Working |
+| `GET /inventory/purchase-orders` | ❌ 500 | 0 items | Bug 2 (auth error) |
+| `GET /teams/emp-attendance` | ❌ 500 | 0 items | Bug 3 (missing `month` param) |
+| `GET /accounts/export` | ❌ 500 | 0 items | Bug 4 (`request_id` kwarg) |
+| `GET /orders/in-store` | ❌ 500 | 0 items | Bug 1 (`order_date` field) |
+| Legacy redirect | ✅ 301 | N/A | Working (deprecation warning logged) |
